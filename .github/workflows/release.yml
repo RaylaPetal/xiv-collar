@@ -1,0 +1,71 @@
+name: Publish Release
+
+# Expects the pushed tag to point at the same commit as master's tip at release time (see README/commit
+# workflow) - the repo.json update this workflow commits lands on master, not on the tag itself.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+
+  release:
+    runs-on: windows-2022
+
+    steps:
+    - name: Checkout master
+      uses: actions/checkout@v5
+      with:
+        ref: master
+        fetch-depth: 0
+
+    - name: Install .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Download Dalamud
+      run: |
+        Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile dalamud-latest.zip
+        Expand-Archive -Force dalamud-latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
+
+    - name: Build with dotnet
+      run: dotnet build CollarSystem.Plugin/CollarSystem.Plugin.csproj --configuration Release
+
+    - name: Read plugin manifest
+      id: manifest
+      shell: pwsh
+      run: |
+        $manifest = Get-Content "CollarSystem.Plugin/bin/x64/Release/CollarSystem.Plugin/CollarSystem.Plugin.json" | ConvertFrom-Json
+        "version=$($manifest.AssemblyVersion)" >> $env:GITHUB_OUTPUT
+        "apilevel=$($manifest.DalamudApiLevel)" >> $env:GITHUB_OUTPUT
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: ${{ github.ref_name }}
+        files: CollarSystem.Plugin/bin/x64/Release/CollarSystem.Plugin/latest.zip
+
+    - name: Update repo.json
+      shell: pwsh
+      run: |
+        $downloadUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/latest.zip"
+        $repo = Get-Content repo.json | ConvertFrom-Json
+        $repo[0].AssemblyVersion = "${{ steps.manifest.outputs.version }}"
+        $repo[0].DalamudApiLevel = [int]"${{ steps.manifest.outputs.apilevel }}"
+        $repo[0].DownloadLinkInstall = $downloadUrl
+        $repo[0].DownloadLinkUpdate = $downloadUrl
+        $repo[0].DownloadLinkTesting = $downloadUrl
+        $repo[0].LastUpdate = [string]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+        $repo | ConvertTo-Json -Depth 5 | Set-Content repo.json
+
+    - name: Commit repo.json
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "chore: point repo.json at ${{ github.ref_name }}"
+        file_pattern: repo.json
+        branch: master
