@@ -1,0 +1,16 @@
+# Rename `app` to something globally unique before deploying - `fly launch` will also offer to do this.
+app = "collar-system-relay"
+primary_region = "iad"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"   # keep the relay up during a play session instead of scaling to zero mid-websocket
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

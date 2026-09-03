@@ -1,78 +1,108 @@
-> ⚠️ **Don't click Fork!**
-> 
-> This is a GitHub Template repo. If you want to use this for a plugin, [use this template][new-repo] to make a new repo!
->
-> ![image](https://github.com/goatcorp/SamplePlugin/assets/16760685/d9732094-e1ed-4769-a70b-58ed2b92580c)
+# Collar System
 
-# SamplePlugin
+A consent-based Owner/Sub control plugin for FINAL FANTASY XIV, built on Dalamud. An Owner sends outfit,
+title, gesture, and follow/leash commands to a paired Sub; the Sub's own client applies them locally via
+Glamourer, Honorific, and Penumbra, and whatever Mare-successor sync tool (Snowcloak, Lightless, etc.) the
+Sub already has paired propagates the result to everyone else. See `ffxiv-collar-system-design.md` at the
+repo root for the full feasibility research this plugin is built from.
 
-[![Use This Template badge](https://img.shields.io/badge/Use%20This%20Template-0?logo=github&labelColor=grey)][new-repo]
+**There is no way to force something onto another player's screen from outside their own client.** Every
+feature here only ever works because the Sub's own plugin is installed, paired, and running on the Sub's
+own machine. That is a real, load-bearing constraint, not a limitation to work around - see the Consent
+model below.
 
+## Consent model
 
-Simple example plugin for Dalamud.
+- **Explicit pairing handshake.** A Sub generates a one-time pairing code and shares it with an Owner out
+  of band (voice, chat, whatever channel you already trust). Nothing an Owner sends is ever applied until
+  the Sub's own client explicitly accepts that specific pairing request. Pairing is never auto-accepted.
+- **Scoped, revocable permissions.** A Sub independently enables or disables each command category
+  (title, outfit, gesture, follow) at any time. A command in a disabled category is rejected, even while
+  the pairing itself stays active.
+- **Panic button, always available.** `/collarpanic` (and an optional configurable hotkey) immediately
+  unpairs, reverts any Glamourer state, clears any Honorific title, and releases any active movement lock
+  - all from local state only, so it works even if the relay is unreachable.
+- **Uninstalling the plugin is always the ultimate safeword.** Since nothing can be applied to a Sub's
+  character without the Sub's own plugin running, uninstalling (or simply disabling) it ends all collar
+  control immediately. This is the honest FFXIV equivalent of SL OpenCollar's "detach," and there is no
+  way around it existing - don't rely on any in-plugin control as a substitute for it.
 
-This is not designed to be the simplest possible example, but it is also not designed to cover everything you might want to do. For more detailed questions, come ask in [the Discord](https://discord.gg/holdshift).
+## Automation risk / ToS disclosure
 
-## Main Points
+Two features here go beyond purely cosmetic IPC calls, and carry real risk:
 
-* Simple functional plugin
-  * Slash command
-  * Main UI
-  * Settings UI
-  * Image loading
-  * Plugin json
-* Simple, slightly-improved plugin configuration handling
-* Project organization
-  * Copies all necessary plugin files to the output directory
-    * Does not copy dependencies that are provided by dalamud
-    * Output directory can be zipped directly and have exactly what is required
-  * Hides data files from visual studio to reduce clutter
-    * Also allows having data files in different paths than VS would usually allow if done in the IDE directly
+- **Gesture** fires an emote by injecting a chat command (`ECommons.Automation.Chat.SendMessage`).
+  Automating chat/input on your own behalf this way is called out by other plugin authors (e.g.
+  EmoteReactor) as against FFXIV's ToS. To reduce that risk, a gesture prompt from an Owner is **never**
+  auto-fired - it is only ever queued on the Sub's client, and the Sub must explicitly confirm it before
+  anything happens.
+- **Follow/leash** hooks the game's own movement-input functions to block WASD input and suppress
+  auto-unfollow while engaged. This is a heavier automation footprint than cosmetic rendering changes, and
+  the hook signatures are version-specific reverse-engineering artifacts that can break on any game patch
+  (see `MovementLockService.cs`) - if they fail to resolve on load, the movement lock stays disabled
+  rather than silently doing nothing while claiming to work.
 
+Both are gated behind their own permission toggle, and both require the Sub to check an in-UI
+acknowledgement of this section before either toggle can be enabled at all. Make an informed choice before
+turning them on.
 
-The intention is less that any of this is used directly in other projects, and more to show how similar things can be done.
+## Project layout
 
-## How To Use
+```
+CollarSystem.Plugin/     the Dalamud plugin (Owner and Sub share one codebase, switched by role)
+  Ipc/                   thin wrappers around Glamourer.Api, Penumbra.Api, and Honorific's IPC calls
+  Commands/              one file per command category, plus pairing and the command dispatcher
+  Relay/                 the websocket client and wire protocol
+  Config/                persisted plugin configuration
+  UI/                    DomWindow (Owner) and SubWindow (Sub)
+  Safety/                panic handler and in-memory "what's currently applied" state
+CollarSystem.Relay/      minimal self-hosted websocket relay (Owner <-> Sub command channel)
+```
 
-### Getting Started
+The relay only ever forwards opaque command/ack frames between the two sockets in a pairing session - it
+never inspects payload contents, and it is not a dependency of any single sync fork.
 
-To begin, [clone this template repository][new-repo] to your own GitHub account. This will automatically bring in everything you need to get a jumpstart on development. You do not need to fork this repository unless you intend to contribute modifications to it.
+## Prerequisites
 
-Be sure to also check out the [Dalamud Developer Docs][dalamud-docs] for helpful information about building your own plugin. The Developer Docs includes helpful information about all sorts of things, including [how to submit][submit] your newly-created plugin to the official repository. Assuming you use this template repository, the provided project build configuration and license are already chosen to make everything a breeze.
+* XIVLauncher, FINAL FANTASY XIV, and Dalamud installed, with the game run at least once with Dalamud.
+* A .NET 10 SDK.
+  * If a custom path is required for Dalamud's dev directory, set the `DALAMUD_HOME` environment variable
+    (e.g. `~/.xlcore/dalamud/Hooks/dev` on XIVLauncher-on-Linux/XLCore installs).
+* Penumbra, Glamourer, and Honorific installed and enabled in-game (required for the Sub role; the Owner
+  role only needs the relay reachable).
+* A Mare-successor sync tool (Snowcloak, Lightless, or similar) paired on the Sub's account, if you want
+  changes visible to anyone other than the Sub - this plugin only ever writes local state.
 
-[new-repo]: https://github.com/new?template_name=SamplePlugin&template_owner=goatcorp
-[dalamud-docs]: https://dalamud.dev
-[submit]: https://dalamud.dev/plugin-publishing/submission
+## Building
 
-### Prerequisites
+```
+dotnet build CollarSystem.slnx
+```
 
-SamplePlugin assumes all the following prerequisites are met:
+This builds both `CollarSystem.Plugin` (the Dalamud plugin, `CollarSystem.Plugin/bin/x64/Debug/CollarSystem.Plugin.dll`)
+and `CollarSystem.Relay` (a standalone ASP.NET Core app).
 
-* XIVLauncher, FINAL FANTASY XIV, and Dalamud have all been installed and the game has been run with Dalamud at least once.
-* XIVLauncher is installed to its default directories and configurations.
-  * If a custom path is required for Dalamud's dev directory, it must be set with the `DALAMUD_HOME` environment variable.
-* A .NET Core 8 SDK has been installed and configured, or is otherwise available. (In most cases, the IDE will take care of this.)
+Build through the `.slnx`, not `dotnet build CollarSystem.Plugin/CollarSystem.Plugin.csproj` directly - building
+the bare csproj lands the DLL at `bin/Debug/` instead of `bin/x64/Debug/`, which won't match a Dev Plugin
+Location already pointed at the x64 path.
 
-### Building
+## Running the relay
 
-1. Open up `SamplePlugin.sln` in your C# editor of choice (likely [Visual Studio](https://visualstudio.microsoft.com) or [JetBrains Rider](https://www.jetbrains.com/rider/)).
-2. Build the solution. By default, this will build a `Debug` build, but you can switch to `Release` in your IDE.
-3. The resulting plugin can be found at `SamplePlugin/bin/x64/Debug/SamplePlugin.dll` (or `Release` if appropriate.)
+```
+dotnet run --project CollarSystem.Relay
+```
 
-### Activating in-game
+Point `PluginConfig.RelayUrl` (in-game, via the plugin's own settings once implemented, or by editing the
+saved config) at wherever you host it, e.g. `ws://your-host:5099/collar`.
 
-1. Launch the game and use `/xlsettings` in chat or `xlsettings` in the Dalamud Console to open up the Dalamud settings.
-    * In here, go to `Experimental`, and add the full path to the `SamplePlugin.dll` to the list of Dev Plugin Locations.
-2. Next, use `/xlplugins` (chat) or `xlplugins` (console) to open up the Plugin Installer.
-    * In here, go to `Dev Tools > Installed Dev Plugins`, and the `SamplePlugin` should be visible. Enable it.
-3. You should now be able to use `/pmycommand` (chat) or `pmycommand` (console)!
+## Activating in-game
 
-Note that you only need to add it to the Dev Plugin Locations once (Step 1); it is preserved afterwards. You can disable, enable, or load your plugin on startup through the Plugin Installer.
+1. `/xlsettings` (chat) or `xlsettings` (console) -> `Experimental` -> add the full path to
+   `CollarSystem.Plugin.dll` to Dev Plugin Locations.
+2. `/xlplugins` (chat) or `xlplugins` (console) -> `Dev Tools > Installed Dev Plugins` -> enable
+   `Collar System`.
+3. `/collar` opens the Owner or Sub window depending on the configured role; `/collarpanic` always works.
 
-### Reconfiguring for your own uses
-
-Replace all references to `SamplePlugin` in all the files and filenames with your desired name, then start building the plugin of your dreams. You'll figure it out 😁
-
-Dalamud will load the JSON file (by default, `SamplePlugin/SamplePlugin.json`) next to your DLL and use it for metadata, including the description for your plugin in the Plugin Installer. Make sure to update this with information relevant to _your_ plugin!
-
-All participation in this repository is governed by our [Code of Conduct](https://dalamud.dev/code-of-conduct). If you used AI tooling at any point, review the [AI Usage Policy](https://dalamud.dev/plugin-publishing/ai-policy) and disclose your level of AI use. Entirely AI-generated submissions will be rejected, and undisclosed AI use may result in a ban.
+All participation in this repository is governed by the [Dalamud Code of Conduct](https://dalamud.dev/code-of-conduct).
+If you used AI tooling at any point, review the [AI Usage Policy](https://dalamud.dev/plugin-publishing/ai-policy)
+and disclose your level of AI use.
