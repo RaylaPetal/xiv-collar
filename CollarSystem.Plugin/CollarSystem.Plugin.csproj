@@ -2,6 +2,12 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <Platforms>x64</Platforms>
+    <!-- Unconditional, not Condition="'$(Platform)'==''": Microsoft.Common.props (imported before this
+         PropertyGroup even runs) already defaults Platform to "AnyCPU", so a conditional-on-empty check
+         never fires. This forces x64 output (bin/x64/...) regardless of how the build is invoked - bare
+         `dotnet build` on this csproj, an IDE's default build task, or the .slnx - instead of depending
+         on everyone remembering to build through the solution file. -->
+    <Platform>x64</Platform>
     <Version>0.0.0.1</Version>
     <!-- Manifest fields (see https://github.com/goatcorp/DalamudPackager/blob/827d88dc/DalamudPackager/DalamudPackager.cs#L420) -->
     <Author>Rayla Petal</Author>

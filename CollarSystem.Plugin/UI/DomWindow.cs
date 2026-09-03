@@ -1,19 +1,23 @@
 using System;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
+using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using Glamourer.Api.Enums;
 
 namespace CollarSystem.Plugin.UI;
 
-/// Owner's command panel: pairing, and one section per control category. Every send action here is
-/// purely "ask the Sub's client to do something" - see design.md's Context. Nothing here ever touches
-/// game state directly; CommandDispatcher on the Sub's side is the only place IPC calls happen.
+/// Owner's command panel: a status card, a nav bar (Home/Title/Wardrobe/Gesture/Follow), and content per
+/// selected module - design.md's tile-grid navigation decision, refined to a persistent icon nav bar so
+/// switching modules doesn't cost a "back" click. Every send action here is purely "ask the Sub's client
+/// to do something" - see design.md's Context. Nothing here ever touches game state directly;
+/// CommandDispatcher on the Sub's side is the only place IPC calls happen.
 public class DomWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
 
-    private string ownerName = "Owner";
+    private string activeModule = "home";
     private string pairingCodeInput = "";
 
     private string titleText = "";
@@ -25,66 +29,115 @@ public class DomWindow : Window, IDisposable
     private string outfitKey = "12345";
     private bool outfitLocked = true;
 
+    private static readonly (string Id, FontAwesomeIcon Icon, string Tooltip)[] NavItems =
+    [
+        ("home", FontAwesomeIcon.Home, "Home"),
+        ("title", FontAwesomeIcon.Heading, "Title"),
+        ("wardrobe", FontAwesomeIcon.Tshirt, "Wardrobe"),
+        ("gesture", FontAwesomeIcon.TheaterMasks, "Gesture"),
+        ("follow", FontAwesomeIcon.Link, "Follow / Leash"),
+    ];
+
     public DomWindow(Plugin plugin) : base("Collar - Owner###CollarDomWindow")
     {
-        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(420, 360), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
+        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(460, 440), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
         this.plugin = plugin;
+
+        TitleBarButtons.Add(new TitleBarButton
+        {
+            Icon = FontAwesomeIcon.Cog,
+            Click = _ => plugin.ToggleSettingsUi(),
+            ShowTooltip = () => ImGui.SetTooltip("Settings"),
+        });
     }
 
     public void Dispose() { }
 
     public override void Draw()
     {
-        if (ImGui.Button("Settings (role, relay URL)"))
-            plugin.ToggleSettingsUi();
-        ImGui.Separator();
-
-        DrawPairingSection();
+        DrawStatusBar();
+        ImGui.Spacing();
 
         if (!plugin.Configuration.Pairing.IsPaired)
         {
-            ImGui.TextDisabled("Pair with a Sub to send commands.");
+            DrawPairingCard();
             return;
         }
 
+        if (NavBar.Draw(activeModule, NavItems) is { } clicked)
+            activeModule = clicked;
+
         ImGui.Spacing();
-        DrawTitleSection();
-        ImGui.Spacing();
-        DrawOutfitSection();
-        ImGui.Spacing();
-        DrawGestureSection();
-        ImGui.Spacing();
-        DrawFollowSection();
+
+        switch (activeModule)
+        {
+            case "title":
+                using (var card = Card.Begin("moduleCard"))
+                    DrawTitleModule();
+                break;
+            case "wardrobe":
+                using (var card = Card.Begin("moduleCard"))
+                    DrawWardrobeModule();
+                break;
+            case "gesture":
+                using (var card = Card.Begin("moduleCard"))
+                    DrawGestureModule();
+                break;
+            case "follow":
+                using (var card = Card.Begin("moduleCard"))
+                    DrawFollowModule();
+                break;
+            default:
+                DrawPairingCard();
+                break;
+        }
     }
 
-    private void DrawPairingSection()
+    private void DrawStatusBar()
     {
-        using var _ = Dalamud.Interface.Utility.Raii.ImRaii.Child("pairing", new Vector2(0, 90), true);
+        using var card = Card.Begin("statusBar", new Vector2(0, 36), noScroll: true);
+        ConnectionStatusView.Draw(plugin.Relay.ConnectionState);
+        ImGui.SameLine();
+        ImGui.TextColored(Theme.TextMuted, "|");
+        ImGui.SameLine();
+        ImGui.TextUnformatted("Role: Owner");
+
+        ImGui.SameLine();
+        ImGui.TextColored(Theme.TextMuted, "|");
+        ImGui.SameLine();
+        var pairing = plugin.Configuration.Pairing;
+        if (pairing.IsPaired)
+            ImGui.TextColored(Theme.Success, $"Owns {pairing.PeerName}");
+        else
+            ImGui.TextColored(Theme.TextMuted, "None owned");
+    }
+
+    private void DrawPairingCard()
+    {
+        using var card = Card.Begin("pairingCard", new Vector2(0, 90));
         ImGui.TextUnformatted("Pairing");
         ImGui.Separator();
 
         if (plugin.Configuration.Pairing.IsPaired)
         {
-            ImGui.TextColored(new Vector4(0.4f, 1f, 0.4f, 1f), $"Paired with {plugin.Configuration.Pairing.PeerName}");
             if (ImGui.Button("Unpair"))
                 plugin.PanicHandler.Panic(); // full local reset is also the correct behaviour for a deliberate unpair
             return;
         }
 
-        ImGui.InputText("Your name", ref ownerName, 64);
         ImGui.InputText("Sub's pairing code", ref pairingCodeInput, 32);
         if (ImGui.Button("Request pairing") && pairingCodeInput.Length > 0)
         {
             var code = pairingCodeInput;
-            var name = ownerName;
-            Plugin.FireAndForget(plugin.PairingCommand.RequestPairingAsync(code, name));
+            Plugin.FireAndForget(plugin.PairingCommand.RequestPairingAsync(code));
         }
     }
 
-    private void DrawTitleSection()
+    private void DrawTitleModule()
     {
-        if (!ImGui.CollapsingHeader("Title"))
-            return;
+        IconGlyph.Text(FontAwesomeIcon.Heading, "Title");
+        ImGui.Separator();
+        ImGui.Spacing();
 
         ImGui.InputText("Title text", ref titleText, 64);
         ImGui.Checkbox("Prefix (not suffix)", ref titleIsPrefix);
@@ -97,30 +150,62 @@ public class DomWindow : Window, IDisposable
             Plugin.FireAndForget(plugin.TitleCommand.SendClearAsync());
     }
 
-    private void DrawOutfitSection()
+    private void DrawWardrobeModule()
     {
-        if (!ImGui.CollapsingHeader("Outfit"))
-            return;
+        IconGlyph.Text(FontAwesomeIcon.Tshirt, "Wardrobe");
+        ImGui.Separator();
+        ImGui.Spacing();
 
-        ImGui.Combo("Slot", ref outfitSlot, EquipSlotNames, EquipSlotNames.Length);
-        ImGui.InputText("Item ID", ref outfitItemId, 20);
-        ImGui.InputText("Lock key", ref outfitKey, 20);
-        ImGui.Checkbox("Lock", ref outfitLocked);
-
-        if (ImGui.Button("Send outfit") && ulong.TryParse(outfitItemId, out var itemId) && uint.TryParse(outfitKey, out var key))
+        var designs = plugin.Configuration.WardrobeMapping.CachedPeerDesigns;
+        if (designs.Count == 0)
         {
-            Plugin.FireAndForget(plugin.OutfitCommand.SendSetItemAsync(EquipSlotValues[outfitSlot], itemId, [0, 0], key, outfitLocked));
+            ImGui.TextDisabled("No wardrobe shared yet - ask the Sub to add designs to their allowlist in Settings and rescan.");
+        }
+        else
+        {
+            ImGui.TextUnformatted("Shared designs");
+            using (var _ = ImRaii.Child("designList", new Vector2(0, 120), true))
+            {
+                foreach (var design in designs)
+                {
+                    ImGui.PushID(design.DesignId.ToString());
+                    ImGui.TextUnformatted(design.Name);
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Apply"))
+                    {
+                        uint.TryParse(outfitKey, out var key); // key stays 0 (unlocked-default) if parsing fails
+                        Plugin.FireAndForget(plugin.OutfitCommand.SendApplyDesignAsync(design.DesignId, key, outfitLocked));
+                    }
+                    ImGui.PopID();
+                }
+            }
         }
 
-        ImGui.SameLine();
+        ImGui.Spacing();
+        ImGui.InputText("Lock key", ref outfitKey, 20);
+        ImGui.Checkbox("Lock", ref outfitLocked);
         if (ImGui.Button("Unlock") && uint.TryParse(outfitKey, out var unlockKey))
             Plugin.FireAndForget(plugin.OutfitCommand.SendUnlockAsync(unlockKey));
+
+        ImGui.Spacing();
+        if (ImGui.CollapsingHeader("Advanced (manual slot / raw state)"))
+            DrawAdvancedOutfitControls();
     }
 
-    private void DrawGestureSection()
+    private void DrawAdvancedOutfitControls()
     {
-        if (!ImGui.CollapsingHeader("Gesture"))
-            return;
+        ImGui.Combo("Slot", ref outfitSlot, EquipSlotNames, EquipSlotNames.Length);
+        ImGui.InputText("Item ID", ref outfitItemId, 20);
+
+        if (ImGui.Button("Send outfit slot") && ulong.TryParse(outfitItemId, out var itemId) && uint.TryParse(outfitKey, out var key))
+            Plugin.FireAndForget(plugin.OutfitCommand.SendSetItemAsync(EquipSlotValues[outfitSlot], itemId, [0, 0], key, outfitLocked));
+    }
+
+    private void DrawGestureModule()
+    {
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Gesture");
+        ImGui.Separator();
+        ImGui.Spacing();
 
         var catalog = plugin.Configuration.GestureMapping.CachedPeerCatalog;
         if (catalog.Count == 0)
@@ -147,10 +232,11 @@ public class DomWindow : Window, IDisposable
         }
     }
 
-    private void DrawFollowSection()
+    private void DrawFollowModule()
     {
-        if (!ImGui.CollapsingHeader("Follow / Leash"))
-            return;
+        IconGlyph.Text(FontAwesomeIcon.Link, "Follow / Leash");
+        ImGui.Separator();
+        ImGui.Spacing();
 
         ImGui.TextWrapped("Requires the Sub to have separately opted into the movement-lock permission.");
         if (ImGui.Button("Engage leash"))
@@ -158,6 +244,9 @@ public class DomWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.Button("Release leash"))
             Plugin.FireAndForget(plugin.FollowCommand.SendReleaseAsync());
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("Leash distance/duration controls: placeholder - not implemented yet.");
     }
 
     private static readonly string[] EquipSlotNames =

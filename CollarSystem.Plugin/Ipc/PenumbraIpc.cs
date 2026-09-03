@@ -6,6 +6,12 @@ using Penumbra.Api.IpcSubscribers;
 
 namespace CollarSystem.Plugin.Ipc;
 
+/// `TotalModsScanned` is every installed mod Penumbra reported, before the folder-allowlist filter -
+/// lets the UI say "found 12 mods, 3 matched your allowlist" instead of leaving an empty allowlist or a
+/// folder-name mismatch to fail silently (see collar/gesture's "unresolved, not omitted" requirement -
+/// the same principle extended to the allowlist step itself).
+public readonly record struct GestureScanResult(int TotalModsScanned, IReadOnlyList<GestureCatalogEntry> Entries);
+
 /// Thin wrapper around the Penumbra.Api calls collar/gesture needs: mod/emote catalog scanning and
 /// activating a mod for the local player so its animation takes effect before the emote fires.
 public sealed class PenumbraIpc
@@ -33,10 +39,12 @@ public sealed class PenumbraIpc
     /// and keeps only mods whose Penumbra sort-folder path falls under one of `folderAllowlist`.
     /// A mod with changed items but none recognized as an emote is returned unresolved (empty EmoteNames)
     /// rather than omitted, so the caller can offer manual assignment.
-    public IReadOnlyList<GestureCatalogEntry> ScanGestureMods(IReadOnlyList<string> folderAllowlist)
+    public GestureScanResult ScanGestureMods(IReadOnlyList<string> folderAllowlist)
     {
+        var modList = getModList.Invoke();
         var results = new List<GestureCatalogEntry>();
-        foreach (var (modDirectory, modName) in getModList.Invoke())
+
+        foreach (var (modDirectory, modName) in modList)
         {
             var (ec, sortPath, _, _) = getModPath.Invoke(modDirectory, modName);
             if (ec != Penumbra.Api.Enums.PenumbraApiEc.Success)
@@ -63,7 +71,7 @@ public sealed class PenumbraIpc
             });
         }
 
-        return results;
+        return new GestureScanResult(modList.Count, results);
     }
 
     private static bool IsUnderFolder(string sortPath, string folder) =>

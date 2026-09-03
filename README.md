@@ -82,9 +82,9 @@ dotnet build CollarSystem.slnx
 This builds both `CollarSystem.Plugin` (the Dalamud plugin, `CollarSystem.Plugin/bin/x64/Debug/CollarSystem.Plugin.dll`)
 and `CollarSystem.Relay` (a standalone ASP.NET Core app).
 
-Build through the `.slnx`, not `dotnet build CollarSystem.Plugin/CollarSystem.Plugin.csproj` directly - building
-the bare csproj lands the DLL at `bin/Debug/` instead of `bin/x64/Debug/`, which won't match a Dev Plugin
-Location already pointed at the x64 path.
+The plugin always builds to `bin/x64/Debug/` regardless of how you invoke it - the csproj forces
+`Platform=x64`, so a bare `dotnet build CollarSystem.Plugin/CollarSystem.Plugin.csproj`, an IDE's default
+build task, or building via the `.slnx` all land in the same place.
 
 ## Running the relay
 
@@ -92,8 +92,8 @@ Location already pointed at the x64 path.
 dotnet run --project CollarSystem.Relay
 ```
 
-Point `PluginConfig.RelayUrl` (in-game, via the plugin's own settings once implemented, or by editing the
-saved config) at wherever you host it, e.g. `ws://your-host:5099/collar`.
+Point the Relay URL at wherever you host it, e.g. `ws://your-host:5099/collar` (see "Activating in-game"
+below for where to set it).
 
 ## Activating in-game
 
@@ -101,7 +101,13 @@ saved config) at wherever you host it, e.g. `ws://your-host:5099/collar`.
    `CollarSystem.Plugin.dll` to Dev Plugin Locations.
 2. `/xlplugins` (chat) or `xlplugins` (console) -> `Dev Tools > Installed Dev Plugins` -> enable
    `Collar System`.
-3. `/collar` opens the Owner or Sub window depending on the configured role; `/collarpanic` always works.
+3. Open **Settings** - the gear icon in either window's title bar, or `/collarsettings` - and set your
+   **Role** (Owner/Sub) and **Relay URL**. If you're the Sub, this is also where you configure the gesture
+   mod folder allowlist and check the ToS acknowledgement (required before the Gesture/Follow permission
+   toggles can be enabled) - all independent of whether a pairing exists yet.
+4. `/collar` opens the Owner or Sub window depending on the configured role; `/collarpanic` always works.
+   A connection-status indicator (connected / reconnecting / disconnected) is always visible at the top of
+   both windows, and the plugin auto-reconnects to the relay if the connection drops.
 
 All participation in this repository is governed by the [Dalamud Code of Conduct](https://dalamud.dev/code-of-conduct).
 If you used AI tooling at any point, review the [AI Usage Policy](https://dalamud.dev/plugin-publishing/ai-policy)

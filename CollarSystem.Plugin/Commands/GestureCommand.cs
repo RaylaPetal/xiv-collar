@@ -42,6 +42,10 @@ public sealed class GestureCommand
 
     public List<QueuedGesture> PendingPrompts { get; } = [];
 
+    /// Sub-side: how many mods the last scan found in total, before the allowlist filter - so the UI can
+    /// say "found N, M matched" instead of an unexplained empty list. Null until the first scan runs.
+    public int? LastScanTotalMods { get; private set; }
+
     public event System.Action? CatalogUpdated;
     public event System.Action<QueuedGesture>? PromptQueued;
 
@@ -56,14 +60,15 @@ public sealed class GestureCommand
     /// "gesture" permission enabled, push the refreshed catalog to the Owner.
     public Task RescanAndPushAsync()
     {
-        var entries = penumbra.ScanGestureMods(config.GestureFolderAllowlist);
-        config.GestureMapping.LocalCatalog = entries.ToDictionary(e => e.ModDirectory);
+        var scan = penumbra.ScanGestureMods(config.GestureFolderAllowlist);
+        LastScanTotalMods = scan.TotalModsScanned;
+        config.GestureMapping.LocalCatalog = scan.Entries.ToDictionary(e => e.ModDirectory);
         config.Save();
 
         if (!config.Pairing.IsPaired || !config.Permissions.Gesture)
             return Task.CompletedTask;
 
-        return SendAsync(new GesturePayload { Kind = GestureMessageKind.CatalogPush, Catalog = [.. entries] });
+        return SendAsync(new GesturePayload { Kind = GestureMessageKind.CatalogPush, Catalog = [.. scan.Entries] });
     }
 
     /// Owner-side: manually assign an emote to a mod GetChangedItems could not resolve, before prompting it.

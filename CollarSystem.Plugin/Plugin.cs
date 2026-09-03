@@ -9,6 +9,7 @@ using CollarSystem.Plugin.UI;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Game.Command;
 using Dalamud.IoC;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -20,10 +21,12 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
+    [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
 
     private const string CommandName = "/collar";
     private const string PanicCommandName = "/collarpanic";
@@ -83,6 +86,14 @@ public sealed class Plugin : IDalamudPlugin
         PairingCommand.PairingConfirmed += () => IncomingPairingRequestFrom = null;
         PairingCommand.PairingEnded += () => IncomingPairingRequestFrom = null;
 
+        // collar/relay: command outcomes and connection state must be visible in the plugin's own UI,
+        // not only the Dalamud log (design.md's notification severity mapping). Additive - the Log.*
+        // calls already scattered through the command handlers stay as the detailed diagnostic trail.
+        Relay.AckReceived += OnAckReceived;
+        Relay.DeliveryFailed += OnDeliveryFailed;
+        Relay.ConnectionLost += OnConnectionLost;
+        Relay.Reconnected += OnReconnected;
+
         DomWindow = new DomWindow(this);
         SubWindow = new SubWindow(this);
         SettingsWindow = new SettingsWindow(this);
@@ -115,6 +126,11 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         Framework.Update -= OnFrameworkUpdate;
+
+        Relay.AckReceived -= OnAckReceived;
+        Relay.DeliveryFailed -= OnDeliveryFailed;
+        Relay.ConnectionLost -= OnConnectionLost;
+        Relay.Reconnected -= OnReconnected;
 
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= SettingsWindow.Toggle;
@@ -164,6 +180,36 @@ public sealed class Plugin : IDalamudPlugin
             PanicHandler.Panic();
         panicHotkeyWasPressed = isPressed;
     }
+
+    private void OnAckReceived(AckEnvelope ack)
+    {
+        switch (ack.Status)
+        {
+            case AckStatus.Rejected:
+                Notify("A command was rejected - the Sub has not enabled that permission.", NotificationType.Warning);
+                break;
+            case AckStatus.Failed:
+                Notify($"A command failed to apply.{(ack.Detail is { } detail ? $" {detail}" : "")}", NotificationType.Warning);
+                break;
+        }
+    }
+
+    private void OnDeliveryFailed(DeliveryFailedEnvelope failure) =>
+        Notify("Command could not be delivered - the paired client is not connected.", NotificationType.Warning);
+
+    private void OnConnectionLost(Exception ex) =>
+        Notify("Relay connection lost. Reconnecting...", NotificationType.Error);
+
+    private void OnReconnected() =>
+        Notify("Relay connection restored.", NotificationType.Success);
+
+    private static void Notify(string content, NotificationType type) =>
+        NotificationManager.AddNotification(new Notification
+        {
+            Content = content,
+            Title = "Collar System",
+            Type = type,
+        });
 
     internal static void FireAndForget(Task task) =>
         _ = task.ContinueWith(t =>

@@ -43,6 +43,7 @@ public class PluginConfig : IPluginConfiguration
     public PairingState Pairing { get; set; } = new();
     public PermissionSet Permissions { get; set; } = new();
     public GestureMapping GestureMapping { get; set; } = new();
+    public WardrobeMapping WardrobeMapping { get; set; } = new();
 
     /// The always-available local panic hotkey (collar/pairing). NO_KEY means "not bound" - the
     /// /collarpanic command always works regardless of this setting.
@@ -51,6 +52,10 @@ public class PluginConfig : IPluginConfiguration
     /// Sub-side: mod folders (Penumbra "Approved for <role>"-style paths) that gesture scanning is scoped to.
     /// Empty means "no folders selected" - gesture scanning finds nothing until the Sub opts folders in.
     public List<string> GestureFolderAllowlist { get; set; } = new();
+
+    /// Sub-side: Glamourer design-browser folders that wardrobe scanning is scoped to - same allowlist
+    /// pattern as GestureFolderAllowlist, applied to `Glamourer.GetDesignListExtended`'s FullPath.
+    public List<string> WardrobeFolderAllowlist { get; set; } = new();
 
     /// Gate per collar/gesture and collar/follow's ToS-disclosure requirement: the Sub must acknowledge
     /// the automation-risk caveat before either permission can be enabled.

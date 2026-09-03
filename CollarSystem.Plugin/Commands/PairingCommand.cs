@@ -60,25 +60,29 @@ public sealed class PairingCommand
     }
 
     /// Owner-side: connect using a code the Sub shared, then ask to pair. Nothing is applied on the Sub's
-    /// end until the Sub's own client explicitly accepts.
-    public async Task RequestPairingAsync(string pairingCode, string ownerName)
+    /// end until the Sub's own client explicitly accepts. Identity is always the requester's own logged-in
+    /// character name (collar/pairing's "Peer identity comes from the character name" requirement) -
+    /// there is no free-text alternative.
+    public async Task RequestPairingAsync(string pairingCode)
     {
         config.Pairing = new PairingState { PairingId = pairingCode, Confirmed = false };
         config.Save();
 
         await relay.ConnectAsync(BuildRelayUri(config.RelayUrl, pairingCode, "owner")).ConfigureAwait(false);
-        await SendAsync(new PairingPayload { Kind = PairingKind.Request, PeerName = ownerName }).ConfigureAwait(false);
+        await SendAsync(new PairingPayload { Kind = PairingKind.Request, PeerName = LocalCharacterName() }).ConfigureAwait(false);
     }
 
     /// Sub-side: the only path that can ever set Confirmed = true. Must be wired to a direct UI action.
-    public Task ExplicitAcceptAsync(string peerName, string subName)
+    public Task ExplicitAcceptAsync(string peerName)
     {
         config.Pairing.Confirmed = true;
         config.Pairing.PeerName = peerName;
         config.Save();
         PairingConfirmed?.Invoke();
-        return SendAsync(new PairingPayload { Kind = PairingKind.Accept, PeerName = subName });
+        return SendAsync(new PairingPayload { Kind = PairingKind.Accept, PeerName = LocalCharacterName() });
     }
+
+    private static string LocalCharacterName() => Plugin.PlayerState.IsLoaded ? Plugin.PlayerState.CharacterName : "Unknown";
 
     public Task DeclineAsync()
     {
