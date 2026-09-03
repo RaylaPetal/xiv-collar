@@ -6,9 +6,9 @@ using Dalamud.Interface.Utility.Raii;
 namespace CollarSystem.Plugin.UI;
 
 /// This build's default UI font does not have FontAwesome codepoints merged in - concatenating an icon
-/// glyph directly into a widget's label string renders garbage (confirmed live: the panic button's
-/// intended exclamation-triangle showed as a bare "="). Every icon+text combination in this plugin goes
-/// through here instead, which explicitly pushes `UiBuilder.FontIcon` for the glyph only.
+/// glyph directly into a widget's label string renders garbage (confirmed live: an exclamation-triangle
+/// icon showed as a bare "="). Every icon+text combination in this plugin goes through here instead, which
+/// explicitly pushes `UiBuilder.FontIcon` for the glyph only.
 public static class IconGlyph
 {
     /// Icon-only button (nav bar) - the whole label is the glyph, so one font push covers it.
@@ -27,68 +27,39 @@ public static class IconGlyph
         ImGui.TextUnformatted(label);
     }
 
-    /// Icon above label, both centered inside a clickable tile. ImGui can't mix fonts within one
-    /// widget's text, so this draws an invisible hit-region button and overlays icon+text manually.
-    public static bool TileButton(FontAwesomeIcon icon, string label, Vector2 size)
+    /// A "(?)" marker placed right after a label/control, showing `tooltip` on hover. The plugin's one
+    /// consistent way to explain a control in place, since most windows are too tight on vertical space
+    /// for a permanent sentence next to every field.
+    public static void HelpMarker(string tooltip)
     {
-        var clicked = ImGui.Button($"##tile_{label}", size);
-        var min = ImGui.GetItemRectMin();
-        var max = ImGui.GetItemRectMax();
-        var center = (min + max) / 2;
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (!ImGui.IsItemHovered())
+            return;
 
-        string iconStr;
-        Vector2 iconSize;
-        using (ImRaii.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon))
-        {
-            iconStr = icon.ToIconString();
-            iconSize = ImGui.CalcTextSize(iconStr);
-        }
-
-        var labelSize = ImGui.CalcTextSize(label);
-        var totalHeight = iconSize.Y + 4 + labelSize.Y;
-        var iconPos = new Vector2(center.X - iconSize.X / 2, center.Y - totalHeight / 2);
-        var labelPos = new Vector2(center.X - labelSize.X / 2, iconPos.Y + iconSize.Y + 4);
-
-        var drawList = ImGui.GetWindowDrawList();
-        var textColor = ImGui.GetColorU32(ImGuiCol.Text);
-        using (ImRaii.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon))
-            drawList.AddText(iconPos, textColor, iconStr);
-        drawList.AddText(labelPos, textColor, label);
-
-        return clicked;
+        ImGui.BeginTooltip();
+        ImGui.PushTextWrapPos(ImGui.GetFontSize() * 24f);
+        ImGui.TextUnformatted(tooltip);
+        ImGui.PopTextWrapPos();
+        ImGui.EndTooltip();
     }
 
-    /// Icon to the left of the label, both centered as one unit inside a wide button - same overlay
-    /// technique as TileButton, laid out horizontally instead of stacked. Used for the panic button.
-    public static bool SideIconButton(FontAwesomeIcon icon, string label, Vector2 size)
+    /// `TextColored` doesn't wrap on its own (no wrap position is set by default) - long status lines were
+    /// getting clipped by their card's fixed height instead of flowing to a second line. This wraps at the
+    /// current window's content width, same as `TextWrapped` does for uncolored text.
+    public static void WrappedColored(Vector4 color, string text)
     {
-        var clicked = ImGui.Button($"##side_{label}", size);
-        var min = ImGui.GetItemRectMin();
-        var max = ImGui.GetItemRectMax();
-        var center = (min + max) / 2;
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextColored(color, text);
+        ImGui.PopTextWrapPos();
+    }
 
-        string iconStr;
-        Vector2 iconSize;
-        using (ImRaii.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon))
-        {
-            iconStr = icon.ToIconString();
-            iconSize = ImGui.CalcTextSize(iconStr);
-        }
-
-        var labelSize = ImGui.CalcTextSize(label);
-        const float spacing = 10f;
-        var totalWidth = iconSize.X + spacing + labelSize.X;
-        var startX = center.X - totalWidth / 2;
-
-        var iconPos = new Vector2(startX, center.Y - iconSize.Y / 2);
-        var labelPos = new Vector2(startX + iconSize.X + spacing, center.Y - labelSize.Y / 2);
-
-        var drawList = ImGui.GetWindowDrawList();
-        var textColor = ImGui.GetColorU32(ImGuiCol.Text);
-        using (ImRaii.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon))
-            drawList.AddText(iconPos, textColor, iconStr);
-        drawList.AddText(labelPos, textColor, label);
-
-        return clicked;
+    /// Same problem as WrappedColored, for `TextDisabled` - it doesn't wrap on its own either, and several
+    /// of the plugin's longer hint/description lines use it.
+    public static void WrappedDisabled(string text)
+    {
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextDisabled(text);
+        ImGui.PopTextWrapPos();
     }
 }

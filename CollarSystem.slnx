@@ -2,5 +2,4 @@
   <Project Path="CollarSystem.Plugin/CollarSystem.Plugin.csproj">
     <Platform Project="x64" />
   </Project>
-  <Project Path="CollarSystem.Relay/CollarSystem.Relay.csproj" />
 </Solution>

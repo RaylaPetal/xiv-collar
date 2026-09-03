@@ -1,100 +1,98 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
-using System.Threading.Tasks;
 using CollarSystem.Plugin.Config;
 using CollarSystem.Plugin.Ipc;
-using CollarSystem.Plugin.Relay;
 using CollarSystem.Plugin.Safety;
 using Glamourer.Api.Enums;
 
 namespace CollarSystem.Plugin.Commands;
 
-public enum OutfitMessageKind
-{
-    SetItem,
-    ApplyState,
-    ApplyDesign,
-    Unlock,
-
-    /// Sub -> Owner: the Sub's current wardrobe (Glamourer design) catalog, mirroring collar/gesture's
-    /// CatalogPush.
-    CatalogPush,
-}
-
-public sealed class OutfitPayload
-{
-    public OutfitMessageKind Kind { get; set; }
-
-    public ApiEquipSlot Slot { get; set; }
-    public ulong ItemId { get; set; }
-    public byte[] Stains { get; set; } = [];
-
-    public string? Base64State { get; set; }
-    public Guid DesignId { get; set; }
-
-    public uint Key { get; set; }
-    public bool Locked { get; set; }
-
-    public List<WardrobeDesignEntry>? Catalog { get; set; }
-}
-
-/// collar/outfit: Owner-issued outfit commands applied via Glamourer, including the lock/key model and
-/// the Wardrobe design-selection flow (Sub shares their saved designs, Owner applies one by id).
+/// collar/outfit: alias-triggered wardrobe changes applied via Glamourer, including the lock/key model,
+/// plus the Owner's "joker" override (ForceApply/ForceUnlock - see ChatCommandListener's reserved-keyword
+/// grammar). A force-applied outfit locks out the Sub's own alias-triggered Apply/Unlock until the
+/// matching ForceUnlock (or panic) releases it - the Sub set up their aliases, but a forced outfit always
+/// wins over them while it's in effect. Scanning stays local-only under the chat transport (collar/
+/// gesture's sibling "Catalog shared with paired Owner" requirement was removed for outfit too, in spirit
+/// - see design.md's "Gesture/Wardrobe catalog stays local-scan-only" decision).
 public sealed class OutfitCommand
 {
     private readonly PluginConfig config;
-    private readonly RelayClient relay;
     private readonly GlamourerIpc glamourer;
     private readonly SubRuntimeState runtimeState;
 
-    /// Sub-side: how many designs the last wardrobe scan found in total, before the allowlist filter.
+    /// How many designs the last wardrobe scan found in total, before the allowlist filter.
     public int? LastScanTotalDesigns { get; private set; }
 
-    public event Action? CatalogUpdated;
-
-    public OutfitCommand(PluginConfig config, RelayClient relay, GlamourerIpc glamourer, SubRuntimeState runtimeState)
+    public OutfitCommand(PluginConfig config, GlamourerIpc glamourer, SubRuntimeState runtimeState)
     {
         this.config = config;
-        this.relay = relay;
         this.glamourer = glamourer;
         this.runtimeState = runtimeState;
     }
 
-    public Task SendSetItemAsync(ApiEquipSlot slot, ulong itemId, byte[] stains, uint key, bool locked) => SendAsync(new OutfitPayload
+    public bool Apply(OutfitAliasDefinition alias)
     {
-        Kind = OutfitMessageKind.SetItem,
-        Slot = slot,
-        ItemId = itemId,
-        Stains = stains,
-        Key = key,
-        Locked = locked,
-    });
+        if (runtimeState.OutfitForceLocked)
+            return false;
 
-    public Task SendApplyStateAsync(string base64State, uint key, bool locked) => SendAsync(new OutfitPayload
+        var ec = glamourer.ApplyDesign(alias.DesignId, alias.Key, alias.Locked);
+        if (ec != GlamourerApiEc.Success)
+            return false;
+
+        runtimeState.OutfitLockKey = alias.Locked ? alias.Key : null;
+        return true;
+    }
+
+    /// Unlocks using whatever key this client itself last used to lock - see AliasBook.UnlockOutfitAlias.
+    public bool Unlock()
     {
-        Kind = OutfitMessageKind.ApplyState,
-        Base64State = base64State,
-        Key = key,
-        Locked = locked,
-    });
+        if (runtimeState.OutfitForceLocked)
+            return false;
 
-    /// Owner-side: apply one of the Sub's shared wardrobe designs by id - the primary Wardrobe flow.
-    public Task SendApplyDesignAsync(Guid designId, uint key, bool locked) => SendAsync(new OutfitPayload
+        var ec = glamourer.Unlock(runtimeState.OutfitLockKey ?? 0);
+        if (ec != GlamourerApiEc.Success)
+            return false;
+
+        runtimeState.OutfitLockKey = null;
+        return true;
+    }
+
+    /// The Owner's direct override: matches `designName` against the Sub's own scanned+allowlisted
+    /// catalog (case-insensitive) - the Owner never sees design IDs, only whatever name the Sub told them
+    /// out of band. Always locks, with a freshly generated key the Sub never has to see or type.
+    public bool ForceApply(string designName)
     {
-        Kind = OutfitMessageKind.ApplyDesign,
-        DesignId = designId,
-        Key = key,
-        Locked = locked,
-    });
+        var design = config.WardrobeMapping.LocalDesigns.Values
+            .FirstOrDefault(d => string.Equals(d.Name, designName, StringComparison.OrdinalIgnoreCase));
+        if (design is null)
+            return false;
 
-    public Task SendUnlockAsync(uint key) => SendAsync(new OutfitPayload { Kind = OutfitMessageKind.Unlock, Key = key });
+        var key = (uint)Random.Shared.Next(1, int.MaxValue);
+        var ec = glamourer.ApplyDesign(design.DesignId, key, locked: true);
+        if (ec != GlamourerApiEc.Success)
+            return false;
 
-    /// Sub-side: rescan the Sub's own Glamourer designs (scoped to the wardrobe folder allowlist) and,
-    /// if paired with "outfit" permission enabled, push the refreshed catalog to the Owner. Mirrors
-    /// GestureCommand.RescanAndPushAsync exactly.
-    public Task RescanAndPushDesignsAsync()
+        runtimeState.OutfitLockKey = key;
+        runtimeState.OutfitForceLocked = true;
+        return true;
+    }
+
+    /// The only thing that can release a force-applied outfit besides panic.
+    public bool ForceUnlock()
+    {
+        var ec = glamourer.Unlock(runtimeState.OutfitLockKey ?? 0);
+        if (ec != GlamourerApiEc.Success)
+            return false;
+
+        runtimeState.OutfitLockKey = null;
+        runtimeState.OutfitForceLocked = false;
+        return true;
+    }
+
+    /// Sub-side: rescan the Sub's own Glamourer designs, scoped to the wardrobe folder allowlist. Purely
+    /// local - there is no live channel to push the result anywhere; the Sub picks a design here to name
+    /// an alias after in Settings.
+    public void Rescan()
     {
         var allDesigns = glamourer.GetDesigns();
         LastScanTotalDesigns = allDesigns.Count;
@@ -104,62 +102,11 @@ public sealed class OutfitCommand
             ? []
             : allDesigns.Where(d => allowlist.Any(folder => IsUnderFolder(d.FullPath, folder))).ToList();
 
-        var entries = matched.Select(d => new WardrobeDesignEntry { DesignId = d.Id, Name = d.DisplayName }).ToList();
+        var entries = matched.Select(d => new WardrobeDesignEntry { DesignId = d.Id, Name = d.DisplayName });
         config.WardrobeMapping.LocalDesigns = entries.ToDictionary(e => e.DesignId);
         config.Save();
-
-        if (!config.Pairing.IsPaired || !config.Permissions.Outfit)
-            return Task.CompletedTask;
-
-        return SendAsync(new OutfitPayload { Kind = OutfitMessageKind.CatalogPush, Catalog = entries });
     }
 
     private static bool IsUnderFolder(string fullPath, string folder) =>
         fullPath.StartsWith(folder.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase);
-
-    public AckStatus Handle(CommandEnvelope envelope)
-    {
-        var payload = JsonSerializer.Deserialize<OutfitPayload>(envelope.Payload);
-        if (payload is null)
-            return AckStatus.Failed;
-
-        switch (payload.Kind)
-        {
-            case OutfitMessageKind.Unlock:
-                var unlockEc = glamourer.Unlock(payload.Key);
-                if (unlockEc != GlamourerApiEc.Success)
-                    return AckStatus.Rejected;
-
-                if (runtimeState.OutfitLockKey == payload.Key)
-                    runtimeState.OutfitLockKey = null;
-                return AckStatus.Applied;
-
-            case OutfitMessageKind.CatalogPush:
-                config.WardrobeMapping.CachedPeerDesigns = payload.Catalog ?? [];
-                config.Save();
-                CatalogUpdated?.Invoke();
-                return AckStatus.Applied;
-
-            default:
-                var ec = payload.Kind switch
-                {
-                    OutfitMessageKind.ApplyState => glamourer.ApplyState(payload.Base64State ?? "", payload.Key, payload.Locked),
-                    OutfitMessageKind.ApplyDesign => glamourer.ApplyDesign(payload.DesignId, payload.Key, payload.Locked),
-                    _ => glamourer.SetItem(payload.Slot, payload.ItemId, payload.Stains, payload.Key, payload.Locked),
-                };
-
-                if (ec != GlamourerApiEc.Success)
-                    return AckStatus.Rejected;
-
-                runtimeState.OutfitLockKey = payload.Locked ? payload.Key : null;
-                return AckStatus.Applied;
-        }
-    }
-
-    private Task SendAsync(OutfitPayload payload) => relay.SendCommandAsync(new CommandEnvelope
-    {
-        PairingId = config.Pairing.PairingId ?? "",
-        Category = CommandCategory.Outfit,
-        Payload = JsonSerializer.Serialize(payload),
-    });
 }

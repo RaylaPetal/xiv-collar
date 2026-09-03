@@ -15,9 +15,7 @@ public class WardrobeDesignEntry
 [Serializable]
 public class WardrobeMapping
 {
-    /// Sub-side: the Sub's own designs that fall under the configured folder allowlist.
+    /// Sub-side: the Sub's own designs that fall under the configured folder allowlist. Local-only under
+    /// the chat transport - the Sub picks one to name an outfit alias after, and tells the Owner the alias.
     public Dictionary<Guid, WardrobeDesignEntry> LocalDesigns { get; set; } = new();
-
-    /// Owner-side: the last design list a paired Sub shared, cached for offline browsing.
-    public List<WardrobeDesignEntry> CachedPeerDesigns { get; set; } = new();
 }

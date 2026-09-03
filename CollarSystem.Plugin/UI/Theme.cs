@@ -19,11 +19,6 @@ public static class Theme
     public static readonly Vector4 Warning = new(0.9f, 0.72f, 0.25f, 1f);
     public static readonly Vector4 Danger = new(0.65f, 0.42f, 0.42f, 1f);
 
-    /// The single saturated, high-alarm red. Reserved for the panic button alone (design.md's "distinct
-    /// from panic-red" decision) - nothing else in the plugin uses this exact color.
-    public static readonly Vector4 PanicRed = new(0.7f, 0.1f, 0.1f, 1f);
-    public static readonly Vector4 PanicRedHover = new(0.85f, 0.15f, 0.15f, 1f);
-
     public const float CardRounding = 8f;
     public const float TileRounding = 6f;
 }

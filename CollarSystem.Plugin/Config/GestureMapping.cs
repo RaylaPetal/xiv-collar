@@ -17,9 +17,9 @@ public class GestureCatalogEntry
 [Serializable]
 public class GestureMapping
 {
-    /// Sub-side: the catalog this Sub's own scan produced, keyed by mod directory.
+    /// Sub-side: the catalog this Sub's own scan produced, keyed by mod directory. Local-only under the
+    /// chat transport - there is no live channel to push this to an Owner, so the Sub assigns alias names
+    /// against it locally and tells the Owner what they are (collar/gesture's "Catalog shared with paired
+    /// Owner" requirement was removed for exactly this reason).
     public Dictionary<string, GestureCatalogEntry> LocalCatalog { get; set; } = new();
-
-    /// Owner-side: the last catalog a paired Sub relayed, cached for offline browsing.
-    public List<GestureCatalogEntry> CachedPeerCatalog { get; set; } = new();
 }

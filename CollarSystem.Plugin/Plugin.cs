@@ -3,13 +3,11 @@ using System.Threading.Tasks;
 using CollarSystem.Plugin.Commands;
 using CollarSystem.Plugin.Config;
 using CollarSystem.Plugin.Ipc;
-using CollarSystem.Plugin.Relay;
 using CollarSystem.Plugin.Safety;
 using CollarSystem.Plugin.UI;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Game.Command;
 using Dalamud.IoC;
-using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -25,6 +23,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
+    [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
 
@@ -35,11 +34,9 @@ public sealed class Plugin : IDalamudPlugin
     public PluginConfig Configuration { get; }
 
     public readonly WindowSystem WindowSystem = new("CollarSystem");
-    private DomWindow DomWindow { get; }
-    private SubWindow SubWindow { get; }
+    private CollarWindow CollarWindow { get; }
     private SettingsWindow SettingsWindow { get; }
 
-    public RelayClient Relay { get; }
     public SubRuntimeState RuntimeState { get; } = new();
 
     public GlamourerIpc GlamourerIpc { get; }
@@ -52,11 +49,11 @@ public sealed class Plugin : IDalamudPlugin
     public OutfitCommand OutfitCommand { get; }
     public GestureCommand GestureCommand { get; }
     public FollowCommand FollowCommand { get; }
-    private CommandDispatcher Dispatcher { get; }
+    public ChatComposer ChatComposer { get; }
+    public ChatSender ChatSender { get; }
+    public ChatCommandListener ChatCommandListener { get; }
 
     public PanicHandler PanicHandler { get; }
-
-    public string? IncomingPairingRequestFrom { get; set; }
 
     private bool panicHotkeyWasPressed;
 
@@ -66,52 +63,38 @@ public sealed class Plugin : IDalamudPlugin
 
         Configuration = PluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
 
-        Relay = new RelayClient();
-
         GlamourerIpc = new GlamourerIpc();
         HonorificIpc = new HonorificIpc();
         PenumbraIpc = new PenumbraIpc();
         MovementLockService = new MovementLockService();
 
-        PairingCommand = new PairingCommand(Configuration, Relay);
-        TitleCommand = new TitleCommand(Configuration, Relay, HonorificIpc, RuntimeState);
-        OutfitCommand = new OutfitCommand(Configuration, Relay, GlamourerIpc, RuntimeState);
-        GestureCommand = new GestureCommand(Configuration, Relay, PenumbraIpc);
-        FollowCommand = new FollowCommand(Configuration, Relay, MovementLockService, RuntimeState);
-        Dispatcher = new CommandDispatcher(Configuration, Relay, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand);
+        PairingCommand = new PairingCommand(Configuration);
+        TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
+        OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, RuntimeState);
+        GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
+        FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
+        ChatComposer = new ChatComposer(Configuration);
+        ChatSender = new ChatSender();
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand);
 
         PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, HonorificIpc, MovementLockService, RuntimeState);
 
-        PairingCommand.IncomingPairingRequest += peerName => IncomingPairingRequestFrom = peerName;
-        PairingCommand.PairingConfirmed += () => IncomingPairingRequestFrom = null;
-        PairingCommand.PairingEnded += () => IncomingPairingRequestFrom = null;
-
-        // collar/relay: command outcomes and connection state must be visible in the plugin's own UI,
-        // not only the Dalamud log (design.md's notification severity mapping). Additive - the Log.*
-        // calls already scattered through the command handlers stay as the detailed diagnostic trail.
-        Relay.AckReceived += OnAckReceived;
-        Relay.DeliveryFailed += OnDeliveryFailed;
-        Relay.ConnectionLost += OnConnectionLost;
-        Relay.Reconnected += OnReconnected;
-
-        DomWindow = new DomWindow(this);
-        SubWindow = new SubWindow(this);
+        CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
-        WindowSystem.AddWindow(DomWindow);
-        WindowSystem.AddWindow(SubWindow);
+        WindowSystem.AddWindow(CollarWindow);
         WindowSystem.AddWindow(SettingsWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Open the Collar System window for your configured role (Owner/Sub).",
+            HelpMessage = "Open the Collar System window.",
         });
         CommandManager.AddHandler(PanicCommandName, new CommandInfo(OnPanicCommand)
         {
-            HelpMessage = "Immediately unpair and revert all collar state.",
+            HelpMessage = "Immediately unpair and revert all collar state. Append your safeword if one is configured in Settings, e.g. /collarpanic red.",
         });
         CommandManager.AddHandler(SettingsCommandName, new CommandInfo(OnSettingsCommand)
         {
-            HelpMessage = "Open Collar System settings (role, relay URL).",
+            HelpMessage = "Open Collar System settings (role, pairing, aliases).",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -127,51 +110,52 @@ public sealed class Plugin : IDalamudPlugin
     {
         Framework.Update -= OnFrameworkUpdate;
 
-        Relay.AckReceived -= OnAckReceived;
-        Relay.DeliveryFailed -= OnDeliveryFailed;
-        Relay.ConnectionLost -= OnConnectionLost;
-        Relay.Reconnected -= OnReconnected;
-
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= SettingsWindow.Toggle;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
 
         WindowSystem.RemoveAllWindows();
-        DomWindow.Dispose();
-        SubWindow.Dispose();
+        CollarWindow.Dispose();
         SettingsWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(PanicCommandName);
         CommandManager.RemoveHandler(SettingsCommandName);
 
-        Dispatcher.Dispose();
+        ChatCommandListener.Dispose();
         MovementLockService.Dispose();
-        Relay.Dispose();
 
         ECommons.ECommonsMain.Dispose();
     }
 
     private void OnCommand(string command, string args) => ToggleMainUi();
 
-    private void OnPanicCommand(string command, string args) => PanicHandler.Panic();
+    /// The safeword mechanic (collar/pairing): with no PanicSafeword configured, panic still triggers
+    /// unconditionally - an unconfigured safeword must never be the reason panic stops working. With one
+    /// configured, the typed word has to match (case-insensitive) - there's no visible button anymore, see
+    /// CollarWindow's header.
+    private void OnPanicCommand(string command, string args)
+    {
+        var safeword = Configuration.PanicSafeword;
+        if (!string.IsNullOrWhiteSpace(safeword) && !string.Equals(args.Trim(), safeword.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Information("/collarpanic word didn't match the configured safeword - ignored.");
+            return;
+        }
+
+        PanicHandler.Panic();
+    }
 
     private void OnSettingsCommand(string command, string args) => SettingsWindow.Toggle();
 
     public void ToggleSettingsUi() => SettingsWindow.Toggle();
 
-    private void ToggleMainUi()
-    {
-        if (Configuration.Role == PluginRole.Owner)
-            DomWindow.Toggle();
-        else
-            SubWindow.Toggle();
-    }
+    private void ToggleMainUi() => CollarWindow.Toggle();
 
     private void OnFrameworkUpdate(IFramework framework)
     {
         // The panic hotkey is a plain edge-detected key check - deliberately simple so it keeps working
-        // even if everything else about the plugin (relay, IPC) is broken.
+        // even if everything else about the plugin (chat parsing, IPC) is broken.
         if (Configuration.PanicHotkey == VirtualKey.NO_KEY)
             return;
 
@@ -180,36 +164,6 @@ public sealed class Plugin : IDalamudPlugin
             PanicHandler.Panic();
         panicHotkeyWasPressed = isPressed;
     }
-
-    private void OnAckReceived(AckEnvelope ack)
-    {
-        switch (ack.Status)
-        {
-            case AckStatus.Rejected:
-                Notify("A command was rejected - the Sub has not enabled that permission.", NotificationType.Warning);
-                break;
-            case AckStatus.Failed:
-                Notify($"A command failed to apply.{(ack.Detail is { } detail ? $" {detail}" : "")}", NotificationType.Warning);
-                break;
-        }
-    }
-
-    private void OnDeliveryFailed(DeliveryFailedEnvelope failure) =>
-        Notify("Command could not be delivered - the paired client is not connected.", NotificationType.Warning);
-
-    private void OnConnectionLost(Exception ex) =>
-        Notify("Relay connection lost. Reconnecting...", NotificationType.Error);
-
-    private void OnReconnected() =>
-        Notify("Relay connection restored.", NotificationType.Success);
-
-    private static void Notify(string content, NotificationType type) =>
-        NotificationManager.AddNotification(new Notification
-        {
-            Content = content,
-            Title = "Collar System",
-            Type = type,
-        });
 
     internal static void FireAndForget(Task task) =>
         _ = task.ContinueWith(t =>

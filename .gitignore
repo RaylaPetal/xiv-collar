@@ -3,6 +3,6 @@ obj/
 bin/
 *.user
 
-# Claude Code tooling (skills, commands, local settings) - not part of the plugin/relay source
+# Claude Code tooling (skills, commands, local settings) - not part of the plugin source
 .claude/
 .agents/

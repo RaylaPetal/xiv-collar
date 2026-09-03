@@ -10,10 +10,19 @@ public sealed class SubRuntimeState
     public uint? OutfitLockKey { get; set; }
     public bool MovementLockActive { get; set; }
 
+    /// Set by TitleCommand.ForceApply/OutfitCommand.ForceApply (the Owner's "joker" override - see
+    /// ChatCommandListener's reserved-keyword grammar). While true, the Sub's own alias-triggered
+    /// Apply/Clear/Unlock for that category is refused - only the matching Force* release (or panic,
+    /// which always works regardless) can undo it.
+    public bool TitleForceLocked { get; set; }
+    public bool OutfitForceLocked { get; set; }
+
     public void Reset()
     {
         TitleApplied = false;
         OutfitLockKey = null;
         MovementLockActive = false;
+        TitleForceLocked = false;
+        OutfitForceLocked = false;
     }
 }

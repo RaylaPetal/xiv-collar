@@ -5,10 +5,9 @@ using CollarSystem.Plugin.Ipc;
 namespace CollarSystem.Plugin.Safety;
 
 /// The Sub's always-available panic/safeword (collar/pairing). Every step uses only local state and
-/// local IPC calls - EndPairingLocally only closes the local socket, never waits on the relay - so this
-/// completes correctly even with no network connection at all, satisfying the "relay down" scenario.
-/// Each step is isolated in its own try/catch so one failure (an IPC call throwing, say) never stops the
-/// rest of the sequence from running.
+/// local IPC calls - EndPairingLocally only flips a local config flag, nothing to wait on. Each step is
+/// isolated in its own try/catch so one failure (an IPC call throwing, say) never stops the rest of the
+/// sequence from running.
 public sealed class PanicHandler
 {
     private readonly PairingCommand pairing;
