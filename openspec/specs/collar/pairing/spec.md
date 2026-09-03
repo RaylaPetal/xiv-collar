@@ -6,20 +6,20 @@ Establishes the consent boundary the whole collar system depends on: no command 
 
 ## Requirements
 
-### Requirement: Explicit pairing handshake
-The system SHALL NOT apply any Owner-issued command to a Sub's local state until the Sub has explicitly accepted a pairing request. The system SHALL NOT auto-accept a first-time pairing under any configuration. The peer name shown during the handshake and while paired SHALL be derived from the peer's own local character name, not from free-text entry, so neither party can misrepresent who they are during pairing.
+### Requirement: Configured-identity pairing consent
+The system SHALL NOT apply any Owner-issued command to a Sub's local state until the Sub has explicitly configured that Owner's exact character name and world, and enabled an explicit "Paired" setting. The system SHALL NOT auto-enable this setting under any configuration. Peer identity SHALL be established by matching the configured character name and world against the verified sender of an incoming chat message - a value FFXIV's own server guarantees cannot be forged - rather than by a shared code or free-text entry.
 
-#### Scenario: Sub accepts a pairing code
-- **WHEN** an Owner shares a one-time pairing code and the Sub enters and confirms it in their own client
-- **THEN** the two clients become paired and the Owner may begin sending commands
+#### Scenario: Sub configures and enables pairing
+- **WHEN** a Sub enters an Owner's exact character name and world in Settings and explicitly enables the "Paired" setting
+- **THEN** trigger messages sent by that character begin applying to the Sub's local state
 
-#### Scenario: Unpaired Owner cannot command
-- **WHEN** a command arrives from a client that is not currently paired with the receiving Sub
-- **THEN** the Sub's plugin discards the command and applies no state change
+#### Scenario: Unconfigured or unmatched sender cannot command
+- **WHEN** a trigger message arrives from a character that does not match the Sub's configured Owner, or while the "Paired" setting is disabled
+- **THEN** the Sub's plugin discards the message and applies no state change
 
 #### Scenario: Peer identity comes from the character name
-- **WHEN** an Owner requests pairing, or a Sub accepts a pending pairing request
-- **THEN** the name shown to the other party is the requester's own currently logged-in character name, with no free-text field offered as an alternative
+- **WHEN** a Sub enables pairing, or an Owner composes a trigger message
+- **THEN** the identity used is the actual, server-verified character name of whoever configured or sent it, with no free-text field offered as an alternative
 
 ### Requirement: Scoped, revocable permissions
 The system SHALL let a paired Sub independently enable or disable each command category (title, outfit, gesture, follow) at any time. The system SHALL reject a command in a category the Sub has not enabled, even if the pairing itself remains active.

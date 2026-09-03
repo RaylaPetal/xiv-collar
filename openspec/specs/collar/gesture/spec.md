@@ -24,13 +24,6 @@ The system SHALL let a Sub restrict gesture catalog scanning to an allowlisted s
 - **WHEN** a Sub configures an allowlist of mod folders for gesture scanning
 - **THEN** the generated catalog includes only mods located under those folders
 
-### Requirement: Catalog shared with paired Owner
-The system SHALL relay the Sub's current gesture catalog (mod identifier, folder path, and resolved emote name(s)) to a paired Owner with the "gesture" permission enabled, and cache it locally on the Owner's client for offline browsing.
-
-#### Scenario: Owner receives updated catalog
-- **WHEN** a Sub's gesture catalog changes and the Sub is paired with an Owner who has "gesture" permission enabled
-- **THEN** the updated catalog is relayed to the Owner's client and cached there
-
 ### Requirement: Gesture trigger requires Sub confirmation
 The system SHALL NOT auto-fire a gesture on the Sub's client without an explicit Sub-side confirmation action for that trigger. An Owner-sent gesture request SHALL be visibly queued on the Sub's client until the Sub confirms it.
 
