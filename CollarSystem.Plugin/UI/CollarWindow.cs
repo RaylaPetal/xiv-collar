@@ -21,6 +21,9 @@ namespace CollarSystem.Plugin.UI;
 /// clicked, so it can't be hit by accident or spotted by someone watching over a shoulder.
 public class CollarWindow : Window, IDisposable
 {
+    /// How long a local Test control's result stays visible before auto-clearing (collar/ui-organization).
+    private const long TestResultDisplayMs = 4_000;
+
     private readonly Plugin plugin;
     private string activeModule = "title";
 
@@ -45,8 +48,9 @@ public class CollarWindow : Window, IDisposable
     private bool revealSafeword;
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - never saved,
-    /// keyed by a stable per-row id so each row's last result shows independently of the others.
-    private readonly Dictionary<string, LocalTestResult> testResults = new();
+    /// keyed by a stable per-row id so each row's last result shows independently of the others. Each
+    /// entry auto-clears a short time after being shown (see DrawTestButton).
+    private readonly Dictionary<string, (LocalTestResult Result, long ShownAtTicks)> testResults = new();
 
     private static readonly (string Id, FontAwesomeIcon Icon, string Tooltip)[] NavItems =
     [
@@ -239,7 +243,7 @@ public class CollarWindow : Window, IDisposable
 
         DrawClearAliasField("Clear-title alias", () => config.Aliases.ClearTitleAlias, v => config.Aliases.ClearTitleAlias = v, config);
         IconGlyph.HelpMarker("The alias that removes your current Honorific title when triggered - separate from the named aliases below, which each apply a specific title.");
-        DrawTestButton("titleClear", plugin.LocalTestCoordinator.TestTitleClear);
+        DrawTestButton("titleClear", "Test Clear", plugin.LocalTestCoordinator.TestTitleClear);
         IconGlyph.HelpMarker("Locally clears your title right now, the same way an accepted Owner's clear-title alias would - no pairing or chat involved.");
 
         ImGui.Spacing();
@@ -258,7 +262,7 @@ public class CollarWindow : Window, IDisposable
                 break;
             }
             ImGui.SameLine();
-            DrawTestButton($"title_{t.Alias}", () => plugin.LocalTestCoordinator.TestTitleApply(t));
+            DrawTestButton($"title_{t.Alias}", "Test Apply", () => plugin.LocalTestCoordinator.TestTitleApply(t));
             ImGui.PopID();
         }
 
@@ -290,7 +294,7 @@ public class CollarWindow : Window, IDisposable
 
         DrawClearAliasField("Unlock alias", () => config.Aliases.UnlockOutfitAlias, v => config.Aliases.UnlockOutfitAlias = v, config);
         IconGlyph.HelpMarker("The alias that unlocks your current Glamourer design, using whichever lock key that design was last applied with.");
-        DrawTestButton("outfitUnlock", plugin.LocalTestCoordinator.TestOutfitUnlock);
+        DrawTestButton("outfitUnlock", "Test Unlock", plugin.LocalTestCoordinator.TestOutfitUnlock);
         IconGlyph.HelpMarker("Locally unlocks your outfit right now, the same way an accepted Owner's unlock alias would - no pairing or chat involved.");
 
         ImGui.Spacing();
@@ -309,7 +313,7 @@ public class CollarWindow : Window, IDisposable
                 break;
             }
             ImGui.SameLine();
-            DrawTestButton($"outfit_{o.Alias}", () => plugin.LocalTestCoordinator.TestOutfitApply(o));
+            DrawTestButton($"outfit_{o.Alias}", "Test Apply", () => plugin.LocalTestCoordinator.TestOutfitApply(o));
             ImGui.PopID();
         }
 
@@ -328,7 +332,7 @@ public class CollarWindow : Window, IDisposable
         ImGui.Combo("Design##newOutfit", ref newOutfitDesignIndex, designNames, designNames.Length);
         IconGlyph.HelpMarker("Which scanned Glamourer design this alias applies - any design inside your allowlisted folders (Settings) is fair game, no separate approval step. Rescan in Settings if the one you want isn't listed.");
         ImGui.Checkbox("Lock##newOutfit", ref newOutfitLocked);
-        IconGlyph.HelpMarker("Lock the design after applying so it can't be changed by other tools. The lock key itself is generated automatically - nothing to pick here.");
+        IconGlyph.HelpMarker("Lock the design's own equipment slots after applying, so only this plugin's release action can change them - every other slot stays freely editable.");
         DrawReservedWordWarning(newOutfitAlias);
         if (ImGui.Button("Add outfit alias") && newOutfitAlias.Length > 0 && !IsReserved(newOutfitAlias))
         {
@@ -338,7 +342,6 @@ public class CollarWindow : Window, IDisposable
                 Alias = newOutfitAlias,
                 DesignId = design.DesignId,
                 DesignName = design.Name,
-                Key = (uint)Random.Shared.Next(1, int.MaxValue),
                 Locked = newOutfitLocked,
             });
             config.Save();
@@ -376,7 +379,7 @@ public class CollarWindow : Window, IDisposable
 
                 ImGui.TableSetColumnIndex(2);
                 using (ImRaii.Disabled(invalid))
-                    DrawTestButton($"gesture_{g.Alias}", () => plugin.LocalTestCoordinator.TestGesturePlay(g));
+                    DrawTestButton($"gesture_{g.Alias}", "Test Play", () => plugin.LocalTestCoordinator.TestGesturePlay(g));
                 ImGui.PopID();
             }
             ImGui.EndTable();
@@ -426,6 +429,15 @@ public class CollarWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextDisabled($"Selected: {picked.Label}");
         }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        using (ImRaii.Disabled(!plugin.GestureCommand.HasActiveTemporary))
+        {
+            if (ImGui.Button("Reset active gesture"))
+                plugin.GestureCommand.ResetActiveTemporary();
+        }
+        IconGlyph.HelpMarker("Reverts the currently active temporary mod activation back to its saved settings right now, instead of waiting for the automatic ~30s idle-timeout. Only enabled while a gesture's temporary activation is active.");
     }
 
     /// collar/collaring: the Sub's own configured Neck-slot collar. Capture-only (see design.md's "Collar
@@ -452,7 +464,7 @@ public class CollarWindow : Window, IDisposable
 
         using (ImRaii.Disabled(locked))
         {
-            if (ImGui.Button("Capture my current Neck item as my collar"))
+            if (ImGui.Button("Save Collar"))
             {
                 if (!plugin.CollarCommand.CaptureCurrentAsCollar())
                     Plugin.Log.Warning("Could not capture the current Neck item - is anything equipped there?");
@@ -468,10 +480,10 @@ public class CollarWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        DrawTestButton("collarLock", plugin.LocalTestCoordinator.TestCollarLock);
+        DrawTestButton("collarLock", "Test Lock", plugin.LocalTestCoordinator.TestCollarLock);
         IconGlyph.HelpMarker("Locally applies and locks your configured collar right now, the same way an accepted Owner's \"collar lock\" would - no pairing or chat involved.");
         ImGui.SameLine();
-        DrawTestButton("collarUnlock", plugin.LocalTestCoordinator.TestCollarUnlock);
+        DrawTestButton("collarUnlock", "Test Unlock", plugin.LocalTestCoordinator.TestCollarUnlock);
         IconGlyph.HelpMarker("Locally releases the collar lock, the same way an accepted Owner's \"collar unlock\" would.");
 
         ImGui.Spacing();
@@ -496,10 +508,10 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.HelpMarker("Releases the movement lock and restores normal input.");
 
         ImGui.Spacing();
-        DrawTestButton("leashEngage", plugin.LocalTestCoordinator.TestLeashEngage);
+        DrawTestButton("leashEngage", "Test Engage", plugin.LocalTestCoordinator.TestLeashEngage);
         IconGlyph.HelpMarker("Locally engages the movement lock right now, the same way an accepted Owner's leash trigger would - blocks your own WASD input until released. Requires Follow / Leash permission and the automation-risk acknowledgement (Settings).");
         ImGui.SameLine();
-        DrawTestButton("leashRelease", plugin.LocalTestCoordinator.TestLeashRelease);
+        DrawTestButton("leashRelease", "Test Release", plugin.LocalTestCoordinator.TestLeashRelease);
         IconGlyph.HelpMarker("Locally releases the movement lock, the same way an accepted Owner's unleash trigger would.");
     }
 
@@ -907,19 +919,30 @@ public class CollarWindow : Window, IDisposable
         }
     }
 
-    /// A local pre-pair Test control (collar/ui-organization) - labeled "Test" so it can never be mistaken
-    /// for an Owner-send control, dispatches through LocalTestCoordinator (same local action path an
-    /// accepted Owner command would use, no pairing/chat involved), and shows only its own last transient
-    /// result next to it.
-    private void DrawTestButton(string key, Func<LocalTestResult> run)
+    /// A local pre-pair Test control (collar/ui-organization) - action-specific label (e.g. "Test Lock")
+    /// so it can never be mistaken for an Owner-send control and its effect is clear without hovering a
+    /// tooltip, dispatches through LocalTestCoordinator (same local action path an accepted Owner command
+    /// would use, no pairing/chat involved), and shows only its own last result, which clears itself
+    /// automatically a few seconds after being shown. Hidden entirely when HideTestControls is enabled.
+    private void DrawTestButton(string key, string label, Func<LocalTestResult> run)
     {
-        if (ImGui.SmallButton($"Test##{key}"))
-            testResults[key] = run();
+        if (plugin.Configuration.HideTestControls)
+            return;
+
+        if (ImGui.SmallButton($"{label}##{key}"))
+            testResults[key] = (run(), Environment.TickCount64);
 
         if (testResults.TryGetValue(key, out var last))
         {
-            ImGui.SameLine();
-            IconGlyph.WrappedColored(last.Success ? Theme.Success : Theme.Danger, last.Message);
+            if (Environment.TickCount64 - last.ShownAtTicks >= TestResultDisplayMs)
+            {
+                testResults.Remove(key);
+            }
+            else
+            {
+                ImGui.SameLine();
+                IconGlyph.WrappedColored(last.Result.Success ? Theme.Success : Theme.Danger, last.Result.Message);
+            }
         }
     }
 

@@ -1,21 +1,4 @@
-# collar/outfit Specification
-
-## Purpose
-
-Lets a paired Owner set a Sub's outfit and optionally lock it so only the Owner can revert it, applied locally on the Sub's own client so existing sync tooling can propagate it.
-
-## Requirements
-
-### Requirement: Owner sets Sub's outfit
-The system SHALL let an Owner send an outfit command (a single gear slot, or a full saved state) to a paired Sub who has the "outfit" permission enabled. The Sub's client SHALL apply the change to its own local player character.
-
-#### Scenario: Owner sets a full outfit state
-- **WHEN** an Owner sends a full outfit-state command to a paired Sub with "outfit" permission enabled
-- **THEN** the Sub's client applies that state to the Sub's own character
-
-#### Scenario: Outfit command without permission
-- **WHEN** an Owner sends an outfit command to a Sub who has not enabled the "outfit" permission
-- **THEN** the Sub's client rejects the command and the outfit is unchanged
+## MODIFIED Requirements
 
 ### Requirement: Owner-held lock on applied outfit
 The system SHALL let an Owner apply an outfit with a lock such that the Sub cannot revert or change the locked slots through the plugin without the matching release action. The lock SHALL cover only the equipment slots that the applied design itself changes, enforced by this system's own per-slot lock tracking (see `collar/slot-locking`), not by Glamourer's own actor-wide lock. Every slot the design does not change SHALL remain exactly as free to edit as if no lock were active.
@@ -39,14 +22,3 @@ The system SHALL release every slot of an Owner-held outfit lock, regardless of 
 #### Scenario: Panic releases a locked outfit
 - **WHEN** a Sub with a locked outfit triggers the panic action
 - **THEN** every slot of the outfit lock is released as part of the panic sequence
-
-### Requirement: Empty wardrobe scope includes all designs
-The wardrobe scanner SHALL treat an empty design-folder scope as an explicit request to include every locally saved Glamourer design. When one or more folder scopes are configured, the scanner SHALL include only designs within those scopes.
-
-#### Scenario: Wardrobe scope is empty
-- **WHEN** the Sub rescans wardrobe designs with no folder scope configured
-- **THEN** every locally saved Glamourer design is available in the wardrobe catalog
-
-#### Scenario: Wardrobe scope is configured
-- **WHEN** the Sub rescans with one or more folder scopes configured
-- **THEN** only designs matching those folder scopes are available in the wardrobe catalog

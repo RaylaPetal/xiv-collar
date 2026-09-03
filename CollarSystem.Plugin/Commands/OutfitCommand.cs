@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using CollarSystem.Plugin.Config;
 using CollarSystem.Plugin.Ipc;
@@ -7,26 +8,32 @@ using Glamourer.Api.Enums;
 
 namespace CollarSystem.Plugin.Commands;
 
-/// collar/outfit: alias-triggered wardrobe changes applied via Glamourer, including the lock/key model,
-/// plus the Owner's "joker" override (ForceApply/ForceUnlock - see ChatCommandListener's reserved-keyword
-/// grammar). A force-applied outfit locks out the Sub's own alias-triggered Apply/Unlock until the
-/// matching ForceUnlock (or panic) releases it - the Sub set up their aliases, but a forced outfit always
-/// wins over them while it's in effect. Scanning stays local-only under the chat transport (collar/
-/// gesture's sibling "Catalog shared with paired Owner" requirement was removed for outfit too, in spirit
-/// - see design.md's "Gesture/Wardrobe catalog stays local-scan-only" decision).
+/// collar/outfit: alias-triggered wardrobe changes applied via Glamourer, plus the Owner's "joker"
+/// override (ForceApply/ForceUnlock - see ChatCommandListener's reserved-keyword grammar). A
+/// force-applied outfit locks out the Sub's own alias-triggered Apply/Unlock until the matching
+/// ForceUnlock (or panic) releases it - the Sub set up their aliases, but a forced outfit always wins over
+/// them while it's in effect (SubRuntimeState.OutfitForceLocked, independent of slot locking below).
+/// Locking a design only locks the equipment slots that design itself changes (collar/slot-locking), via
+/// SlotLockManager - never Glamourer's own actor-wide lock. Scanning stays local-only under the chat
+/// transport (collar/gesture's sibling "Catalog shared with paired Owner" requirement was removed for
+/// outfit too, in spirit - see design.md's "Gesture/Wardrobe catalog stays local-scan-only" decision).
 public sealed class OutfitCommand
 {
+    private const string Owner = "Outfit";
+
     private readonly PluginConfig config;
     private readonly GlamourerIpc glamourer;
+    private readonly SlotLockManager slotLocks;
     private readonly SubRuntimeState runtimeState;
 
     /// How many designs the last wardrobe scan found in total, before the allowlist filter.
     public int? LastScanTotalDesigns { get; private set; }
 
-    public OutfitCommand(PluginConfig config, GlamourerIpc glamourer, SubRuntimeState runtimeState)
+    public OutfitCommand(PluginConfig config, GlamourerIpc glamourer, SlotLockManager slotLocks, SubRuntimeState runtimeState)
     {
         this.config = config;
         this.glamourer = glamourer;
+        this.slotLocks = slotLocks;
         this.runtimeState = runtimeState;
     }
 
@@ -35,31 +42,24 @@ public sealed class OutfitCommand
         if (runtimeState.OutfitForceLocked)
             return false;
 
-        var ec = glamourer.ApplyDesign(alias.DesignId, alias.Key, alias.Locked);
-        if (ec != GlamourerApiEc.Success)
-            return false;
-
-        runtimeState.OutfitLockKey = alias.Locked ? alias.Key : null;
-        return true;
+        return ApplyDesign(alias.DesignId, alias.DesignName, alias.Locked);
     }
 
-    /// Unlocks using whatever key this client itself last used to lock - see AliasBook.UnlockOutfitAlias.
+    /// Releases whichever slots the currently-locked design claimed - see AliasBook.UnlockOutfitAlias.
     public bool Unlock()
     {
         if (runtimeState.OutfitForceLocked)
             return false;
-
-        var ec = glamourer.Unlock(runtimeState.OutfitLockKey ?? 0);
-        if (ec != GlamourerApiEc.Success)
+        if (!slotLocks.HasLock(Owner))
             return false;
 
-        runtimeState.OutfitLockKey = null;
+        slotLocks.Release(Owner);
         return true;
     }
 
     /// The Owner's direct override: matches `designName` against the Sub's own scanned+allowlisted
     /// catalog (case-insensitive) - the Owner never sees design IDs, only whatever name the Sub told them
-    /// out of band. Always locks, with a freshly generated key the Sub never has to see or type.
+    /// out of band. Always locks.
     public bool ForceApply(string designName)
     {
         var design = config.WardrobeMapping.LocalDesigns.Values
@@ -67,12 +67,9 @@ public sealed class OutfitCommand
         if (design is null)
             return false;
 
-        var key = (uint)Random.Shared.Next(1, int.MaxValue);
-        var ec = glamourer.ApplyDesign(design.DesignId, key, locked: true);
-        if (ec != GlamourerApiEc.Success)
+        if (!ApplyDesign(design.DesignId, designName, locked: true))
             return false;
 
-        runtimeState.OutfitLockKey = key;
         runtimeState.OutfitForceLocked = true;
         return true;
     }
@@ -80,13 +77,46 @@ public sealed class OutfitCommand
     /// The only thing that can release a force-applied outfit besides panic.
     public bool ForceUnlock()
     {
-        var ec = glamourer.Unlock(runtimeState.OutfitLockKey ?? 0);
-        if (ec != GlamourerApiEc.Success)
+        if (!slotLocks.HasLock(Owner))
             return false;
 
-        runtimeState.OutfitLockKey = null;
+        slotLocks.Release(Owner);
         runtimeState.OutfitForceLocked = false;
         return true;
+    }
+
+    /// Applies a design's full look via Glamourer, then - if requested - locks exactly the equipment
+    /// slots that design itself changes (`Equipment.*.Apply`, see GlamourerIpc.GetDesignEquipSlots), via
+    /// SlotLockManager. The overlap check runs *before* the design is applied, so a refused lock (a slot
+    /// already locked by a different owner) never leaves a partial visual change behind. The design apply
+    /// itself never locks through Glamourer's own state.
+    private bool ApplyDesign(Guid designId, string designName, bool locked)
+    {
+        var slots = locked ? glamourer.GetDesignEquipSlots(designId) : new HashSet<ApiEquipSlot>();
+        if (locked && slotLocks.WouldOverlap(slots, Owner))
+        {
+            Plugin.Log.Warning($"Outfit apply refused for \"{designName}\": a locked slot is already held by a different owner.");
+            return false;
+        }
+
+        var ec = glamourer.ApplyDesign(designId);
+        if (ec != GlamourerApiEc.Success)
+        {
+            Plugin.Log.Warning($"Outfit apply failed for \"{designName}\": {ec}.");
+            return false;
+        }
+
+        if (!locked || slots.Count == 0)
+            return true;
+
+        var toLock = new Dictionary<ApiEquipSlot, SlotLockValue>();
+        foreach (var slot in slots)
+        {
+            if (glamourer.GetEquipSlotValue(slot) is { } value)
+                toLock[slot] = new SlotLockValue(value.ItemId, value.Stain, value.Stain2);
+        }
+
+        return slotLocks.TryRegisterAlreadyApplied(Owner, toLock);
     }
 
     /// Sub-side: rescan the Sub's own Glamourer designs; an empty folder scope includes all designs. Purely

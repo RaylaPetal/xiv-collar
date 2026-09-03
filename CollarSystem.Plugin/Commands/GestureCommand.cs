@@ -14,18 +14,62 @@ namespace CollarSystem.Plugin.Commands;
 public sealed class GestureCommand
 {
     private const string ExportPrefix = "COLLAR-GESTURE-V1|";
+
+    /// Gap between the Penumbra redraw and playing the tied trigger, so the animation reliably starts
+    /// after the redraw visually settles instead of racing a visible flicker.
+    private const long PlayDelayMs = 500;
+
+    /// How long an active temporary activation survives with no further gesture play before it's
+    /// automatically reverted.
+    private const long IdleTimeoutMs = 30_000;
+
     private readonly PluginConfig config;
     private readonly PenumbraIpc penumbra;
     private readonly GestureCatalogScanner scanner;
 
+    private (GestureTrigger Trigger, long ReadyAtTicks)? pendingPlay;
+    private (Guid Collection, string ModDirectory, long IdleUntilTicks)? activeTemporary;
+
     public int? LastScanTotalMods { get; private set; }
     public string? LastScanError { get; private set; }
+
+    /// Whether there's an active temporary Penumbra activation to revert - lets the Gesture module's
+    /// manual Reset control enable/disable itself.
+    public bool HasActiveTemporary => activeTemporary is not null;
 
     public GestureCommand(PluginConfig config, PenumbraIpc penumbra)
     {
         this.config = config;
         this.penumbra = penumbra;
         scanner = new GestureCatalogScanner(penumbra, config);
+    }
+
+    /// Advanced from Plugin.OnFrameworkUpdate - the same per-frame hook already driving the panic
+    /// hotkey, so the delayed play and idle-timeout revert both stay on the framework thread instead of
+    /// racing a background Task.
+    public void OnFrameworkUpdate()
+    {
+        var now = Environment.TickCount64;
+
+        if (pendingPlay is { } pending && now >= pending.ReadyAtTicks)
+        {
+            pendingPlay = null;
+            Play(pending.Trigger);
+        }
+
+        if (activeTemporary is { } active && now >= active.IdleUntilTicks)
+            ResetActiveTemporary();
+    }
+
+    /// Reverts the active temporary gesture activation on demand - used by the manual Reset control and
+    /// internally whenever a different mod's temporary activation needs to replace this one.
+    public void ResetActiveTemporary()
+    {
+        if (activeTemporary is not { } active)
+            return;
+
+        penumbra.TryRemoveTemporarySettings(active.Collection, active.ModDirectory);
+        activeTemporary = null;
     }
 
     public void Rescan()
@@ -78,21 +122,31 @@ public sealed class GestureCommand
         if (entry.Trigger is null) return false;
         var collection = penumbra.TryGetLocalPlayerCollectionId();
         if (collection is null) return false;
+
+        // Switching to a different mod's temporary activation must revert whatever was previously
+        // active first, so its settings never linger once an unrelated gesture takes over.
+        if (activeTemporary is { } active && (active.Collection != collection.Value || active.ModDirectory != entry.ModDirectory))
+            ResetActiveTemporary();
+
         var selections = entry.GroupSelections.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
         if (!penumbra.TrySetTemporarySettings(collection.Value, entry.ModDirectory, selections)) return false;
         if (!penumbra.TryRedrawLocalPlayer()) return false;
-        return Play(entry.Trigger);
+
+        var now = Environment.TickCount64;
+        activeTemporary = (collection.Value, entry.ModDirectory, now + IdleTimeoutMs);
+        pendingPlay = (entry.Trigger, now + PlayDelayMs);
+        return true;
     }
 
-    private static unsafe bool Play(GestureTrigger trigger)
+    private static unsafe void Play(GestureTrigger trigger)
     {
         if (trigger.Kind == GestureTriggerKind.SlashCommand)
         {
             Chat.SendMessage($"/{trigger.SlashCommand.TrimStart('/')} motion");
-            return true;
+            return;
         }
         var playerState = PlayerState.Instance();
-        if (playerState == null || trigger.EmoteModeId is < 1 or > 3) return false;
+        if (playerState == null || trigger.EmoteModeId is < 1 or > 3) return;
         var poseType = trigger.EmoteModeId switch
         {
             1 => EmoteController.PoseType.GroundSit,
@@ -102,7 +156,6 @@ public sealed class GestureCommand
         };
         playerState->SelectedPoses[(int)poseType] = trigger.CPoseState;
         Chat.SendMessage(trigger.EmoteModeId switch { 1 => "/groundsit", 2 => "/sit", 3 => "/doze", _ => "" });
-        return true;
     }
 
     private void MigrateAliases()

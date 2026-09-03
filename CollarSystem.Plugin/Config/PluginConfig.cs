@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Dalamud.Configuration;
 using Dalamud.Game.ClientState.Keys;
+using Glamourer.Api.Enums;
 
 namespace CollarSystem.Plugin.Config;
 
@@ -59,9 +60,7 @@ public class OwnerQuickCommands
 
 /// The Sub's configured collar item (collar/collaring) - a single Neck-slot item, captured from whatever
 /// the Sub currently has equipped (see GlamourerIpc.GetCurrentNeckItem), never typed in as a raw item id.
-/// The lock itself (key, force-locked flag) lives in SubRuntimeState, not here - same in-memory-only
-/// precedent as the existing outfit lock (OutfitLockKey/OutfitForceLocked), applied fresh each time rather
-/// than persisted.
+/// Whether it's currently locked lives in SlotLockManager (collar/slot-locking), not here.
 [Serializable]
 public class CollarState
 {
@@ -70,6 +69,19 @@ public class CollarState
     public byte Stain2 { get; set; }
 
     public bool IsConfigured => ItemId is not null;
+}
+
+/// One category's (Collar/Outfit/future Restraints) claim on a single equipment slot (collar/slot-locking)
+/// - persisted so SlotLockManager can resume enforcing it after a plugin reload without needing any
+/// Glamourer-side key, unlike the whole-actor `Combination` lock this replaces.
+[Serializable]
+public class SlotLockEntry
+{
+    public ApiEquipSlot Slot { get; set; }
+    public string Owner { get; set; } = "";
+    public ulong ItemId { get; set; }
+    public byte Stain { get; set; }
+    public byte Stain2 { get; set; }
 }
 
 [Serializable]
@@ -102,6 +114,16 @@ public class PluginConfig : IPluginConfiguration
 
     /// Sub-side: the Sub's configured collar item (collar/collaring). See CollarState.
     public CollarState Collar { get; set; } = new();
+
+    /// Every active per-slot lock (collar/slot-locking) - see SlotLockEntry and SlotLockManager.
+    public List<SlotLockEntry> SlotLocks { get; set; } = new();
+
+    /// Set by CollarCommand.ForceApply/OutfitCommand.ForceApply (the Owner's "joker" override). While
+    /// true, the Sub's own alias-triggered Apply/Clear/Unlock for that category is refused - only the
+    /// matching Force* release (or panic) can undo it. Plain bookkeeping, independent of the Glamourer
+    /// lock model - unaffected by the move to per-slot locking.
+    public bool OutfitForceLocked { get; set; }
+    public bool CollarForceLocked { get; set; }
 
     /// Owner-side only in practice (a Sub has no use for their own names here) - see OwnerQuickCommands.
     public OwnerQuickCommands QuickCommands { get; set; } = new();
@@ -142,6 +164,11 @@ public class PluginConfig : IPluginConfiguration
     /// Gate per collar/gesture and collar/follow's ToS-disclosure requirement: the Sub must acknowledge
     /// the automation-risk caveat before either permission can be enabled.
     public bool TosAcknowledged { get; set; }
+
+    /// collar/ui-organization: hides every local Test control from the Sub-facing interface without
+    /// disabling the underlying local-test capability. Off by default so existing behavior is unchanged
+    /// until a Sub opts in.
+    public bool HideTestControls { get; set; }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

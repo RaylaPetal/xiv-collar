@@ -1,43 +1,4 @@
-# collar/ui-organization Specification
-
-## Purpose
-
-Keeps Sub configuration and Owner command controls visually distinct, compact, and discoverable as the collar system gains more modules and settings.
-
-## Requirements
-
-### Requirement: Owner command categories are independently collapsible
-The Owner command surface SHALL present each supported command category in its own labeled collapsible section, preserving the category's existing add, import, compose, copy, and send operations. Expanding or collapsing one category SHALL NOT change the saved commands or the expanded state of other categories during the same window session.
-
-#### Scenario: Owner opens command surface
-- **WHEN** the Owner command surface contains title, outfit, gesture, leash, Moodles, and general alias controls
-- **THEN** each category is identifiable and can be expanded or collapsed independently
-
-#### Scenario: Owner collapses a category
-- **WHEN** the user collapses a category containing saved commands
-- **THEN** its detailed controls and rows are hidden without deleting or changing any saved command
-
-### Requirement: Owner navigation is separated from Sub modules
-The main module navigation SHALL place the Owner command entry at the far-right edge, with visible separation from the cluster of Sub-facing configuration modules, while retaining keyboard/mouse accessibility and the current selected-module behavior.
-
-#### Scenario: Main navigation is rendered
-- **WHEN** the collar window draws its module navigation
-- **THEN** Sub-facing modules remain grouped together and the Owner entry appears at the far right as a distinct destination
-
-#### Scenario: Narrow navigation width
-- **WHEN** the main window is at its supported minimum width
-- **THEN** the separated Owner entry remains visible, selectable, and non-overlapping
-
-### Requirement: Safeword has one canonical configuration surface
-The main character header SHALL be the sole visible safeword configuration surface. Settings SHALL continue to explain how `/collarpanic` works when relevant but SHALL NOT display a second safeword input.
-
-#### Scenario: User opens Settings
-- **WHEN** the safeword editor is available in the main character header
-- **THEN** Settings does not render a duplicate safeword input or a conflicting editable value
-
-#### Scenario: User needs to configure safety
-- **WHEN** the user views the main character header in any pairing state
-- **THEN** the existing safeword editor remains available there
+## MODIFIED Requirements
 
 ### Requirement: Every Sub action can be tested locally before pairing
 The Sub-facing interface SHALL provide an explicit local Test control for every configurable action: title apply and clear, outfit apply and unlock, gesture playback, collar lock and unlock, Moodles apply and clear, and leash and unleash. A local test SHALL execute through the same local action path used for an accepted Owner command, SHALL NOT require an active or pending pairing, and SHALL NOT compose or transmit a chat message. The action's normal category permission SHALL remain required, and gesture or leash testing SHALL additionally require the existing automation-risk acknowledgement. Every test SHALL report a visible success or failure result. Each Test control SHALL identify the specific action it performs without requiring a tooltip, and its reported result SHALL be transient, clearing itself automatically a short time after being shown.
@@ -69,6 +30,8 @@ The Sub-facing interface SHALL provide an explicit local Test control for every 
 #### Scenario: Test result clears automatically
 - **WHEN** a Test control reports a success or failure result
 - **THEN** that result is shown next to the control and then automatically clears itself a short time later, rather than persisting indefinitely
+
+## ADDED Requirements
 
 ### Requirement: Sub can hide local Test controls
 The system SHALL let a Sub disable the visibility of every local Test control via a dedicated setting, hiding them from the Sub-facing interface without disabling the underlying local-test capability or affecting any other control.

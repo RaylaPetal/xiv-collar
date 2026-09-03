@@ -29,8 +29,12 @@ public class SettingsWindow : Window, IDisposable
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - see
     /// CollarWindow's matching field for the rest of the Test controls; Moodles' only lives here since it
-    /// has no Sub-facing module of its own.
-    private readonly Dictionary<string, LocalTestResult> testResults = new();
+    /// has no Sub-facing module of its own. Each entry auto-clears a short time after being shown (see
+    /// DrawTestButton).
+    private readonly Dictionary<string, (LocalTestResult Result, long ShownAtTicks)> testResults = new();
+
+    /// How long a local Test control's result stays visible before auto-clearing (collar/ui-organization).
+    private const long TestResultDisplayMs = 4_000;
 
     private static readonly string[] RoleNames = ["Sub", "Owner"];
 
@@ -330,7 +334,7 @@ public class SettingsWindow : Window, IDisposable
         IconGlyph.HelpMarker("Copies the list below as plain text, one preset per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
 
         ImGui.SameLine();
-        DrawTestButton("moodlesClear", plugin.LocalTestCoordinator.TestMoodlesClear);
+        DrawTestButton("moodlesClear", "Test Clear", plugin.LocalTestCoordinator.TestMoodlesClear);
         IconGlyph.HelpMarker("Locally clears your active Moodle right now, the same way an accepted Owner's \"moodle clear\" would - no pairing or chat involved.");
 
         using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);
@@ -339,22 +343,32 @@ public class SettingsWindow : Window, IDisposable
             ImGui.PushID(entry.PresetId);
             ImGui.BulletText(entry.Name);
             ImGui.SameLine();
-            DrawTestButton($"moodlesApply_{entry.PresetId}", () => plugin.LocalTestCoordinator.TestMoodlesApply(entry));
+            DrawTestButton($"moodlesApply_{entry.PresetId}", "Test Apply", () => plugin.LocalTestCoordinator.TestMoodlesApply(entry));
             ImGui.PopID();
         }
     }
 
     /// See CollarWindow's identically-named helper - Moodles' Test controls live here instead since
     /// Moodles has no Sub-facing module of its own (its catalog lives entirely in this scan card).
-    private void DrawTestButton(string key, Func<LocalTestResult> run)
+    private void DrawTestButton(string key, string label, Func<LocalTestResult> run)
     {
-        if (ImGui.SmallButton($"Test##{key}"))
-            testResults[key] = run();
+        if (plugin.Configuration.HideTestControls)
+            return;
+
+        if (ImGui.SmallButton($"{label}##{key}"))
+            testResults[key] = (run(), Environment.TickCount64);
 
         if (testResults.TryGetValue(key, out var last))
         {
-            ImGui.SameLine();
-            IconGlyph.WrappedColored(last.Success ? Theme.Success : Theme.Danger, last.Message);
+            if (Environment.TickCount64 - last.ShownAtTicks >= TestResultDisplayMs)
+            {
+                testResults.Remove(key);
+            }
+            else
+            {
+                ImGui.SameLine();
+                IconGlyph.WrappedColored(last.Result.Success ? Theme.Success : Theme.Danger, last.Result.Message);
+            }
         }
     }
 
@@ -400,6 +414,15 @@ public class SettingsWindow : Window, IDisposable
             config.Save();
         }
         IconGlyph.HelpMarker("Required once before the Gesture and Follow permission toggles (in the Sub window's Permissions tab) can be enabled at all - Title and Outfit don't need it.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        if (ImGuiCheckbox("Hide local Test controls", config.HideTestControls, out var newHideTestControls))
+        {
+            config.HideTestControls = newHideTestControls;
+            config.Save();
+        }
+        IconGlyph.HelpMarker("Hides every local Test control from the Sub-facing interface. Doesn't disable local testing itself or any other control - just removes the buttons. Off by default.");
     }
 
     private static bool ImGuiCheckbox(string label, bool value, out bool newValue)

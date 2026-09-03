@@ -25,7 +25,6 @@ public class OutfitAliasDefinition
 
     /// Display only, so the Sub can recognize the entry in Settings - not used for matching.
     public string DesignName { get; set; } = "";
-    public uint Key { get; set; }
     public bool Locked { get; set; }
 }
 
@@ -57,8 +56,8 @@ public class AliasBook
 
     public List<OutfitAliasDefinition> Outfits { get; set; } = new();
 
-    /// Unlocks using whatever key was last used to lock (SubRuntimeState.OutfitLockKey) - the Sub never
-    /// has to type or remember a key to release their own outfit.
+    /// Releases whichever slots the currently-locked outfit design claimed (SlotLockManager) - the Sub
+    /// never has to type or remember a key to release their own outfit.
     public string UnlockOutfitAlias { get; set; } = "unlock";
 
     public List<GestureAliasDefinition> Gestures { get; set; } = new();

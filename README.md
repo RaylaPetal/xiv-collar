@@ -68,8 +68,15 @@ whatever name the Sub told the Owner from their own scan results - Settings has 
 to each scan so the Sub can hand over the exact list instead of reciting it). Title and outfit also
 **lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
 `title clear` / `outfit unlock` override tell (or the Sub's own panic, which always works regardless)
-releases it. Gesture has nothing to lock: when its permission is enabled, a gesture command temporarily
-enables the selected Penumbra animation option, redraws, and immediately plays its tied trigger. `collar` only ever
+releases it. An outfit lock only ever covers the equipment slots the applied design itself changes - never
+Glamourer's own whole-character lock, and never any slot the design doesn't touch, so the rest of your
+Glamourer state (any other gear slot, or anything else locked independently, e.g. your collar) stays exactly
+as free to edit as if nothing were locked at all. Unlocking an outfit - by the Sub's own alias, the Owner's
+`outfit unlock` override, or the Wardrobe tab's Test Unlock - reverts those slots to Glamourer's
+automation-managed appearance rather than just releasing the lock, so the manually-applied design never
+lingers after unlock. Gesture has nothing to
+lock: when its permission is enabled, a gesture command temporarily enables the selected Penumbra animation
+option, redraws, waits briefly for the redraw to visually settle, and then plays its tied trigger. `collar` only ever
 has one override, `collar unlock` - the collar itself never applies through a command, only automatically
 at pairing acceptance (see Consent model below). `moodle apply <preset name>` / `moodle clear` apply or
 remove a status effect from the Sub's own saved Moodles presets, immediately, with no confirmation queue -
@@ -95,9 +102,10 @@ Automation risk below for what the Send button on each one actually does.
   because a command arrived; the collar is different on purpose - if a Sub has captured a Neck-slot item
   (Collar tab) and enabled the "Collar" permission, accepting a pairing request applies and locks that item
   automatically, as the persistent marker that a contract is active, not just another swappable alias. It
-  locks exactly like a force-applied outfit (the Sub's own casual removal is refused), and `/collarpanic`
-  always releases it, no exception - the Owner also has a `collar unlock` override for releasing it without
-  the Sub needing to panic.
+  locks only the Neck slot (the Sub's own casual removal of that one slot is refused) - every other slot
+  stays completely free to edit throughout, including while an outfit is separately locked at the same
+  time - and `/collarpanic` always releases it, no exception - the Owner also has a `collar unlock` override
+  for releasing it without the Sub needing to panic.
 - **Panic is a typed safeword, not a button.** The main character header always exposes the safeword
   setting, whether paired or not, but there's no panic button anywhere in the UI on purpose -
   `/collarpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
@@ -105,6 +113,11 @@ Automation risk below for what the Send button on each one actually does.
   a safeword in the header and `/collarpanic` requires it as an argument (`/collarpanic red`);
   leave it blank and plain `/collarpanic` keeps working unconditionally - a forgotten safeword must never
   be the reason panic stops working. Safewords are masked by default and can be deliberately revealed.
+  Outfit and Collar locks are never held through Glamourer's own lock at all - each is this plugin's own
+  per-slot tracking, persisted to your plugin configuration and re-asserted automatically if anything
+  changes a locked slot. A plugin reload or game restart between locking and unlocking can't strand you
+  locked with no way to recover - panic (and the ordinary Sub/Owner unlock paths) can always release it
+  afterward, with nothing to lose track of.
 - **Uninstalling the plugin is always the ultimate safeword.** Since nothing can be applied to a Sub's
   character without the Sub's own plugin running, uninstalling (or simply disabling) it ends all collar
   control immediately. This is the honest FFXIV equivalent of SL OpenCollar's "detach," and there is no
@@ -124,9 +137,14 @@ Automation risk below for what the Send button on each one actually does.
   command composed before pairing captures a peer identity has no `/tell` prefix and Send is disabled for
   it, so nothing can ever leak into local/say chat.
 - **Gesture** temporarily applies the selected animation's complete Penumbra option state, redraws the
-  Sub, and fires its tied emote or supported sit/ground-sit/doze pose immediately after a valid trigger
-  tell. The Sub's automation-risk acknowledgement and live Gesture permission are the consent gates;
-  disabling Gesture rejects later commands without changing Penumbra or animation state.
+  Sub, briefly waits for the redraw to visually settle, and then fires its tied emote or supported
+  sit/ground-sit/doze pose after a valid trigger tell. The Sub's automation-risk acknowledgement and live
+  Gesture permission are the consent gates; disabling Gesture rejects later commands without changing
+  Penumbra or animation state. The temporary Penumbra activation doesn't persist indefinitely: the Gesture
+  tab has a manual **Reset active gesture** button that reverts it on demand, and it's also reverted
+  automatically after roughly 30 seconds with no further gesture play - a new gesture play before then
+  restarts the timeout instead of stacking, and playing a different mod's gesture first reverts whatever
+  was previously active.
 - **Follow/leash** hooks the game's own movement-input functions to block WASD input and suppress
   auto-unfollow while engaged. This is a heavier automation footprint than cosmetic rendering changes, and
   the hook signatures are version-specific reverse-engineering artifacts that can break on any game patch
@@ -139,13 +157,15 @@ informed choice before turning them on.
 
 ## Testing locally, before pairing
 
-Every configurable Sub action has its own **Test** button, right next to where it's configured: title
-apply/clear (Title tab), outfit apply/unlock (Wardrobe tab), gesture playback (Gesture tab), collar
-lock/unlock and leash/unleash (Collar tab), and Moodles apply/clear (Settings' Moodles scan card). A Test
-button runs the action through the exact same local code path an accepted Owner's command would use -
-`LocalTestCoordinator` calls straight into the same `TitleCommand`/`OutfitCommand`/`GestureCommand`/
-`FollowCommand`/`CollarCommand`/`MoodlesCommand` methods `ChatCommandListener` calls for a real trigger tell
-- so a passing test is a real guarantee the configuration works, not a simulation.
+Every configurable Sub action has its own action-specific **Test** button (e.g. "Test Lock", "Test Unlock",
+"Test Apply", "Test Clear", "Test Play", "Test Engage", "Test Release" - the label alone identifies what it
+does, no tooltip needed), right next to where it's configured: title apply/clear (Title tab), outfit
+apply/unlock (Wardrobe tab), gesture playback (Gesture tab), collar lock/unlock and leash/unleash (Collar
+tab), and Moodles apply/clear (Settings' Moodles scan card). A Test button runs the action through the
+exact same local code path an accepted Owner's command would use - `LocalTestCoordinator` calls straight
+into the same `TitleCommand`/`OutfitCommand`/`GestureCommand`/`FollowCommand`/`CollarCommand`/
+`MoodlesCommand` methods `ChatCommandListener` calls for a real trigger tell - so a passing test is a real
+guarantee the configuration works, not a simulation.
 
 **Testing never touches pairing or chat.** No pairing (active or pending) is required to test, and no test
 ever composes or sends a `/tell` - `ChatComposer`/`ChatSender` are never involved. Testing only changes your
@@ -155,9 +175,14 @@ matching command would.
 **The normal gates still apply.** A Test button still requires that action's category permission
 (Permissions tab) to be enabled, and Gesture/Leash tests additionally require the automation-risk
 acknowledgement (Settings) - a disabled permission or missing acknowledgement makes the test a no-op and
-shows why, right next to the button, instead of silently doing nothing. Every test shows a transient
-success or failure result next to its button (not saved anywhere) naming the action that was attempted, so
-a failed Glamourer/Penumbra/Moodles integration is easy to tell apart from a gating failure.
+shows why, right next to the button, instead of silently doing nothing. Every test shows a success or
+failure result next to its button naming the action that was attempted, which clears itself automatically a
+few seconds later instead of persisting until the next test overwrites it - so a failed Glamourer/Penumbra/
+Moodles integration is easy to tell apart from a gating failure, without stale results cluttering the UI.
+
+**Hiding Test controls.** Settings has a "Hide local Test controls" checkbox (off by default) that removes
+every Test button from the Sub-facing interface without disabling local testing itself or affecting any
+other control - a one-click toggle for a cleaner UI once you've verified everything works.
 
 ## Project layout
 

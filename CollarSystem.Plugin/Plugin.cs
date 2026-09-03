@@ -20,6 +20,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
+    [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
@@ -38,9 +39,10 @@ public sealed class Plugin : IDalamudPlugin
     private SettingsWindow SettingsWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
 
-    public SubRuntimeState RuntimeState { get; } = new();
+    public SubRuntimeState RuntimeState { get; }
 
     public GlamourerIpc GlamourerIpc { get; }
+    public SlotLockManager SlotLockManager { get; }
     public HonorificIpc HonorificIpc { get; }
     public PenumbraIpc PenumbraIpc { get; }
     public MoodlesIpc MoodlesIpc { get; }
@@ -69,7 +71,10 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
         MigrateConfiguration();
 
+        RuntimeState = new SubRuntimeState(Configuration);
+
         GlamourerIpc = new GlamourerIpc();
+        SlotLockManager = new SlotLockManager(Configuration, GlamourerIpc);
         HonorificIpc = new HonorificIpc();
         PenumbraIpc = new PenumbraIpc();
         MoodlesIpc = new MoodlesIpc();
@@ -77,17 +82,17 @@ public sealed class Plugin : IDalamudPlugin
 
         PairingCommand = new PairingCommand(Configuration);
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
-        OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, RuntimeState);
+        OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
         FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
-        CollarCommand = new CollarCommand(Configuration, GlamourerIpc, RuntimeState);
+        CollarCommand = new CollarCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
         ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
         LocalTestCoordinator = new LocalTestCoordinator(Configuration, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
 
-        PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, HonorificIpc, MovementLockService, RuntimeState);
+        PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RuntimeState);
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
@@ -137,6 +142,8 @@ public sealed class Plugin : IDalamudPlugin
 
         ChatCommandListener.Dispose();
         MovementLockService.Dispose();
+        SlotLockManager.Dispose();
+        GlamourerIpc.Dispose();
 
         ECommons.ECommonsMain.Dispose();
     }
@@ -169,13 +176,15 @@ public sealed class Plugin : IDalamudPlugin
     {
         // The panic hotkey is a plain edge-detected key check - deliberately simple so it keeps working
         // even if everything else about the plugin (chat parsing, IPC) is broken.
-        if (Configuration.PanicHotkey == VirtualKey.NO_KEY)
-            return;
+        if (Configuration.PanicHotkey != VirtualKey.NO_KEY)
+        {
+            var isPressed = KeyState[Configuration.PanicHotkey];
+            if (isPressed && !panicHotkeyWasPressed)
+                PanicHandler.Panic();
+            panicHotkeyWasPressed = isPressed;
+        }
 
-        var isPressed = KeyState[Configuration.PanicHotkey];
-        if (isPressed && !panicHotkeyWasPressed)
-            PanicHandler.Panic();
-        panicHotkeyWasPressed = isPressed;
+        GestureCommand.OnFrameworkUpdate();
     }
 
     private void MigrateConfiguration()
