@@ -68,8 +68,8 @@ whatever name the Sub told the Owner from their own scan results - Settings has 
 to each scan so the Sub can hand over the exact list instead of reciting it). Title and outfit also
 **lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
 `title clear` / `outfit unlock` override tell (or the Sub's own panic, which always works regardless)
-releases it. Gesture has nothing to lock - a force-queued gesture still only ever queues, and the Sub
-still has to confirm it themselves before it plays, exactly like an alias-queued one. `collar` only ever
+releases it. Gesture has nothing to lock: when its permission is enabled, a gesture command temporarily
+enables the selected Penumbra animation option, redraws, and immediately plays its tied trigger. `collar` only ever
 has one override, `collar unlock` - the collar itself never applies through a command, only automatically
 at pairing acceptance (see Consent model below). `moodle apply <preset name>` / `moodle clear` apply or
 remove a status effect from the Sub's own saved Moodles presets, immediately, with no confirmation queue -
@@ -122,11 +122,10 @@ Automation risk below for what the Send button on each one actually does.
   called from a direct button click, and it refuses to send anything that isn't an addressed `/tell` - a
   command composed before pairing captures a peer identity has no `/tell` prefix and Send is disabled for
   it, so nothing can ever leak into local/say chat.
-- **Gesture** still fires an emote via `ECommons.Automation.Chat.SendMessage` once triggered - but a
-  gesture alias is **never** auto-fired even after a valid trigger tell arrives (or a direct Send). It is
-  only ever queued on the Sub's client, and the Sub must explicitly confirm it before anything happens -
-  that confirm click is what keeps this in the same "human decides, in the moment" category as everything
-  else here.
+- **Gesture** temporarily applies the selected animation's complete Penumbra option state, redraws the
+  Sub, and fires its tied emote or supported sit/ground-sit/doze pose immediately after a valid trigger
+  tell. The Sub's automation-risk acknowledgement and live Gesture permission are the consent gates;
+  disabling Gesture rejects later commands without changing Penumbra or animation state.
 - **Follow/leash** hooks the game's own movement-input functions to block WASD input and suppress
   auto-unfollow while engaged. This is a heavier automation footprint than cosmetic rendering changes, and
   the hook signatures are version-specific reverse-engineering artifacts that can break on any game patch
@@ -183,7 +182,7 @@ build task, or building via the `.slnx` all land in the same place.
    * Set your **Role** (Owner/Sub) - it only affects whether incoming tells apply locally and what the
      pairing handshake declares; it doesn't hide anything else.
    * Share your generated code with your pair out of band, and enter theirs as **Their code**.
-   * Check the ToS acknowledgement, set your gesture/wardrobe folder allowlists, and define your aliases
+   * Check the ToS acknowledgement, explicitly select the Penumbra animation mods to scan, set your wardrobe folder allowlist, and define your aliases
      (each one maps a short name to a title/outfit/gesture action) - the main window's Title/Wardrobe/
      Gesture tabs handle that, and stay available regardless of Role. Rescan your Moodles presets here too
      if you want the Moodles category available.
@@ -201,8 +200,8 @@ build task, or building via the `.slnx` all land in the same place.
    one) always works from anywhere. Title/Wardrobe/Gesture/Permissions are where a Sub sets up what
    they'll accept; the **Owner** tab is where you build one-click Quick Commands per category, or compose
    a one-off - each has a Send button (fires immediately) and a Copy button (paste it yourself instead).
-   The Gesture tab also shows pending gesture confirmations that need
-   your explicit click before anything plays.
+   Gesture entries show the mod's human-readable animation option and tied trigger; permitted commands
+   temporarily activate that option and play it immediately.
 
 All participation in this repository is governed by the [Dalamud Code of Conduct](https://dalamud.dev/code-of-conduct).
 If you used AI tooling at any point, review the [AI Usage Policy](https://dalamud.dev/plugin-publishing/ai-policy)
