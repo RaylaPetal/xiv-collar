@@ -161,7 +161,15 @@ public sealed class CatalogSyncService
             if (target.Any(x => x.Command.Equals(command, StringComparison.OrdinalIgnoreCase)))
                 continue;
 
-            target.Add(new QuickCommand { Label = entry.Label, Command = command });
+            target.Add(new QuickCommand
+            {
+                Label = entry.Label,
+                Command = command,
+                GestureModName = entry.ModName,
+                GestureGroupName = entry.GroupName,
+                GestureGroupOrder = entry.GroupOrder,
+                GestureOptionOrder = entry.OptionOrder,
+            });
             added++;
         }
 

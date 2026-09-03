@@ -105,14 +105,14 @@ public sealed class LocalTestCoordinator
             : LocalTestResult.Fail("Collar unlock failed - nothing locked, or Glamourer is unavailable.");
     }
 
-    public LocalTestResult TestMoodlesApply(MoodlesPresetEntry preset)
+    public LocalTestResult TestMoodlesApply(MoodlesStatusEntry status)
     {
         if (!RequirePermission(config.Permissions.Moodles, "Moodles", out var denied))
             return denied;
 
-        return moodles.ForceApply(preset.Name)
-            ? LocalTestResult.Ok($"Applied Moodle \"{preset.Name}\".")
-            : LocalTestResult.Fail($"Moodle \"{preset.Name}\" failed to apply - Moodles may be unavailable.");
+        return moodles.ForceApply(status.Name)
+            ? LocalTestResult.Ok($"Applied Moodle \"{status.Name}\".")
+            : LocalTestResult.Fail($"Moodle \"{status.Name}\" failed to apply - Moodles may be unavailable.");
     }
 
     public LocalTestResult TestMoodlesClear()

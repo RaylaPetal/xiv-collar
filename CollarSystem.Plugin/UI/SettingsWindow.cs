@@ -186,7 +186,7 @@ public class SettingsWindow : Window, IDisposable
 
         ImGui.SameLine();
         var hasAnythingToExport = plugin.OutfitCommand.LastScanTotalDesigns is not null || plugin.GestureCommand.LastScanTotalMods is not null ||
-            plugin.MoodlesCommand.LastScanTotalPresets is not null || plugin.RestraintCommand.LastScanTotalDesigns is not null || config.RestraintMapping.Devices.Count > 0;
+            plugin.MoodlesCommand.LastScanTotalStatuses is not null || plugin.RestraintCommand.LastScanTotalDesigns is not null || config.RestraintMapping.Devices.Count > 0;
         using (ImRaii.Disabled(!hasAnythingToExport))
         {
             if (ImGui.Button("Export..."))
@@ -402,17 +402,18 @@ public class SettingsWindow : Window, IDisposable
         }
     }
 
-    /// collar/moodles: no folder allowlist, unlike Wardrobe/Gesture - Moodles presets have no folder-
-    /// organization concept, every saved preset is eligible (design.md's decision).
+    /// collar/moodles: no folder allowlist, unlike Wardrobe/Gesture - Moodles statuses have no folder-
+    /// organization concept, every registered status is eligible (design.md's decision). Reads individual
+    /// statuses (buffs/debuffs) rather than bundled presets, so the Owner can command a single status.
     private void DrawMoodlesScanBody(PluginConfig config)
     {
-        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles preset scan");
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles status scan");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Reads your own saved Moodles presets directly - nothing to allowlist. Moodles apply/clear commands live in the main window's Owner tab.");
+        IconGlyph.WrappedDisabled("Reads your own registered Moodles statuses (buffs/debuffs) directly - nothing to allowlist. Moodles apply/clear commands live in the main window's Owner tab.");
 
-        if (ImGui.Button("Rescan Moodles presets"))
+        if (ImGui.Button("Rescan Moodles statuses"))
             plugin.MoodlesCommand.Rescan();
-        IconGlyph.HelpMarker("Re-reads your saved presets from your own Moodles plugin - run this after saving a new preset before it'll show up for your Owner to reference.");
+        IconGlyph.HelpMarker("Re-reads your registered statuses from your own Moodles plugin - run this after adding a new status before it'll show up for your Owner to reference.");
 
         DrawMoodlesScanFeedback();
     }
@@ -420,13 +421,13 @@ public class SettingsWindow : Window, IDisposable
     private void DrawMoodlesScanFeedback()
     {
         var moodlesMapping = plugin.Configuration.MoodlesMapping;
-        var lastScanTotal = plugin.MoodlesCommand.LastScanTotalPresets;
+        var lastScanTotal = plugin.MoodlesCommand.LastScanTotalStatuses;
 
         if (plugin.MoodlesCommand.LastScanStatus is MoodlesScanStatus.Unavailable or MoodlesScanStatus.Failed)
         {
-            IconGlyph.WrappedColored(Theme.Danger, plugin.MoodlesCommand.LastScanError ?? "Moodles preset scan failed.");
+            IconGlyph.WrappedColored(Theme.Danger, plugin.MoodlesCommand.LastScanError ?? "Moodles status scan failed.");
             if (moodlesMapping.LocalCatalog.Count > 0)
-                ImGui.TextDisabled($"Keeping {moodlesMapping.LocalCatalog.Count} preset(s) from the last successful scan.");
+                ImGui.TextDisabled($"Keeping {moodlesMapping.LocalCatalog.Count} status(es) from the last successful scan.");
             return;
         }
 
@@ -436,14 +437,14 @@ public class SettingsWindow : Window, IDisposable
             return;
         }
 
-        IconGlyph.WrappedColored(Theme.Success, $"Scan succeeded: found {lastScanTotal} saved preset(s).");
+        IconGlyph.WrappedColored(Theme.Success, $"Scan succeeded: found {lastScanTotal} registered status(es).");
 
         if (lastScanTotal == 0)
             return;
 
         if (ImGui.SmallButton("Copy names##moodles"))
-            ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x)));
-        IconGlyph.HelpMarker("Copies the list below as plain text, one preset per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
+            ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(s => s.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x)));
+        IconGlyph.HelpMarker("Copies the list below as plain text, one status per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
 
         ImGui.SameLine();
         DrawTestButton("moodlesClear", "Test Clear", plugin.LocalTestCoordinator.TestMoodlesClear);
@@ -452,10 +453,10 @@ public class SettingsWindow : Window, IDisposable
         using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);
         foreach (var entry in moodlesMapping.LocalCatalog.Values)
         {
-            ImGui.PushID(entry.PresetId);
+            ImGui.PushID(entry.StatusId);
             ImGui.BulletText(entry.Name);
             ImGui.SameLine();
-            DrawTestButton($"moodlesApply_{entry.PresetId}", "Test Apply", () => plugin.LocalTestCoordinator.TestMoodlesApply(entry));
+            DrawTestButton($"moodlesApply_{entry.StatusId}", "Test Apply", () => plugin.LocalTestCoordinator.TestMoodlesApply(entry));
             ImGui.PopID();
         }
     }

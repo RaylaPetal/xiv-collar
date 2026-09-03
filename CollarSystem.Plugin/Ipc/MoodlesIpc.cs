@@ -7,51 +7,53 @@ using ECommons.GameHelpers;
 
 namespace CollarSystem.Plugin.Ipc;
 
-public readonly record struct MoodlesPreset(Guid Id, string Name);
+public readonly record struct MoodlesStatus(Guid Id, string Name);
 public enum MoodlesScanStatus { Success, Unavailable, Failed }
-public readonly record struct MoodlesScanResult(MoodlesScanStatus Status, IReadOnlyList<MoodlesPreset> Presets, string? Error = null);
+public readonly record struct MoodlesScanResult(MoodlesScanStatus Status, IReadOnlyList<MoodlesStatus> Statuses, string? Error = null);
 
-/// Exact consumer-side mirror of kawaii/Moodles' current IPCProcessor surface. Preset enumeration is
-/// local-library-wide and takes no character argument. Player operations take GUID first, then the
-/// actual IPlayerCharacter (not a character-name string).
+/// Exact consumer-side mirror of kawaii/Moodles' current IPCProcessor surface. Reads individual registered
+/// statuses (buffs/debuffs) via `GetRegisteredMoodlesV2` rather than bundled presets via
+/// `GetPresetsInfoListV2` - collar/moodles wants the Owner commanding a single status, not a preset. Status
+/// enumeration is local-library-wide and takes no character argument. Player operations take GUID first,
+/// then the actual IPlayerCharacter (not a character-name string).
 public sealed class MoodlesIpc
 {
-    private readonly ICallGateSubscriber<List<(Guid GUID, List<Guid> Statuses, int ApplicationType, string Title)>> getPresetsInfoList;
-    private readonly ICallGateSubscriber<Guid, IPlayerCharacter, object> applyPresetByPlayer;
+    private readonly ICallGateSubscriber<List<(Guid ID, uint IconID, string FullPath, string Title)>> getRegisteredMoodles;
+    private readonly ICallGateSubscriber<Guid, IPlayerCharacter, object> addOrUpdateMoodleByPlayer;
     private readonly ICallGateSubscriber<IPlayerCharacter, object> clearStatusManagerByPlayer;
 
     public MoodlesIpc()
     {
-        getPresetsInfoList = Plugin.PluginInterface.GetIpcSubscriber<List<(Guid, List<Guid>, int, string)>>("Moodles.GetPresetsInfoListV2");
-        applyPresetByPlayer = Plugin.PluginInterface.GetIpcSubscriber<Guid, IPlayerCharacter, object>("Moodles.ApplyPresetByPlayerV2");
+        getRegisteredMoodles = Plugin.PluginInterface.GetIpcSubscriber<List<(Guid, uint, string, string)>>("Moodles.GetRegisteredMoodlesV2");
+        addOrUpdateMoodleByPlayer = Plugin.PluginInterface.GetIpcSubscriber<Guid, IPlayerCharacter, object>("Moodles.AddOrUpdateMoodleByPlayerV2");
         clearStatusManagerByPlayer = Plugin.PluginInterface.GetIpcSubscriber<IPlayerCharacter, object>("Moodles.ClearStatusManagerByPlayerV2");
     }
 
-    public MoodlesScanResult GetOwnPresets()
+    public MoodlesScanResult GetOwnStatuses()
     {
         try
         {
-            var presets = getPresetsInfoList.InvokeFunc().Select(p => new MoodlesPreset(p.GUID, p.Title)).ToList();
-            return new MoodlesScanResult(MoodlesScanStatus.Success, presets);
+            var statuses = getRegisteredMoodles.InvokeFunc().Select(s => new MoodlesStatus(s.ID, s.Title)).ToList();
+            return new MoodlesScanResult(MoodlesScanStatus.Success, statuses);
         }
         catch (Dalamud.Plugin.Ipc.Exceptions.IpcNotReadyError ex)
         {
-            Plugin.Log.Warning(ex, "Moodles is not available while reading presets.");
+            Plugin.Log.Warning(ex, "Moodles is not available while reading statuses.");
             return new MoodlesScanResult(MoodlesScanStatus.Unavailable, [], "Moodles is not installed or ready.");
         }
         catch (Exception ex)
         {
-            Plugin.Log.Error(ex, "Failed to read the local Moodles preset library.");
+            Plugin.Log.Error(ex, "Failed to read the local Moodles status library.");
             return new MoodlesScanResult(MoodlesScanStatus.Failed, [], ex.Message);
         }
     }
 
-    public bool ApplyPreset(Guid presetId)
+    public bool ApplyStatus(Guid statusId)
     {
         var player = Player.Object;
         if (player is null) return false;
-        try { applyPresetByPlayer.InvokeAction(presetId, player); return true; }
-        catch (Exception ex) { Plugin.Log.Error(ex, "Failed to apply a Moodles preset."); return false; }
+        try { addOrUpdateMoodleByPlayer.InvokeAction(statusId, player); return true; }
+        catch (Exception ex) { Plugin.Log.Error(ex, "Failed to apply a Moodles status."); return false; }
     }
 
     public bool ClearStatus()

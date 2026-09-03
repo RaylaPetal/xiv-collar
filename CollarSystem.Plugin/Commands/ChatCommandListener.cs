@@ -295,7 +295,7 @@ public sealed class ChatCommandListener : IDisposable
             return;
         }
 
-        Plugin.Log.Information($"Unrecognized \"moodle\" override \"{rest}\" - expected \"apply <preset name>\" or \"clear\".");
+        Plugin.Log.Information($"Unrecognized \"moodle\" override \"{rest}\" - expected \"apply <status name>\" or \"clear\".");
     }
 
     private void HandleForceRestraint(string rest)
@@ -309,9 +309,14 @@ public sealed class ChatCommandListener : IDisposable
         const string lockPrefix = "lock ";
         if (rest.StartsWith(lockPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            var name = StripQuotes(rest[lockPrefix.Length..].Trim());
-            if (name.Length > 0)
-                restraints.ForceApply(name);
+            var remainder = rest[lockPrefix.Length..];
+            if (RestraintCommand.TryParseLockCommand(remainder, out var name, out var rules) && name.Length > 0)
+            {
+                if (rules is { Count: > 0 })
+                    restraints.ForceApply(name, rules);
+                else
+                    restraints.ForceApply(name);
+            }
             return;
         }
 

@@ -3,22 +3,23 @@ using System.Collections.Generic;
 
 namespace CollarSystem.Plugin.Config;
 
-/// One of the Sub's own saved Moodles presets (collar/moodles). Moodles presets have no folder/category
-/// organization the way Penumbra mods or Glamourer designs do, so unlike GestureMapping/WardrobeMapping
-/// there is no allowlist to scope scanning - every saved preset is eligible, matching how Moodles itself
-/// presents them as one flat list.
+/// One of the Sub's own individual Moodles statuses (buffs/debuffs) - collar/moodles reads these directly
+/// rather than bundled presets, so the Owner can apply/clear a single status. Moodles statuses have no
+/// folder/category organization the way Penumbra mods or Glamourer designs do, so unlike
+/// GestureMapping/WardrobeMapping there is no allowlist to scope scanning - every registered status is
+/// eligible, matching how Moodles itself presents them as one flat list.
 [Serializable]
-public class MoodlesPresetEntry
+public class MoodlesStatusEntry
 {
-    public string PresetId { get; set; } = "";
+    public string StatusId { get; set; } = "";
     public string Name { get; set; } = "";
 }
 
 [Serializable]
 public class MoodlesMapping
 {
-    /// Sub-side: the preset catalog this Sub's own scan produced, keyed by preset id. Local-only, same
-    /// reasoning as GestureMapping.LocalCatalog - the Owner only ever learns preset names via the Sub's
+    /// Sub-side: the status catalog this Sub's own scan produced, keyed by status id. Local-only, same
+    /// reasoning as GestureMapping.LocalCatalog - the Owner only ever learns status names via the Sub's
     /// own "Copy names" export, never a live push.
-    public Dictionary<string, MoodlesPresetEntry> LocalCatalog { get; set; } = new();
+    public Dictionary<string, MoodlesStatusEntry> LocalCatalog { get; set; } = new();
 }

@@ -79,16 +79,31 @@ lingers after unlock. Gesture has nothing to
 lock: when its permission is enabled, a gesture command temporarily enables the selected Penumbra animation
 option, redraws, waits briefly for the redraw to visually settle, and then plays its tied trigger. `collar` only ever
 has one override, `collar unlock` - the collar itself never applies through a command, only automatically
-at pairing acceptance (see Consent model below). `moodle apply <preset name>` / `moodle clear` apply or
-remove a status effect from the Sub's own saved Moodles presets, immediately, with no confirmation queue -
-a Moodle is a visual status icon, not a real emote/animation the way Gesture is.
+at pairing acceptance (see Consent model below). `moodle apply <status name>` / `moodle clear` apply or
+remove a status effect from the Sub's own registered Moodles statuses (individual buffs/debuffs), immediately,
+with no confirmation queue - a Moodle is a visual status icon, not a real emote/animation the way Gesture is.
+
+> **Breaking change:** Moodles scanning switched from reading the Sub's saved *presets* to reading their
+> individual registered *statuses* (buffs/debuffs) directly. Existing Owner Moodles Quick Commands built
+> from preset names will no longer resolve - rescan Moodles on the Sub's side and re-import on the Owner's
+> side to rebuild them from status names.
 
 The Owner's window builds these into one-click **Quick Commands** per category (Title/Outfit/Gesture/
 Follow/Moodles/Restraints, plus a general Alias/one-off box with its own "Add Command", and fixed
 "Collar unlock"/"Restraint unlock" rows). Outfit/Gesture/Moodles/Restraints are populated together by the
 centered **"Import commands"** button at the top of the Owner tab, which reads a file the Sub exported from
-Settings' unified Scan & Export section and fills all four in one action - see Automation risk below for
-what the Send button on each Quick Command actually does.
+Settings' unified Scan & Export section and fills all four in one action - a "Reset imports" button next to
+it clears those same four import-populated lists back to empty in one action, without touching Title/Leash/
+Alias commands built by hand - see Automation risk below for what the Send button on each Quick Command
+actually does.
+
+> **Restraints import now carries every scanned design, tagged or not** - the Sub no longer has to tag a
+> device with rules before an Owner can import it. Instead, each imported Restraints Quick Command needs the
+> Owner to configure its own restriction rules (forced pose, walk-only, action block, gag) via the
+> "Configure rules" control on that entry, the same rule set the Sub's own Restraints tab uses. Those
+> Owner-assigned rules travel with the `restraint lock` command and take effect on the Sub's side regardless
+> of whatever rules (if any) the Sub separately tagged for that same design - Send stays disabled on an
+> entry until rules are assigned.
 
 ## Consent model
 

@@ -39,6 +39,21 @@ public class QuickCommand
 {
     public string Label { get; set; } = "";
     public string Command { get; set; } = "";
+
+    /// collar/restraints only: the Owner-assigned restriction rules for this restraint quick command, kept
+    /// in sync with the encoded suffix in `Command` (see CollarWindow's restraint rule editor). Null or
+    /// empty means the Owner hasn't configured this entry yet - it can't be sent until they do.
+    public List<RestraintRuleAssignment>? RestraintRules { get; set; }
+
+    /// collar/gesture only: the source mod/group names and their manifest order, carried through from the
+    /// Sub's export, so the Owner's Gesture quick-command list can group and order entries the same way the
+    /// animation picker does (numerically, e.g. option 1..400, rather than alphabetically as text - "10"
+    /// sorts before "2" as a string). Null/0 for entries imported before these fields existed - those fall
+    /// back to an "Ungrouped" bucket, alphabetically ordered, until re-imported.
+    public string? GestureModName { get; set; }
+    public string? GestureGroupName { get; set; }
+    public int GestureGroupOrder { get; set; }
+    public int GestureOptionOrder { get; set; }
 }
 
 /// Owner-side only in practice. Outfits/Gestures are normally auto-populated by "Add from clipboard" (one
@@ -57,8 +72,9 @@ public class OwnerQuickCommands
     public List<QuickCommand> Moodles { get; set; } = new();
     public List<QuickCommand> Aliases { get; set; } = new();
 
-    /// collar/restraints: Owner-side saved `restraint lock <name>` quick commands, one per tagged device
-    /// name - same auto-populated-via-import pattern as Outfits/Moodles.
+    /// collar/restraints: Owner-side saved `restraint lock <name>` quick commands, one per scanned design
+    /// name (tagged by the Sub or not) - same auto-populated-via-import pattern as Outfits/Moodles. Each
+    /// entry needs its own QuickCommand.RestraintRules assigned by the Owner before it can be sent.
     public List<QuickCommand> Restraints { get; set; } = new();
 }
 

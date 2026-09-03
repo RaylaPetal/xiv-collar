@@ -85,6 +85,34 @@ public sealed class RestraintCommand
         return true;
     }
 
+    /// The Owner's rule-carrying override (collar/restraints "Owner force-apply and force-release
+    /// override"): matches `deviceName` against every scanned design (tagged or not - see Rescan), and
+    /// activates exactly the rules the Owner assigned to their quick command, ignoring whatever rules the
+    /// Sub may have separately tagged that same design with. The ephemeral device's id is the design's own
+    /// GUID, so re-applying the same design consistently maps to the same active-device/rule-conflict
+    /// tracking entry across calls.
+    public bool ForceApply(string deviceName, List<RestraintRuleAssignment> rules)
+    {
+        var scanned = config.RestraintMapping.ScannedDesigns.Values
+            .FirstOrDefault(d => string.Equals(d.Name, deviceName, StringComparison.OrdinalIgnoreCase));
+        if (scanned is null)
+            return false;
+
+        var device = new RestraintDeviceDefinition
+        {
+            Id = scanned.DesignId.ToString("N"),
+            DesignId = scanned.DesignId,
+            Name = scanned.Name,
+            Rules = rules,
+        };
+
+        if (!ApplyDevice(device.Id, device))
+            return false;
+
+        runtimeState.RestraintsForceLocked = true;
+        return true;
+    }
+
     /// The only thing that can release every Owner-forced device besides panic.
     public bool ForceUnlock()
     {
@@ -231,9 +259,81 @@ public sealed class RestraintCommand
         config.Save();
     }
 
-    /// collar/catalog-sync: every tagged device's display name, deduplicated - same plain-name export
-    /// shape OutfitCommand/MoodlesCommand provide, since a restraint device is identified by name alone
-    /// for Owner purposes (ChatCommandListener.HandleForceRestraint's `restraint lock <name>` grammar).
+    private const string RulesToken = "rules:";
+
+    /// Builds the chat text for an Owner's rule-carrying restraint quick command: the device name always
+    /// quoted (so TryParseLockCommand can find where it ends) followed by a `rules:` token listing every
+    /// assigned rule. An older paired Sub client that doesn't understand this suffix still sees a quoted
+    /// name it won't match against its own unquoted device names, so it fails closed (no action) rather
+    /// than applying the wrong rules - see design.md's "additive, gracefully-degrading payload" decision.
+    public static string BuildLockCommand(string deviceName, List<RestraintRuleAssignment> rules)
+    {
+        var tokens = rules.Select(r => r.Kind switch
+        {
+            RestraintRuleKind.ForcedPose => $"pose={r.PoseModeId}",
+            RestraintRuleKind.WalkOnly => "walkonly",
+            RestraintRuleKind.ActionBlock => "actionblock",
+            RestraintRuleKind.GagChat => "gag",
+            _ => "",
+        }).Where(t => t.Length > 0);
+
+        return $"restraint lock \"{deviceName}\" {RulesToken}{string.Join(',', tokens)}";
+    }
+
+    /// Parses the remainder of a `restraint lock ...` command (after the "lock " prefix) into a device
+    /// name and, if present, the Owner-assigned rules carried in a `rules:` suffix. A legacy plain/unquoted
+    /// name (no quotes, no rule suffix) parses as before - the whole remainder is the name, rules null -
+    /// preserving the pre-existing Sub-tag lookup path for hand-typed overrides and stale saved commands.
+    public static bool TryParseLockCommand(string remainder, out string deviceName, out List<RestraintRuleAssignment>? rules)
+    {
+        rules = null;
+        var trimmed = remainder.Trim();
+
+        if (trimmed.StartsWith('"'))
+        {
+            var closing = trimmed.IndexOf('"', 1);
+            if (closing < 0)
+            {
+                deviceName = trimmed.Trim('"');
+                return deviceName.Length > 0;
+            }
+
+            deviceName = trimmed[1..closing];
+            var tail = trimmed[(closing + 1)..].Trim();
+            if (tail.StartsWith(RulesToken, StringComparison.OrdinalIgnoreCase))
+                rules = ParseRuleTokens(tail[RulesToken.Length..]);
+
+            return deviceName.Length > 0;
+        }
+
+        deviceName = trimmed;
+        return deviceName.Length > 0;
+    }
+
+    private static List<RestraintRuleAssignment> ParseRuleTokens(string tokens)
+    {
+        var rules = new List<RestraintRuleAssignment>();
+        foreach (var token in tokens.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (token.StartsWith("pose=", StringComparison.OrdinalIgnoreCase) && int.TryParse(token.AsSpan(5), out var poseId))
+                rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = poseId });
+            else if (token.Equals("walkonly", StringComparison.OrdinalIgnoreCase))
+                rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.WalkOnly });
+            else if (token.Equals("actionblock", StringComparison.OrdinalIgnoreCase))
+                rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ActionBlock });
+            else if (token.Equals("gag", StringComparison.OrdinalIgnoreCase))
+                rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
+        }
+        return rules;
+    }
+
+    /// collar/catalog-sync: every scanned design's display name, tagged or not, deduplicated with any
+    /// tagged device names - same plain-name export shape OutfitCommand/MoodlesCommand provide, since a
+    /// restraint device is identified by name alone for Owner purposes (ChatCommandListener's
+    /// `restraint lock <name>` grammar). Exporting every scanned name (not only tagged ones) is what lets
+    /// an Owner import and configure a device the Sub never got around to tagging.
     public IReadOnlyList<string> ExportNames() =>
-        config.RestraintMapping.Devices.Values.Select(d => d.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        config.RestraintMapping.ScannedDesigns.Values.Select(d => d.Name)
+            .Concat(config.RestraintMapping.Devices.Values.Select(d => d.Name))
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
 }

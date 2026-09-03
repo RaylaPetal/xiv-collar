@@ -56,7 +56,26 @@ public class CollarWindow : Window, IDisposable
     private string newTitleQuickText = "";
     private string newFollowQuickText = "";
     private string? importResult;
+    private string? resetImportsResult;
     private bool revealSafeword;
+
+    /// collar/ui-organization: search text filtering the Owner's Gesture quick-command list.
+    private string gestureQuickSearch = "";
+
+    /// Owner-side per-quick-command rule editor state (collar/restraints "Owner assigns rules to a quick
+    /// command"), keyed by the quick command's Label - transient UI-only state, not persisted itself (the
+    /// chosen rules are saved onto the QuickCommand on "Save rules").
+    private readonly HashSet<string> expandedRestraintRuleEditors = new();
+    private readonly Dictionary<string, RestraintRuleEditState> restraintRuleEdits = new();
+
+    private sealed class RestraintRuleEditState
+    {
+        public bool ForcedPose;
+        public int PoseIndex;
+        public bool WalkOnly;
+        public bool ActionBlock;
+        public bool GagChat;
+    }
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - never saved,
     /// keyed by a stable per-row id so each row's last result shows independently of the others. Each
@@ -251,7 +270,7 @@ public class CollarWindow : Window, IDisposable
 
         if (ImGuiCheckbox("Moodles", permissions.Moodles, out var newMoodles))
             SavePermission(() => permissions.Moodles = newMoodles);
-        IconGlyph.HelpMarker("Lets a paired Owner apply or clear a Moodle (status effect) from your own saved presets via a trigger tell - applies immediately, no confirmation queue.");
+        IconGlyph.HelpMarker("Lets a paired Owner apply or clear a Moodle (status effect) from your own registered statuses via a trigger tell - applies immediately, no confirmation queue.");
     }
 
     private void DrawTitleModule()
@@ -712,13 +731,16 @@ public class CollarWindow : Window, IDisposable
     /// every category's quick-command list from it in one action (CatalogSyncService.ParseImport).
     private void DrawImportCommandsButton()
     {
-        const string label = "Import commands";
-        var buttonWidth = ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2f;
+        const string importLabel = "Import commands";
+        const string resetLabel = "Reset imports";
+        var importWidth = ImGui.CalcTextSize(importLabel).X + ImGui.GetStyle().FramePadding.X * 2f;
+        var resetWidth = ImGui.CalcTextSize(resetLabel).X + ImGui.GetStyle().FramePadding.X * 2f;
+        var totalWidth = importWidth + ImGui.GetStyle().ItemSpacing.X + resetWidth;
         var avail = ImGui.GetContentRegionAvail().X;
-        if (avail > buttonWidth)
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (avail - buttonWidth) / 2f);
+        if (avail > totalWidth)
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (avail - totalWidth) / 2f);
 
-        if (ImGui.Button(label))
+        if (ImGui.Button(importLabel))
         {
             plugin.FileDialogManager.OpenFileDialog("Import Collar catalog", ".txt", (ok, path) =>
             {
@@ -731,6 +753,7 @@ public class CollarWindow : Window, IDisposable
                     importResult = result.Error ?? (result.TotalAdded == 0
                         ? "Nothing new - everything in that file was already imported."
                         : $"Imported {result.TotalAdded} new command(s): {result.Wardrobe} outfit, {result.Gesture} gesture, {result.Moodles} moodles, {result.Restraints} restraint.");
+                    resetImportsResult = null;
                 }
                 catch (Exception ex)
                 {
@@ -739,11 +762,72 @@ public class CollarWindow : Window, IDisposable
             });
         }
 
+        ImGui.SameLine();
+
+        /// collar/catalog-sync "Owner can reset every import to a blank slate": clears only the four
+        /// import-populated lists, leaving Titles/Follow/Aliases (hand-built, never import-populated)
+        /// untouched - distinct from any single category's own "Clear all".
+        if (ImGui.Button(resetLabel))
+        {
+            var quick = plugin.Configuration.QuickCommands;
+            quick.Outfits.Clear();
+            quick.Gestures.Clear();
+            quick.Moodles.Clear();
+            quick.Restraints.Clear();
+            plugin.Configuration.Save();
+            expandedRestraintRuleEditors.Clear();
+            restraintRuleEdits.Clear();
+            resetImportsResult = "All imports reset to a blank slate.";
+            importResult = null;
+        }
+        IconGlyph.HelpMarker("Clears every import-populated quick-command list (Outfit, Gesture, Moodles, Restraints) back to empty. Title, Leash, and Alias commands you built by hand are untouched.");
+
         if (importResult is not null)
         {
             var isError = importResult.StartsWith("Import failed", StringComparison.Ordinal) || importResult.Contains("doesn't look like", StringComparison.Ordinal) || importResult.Contains("is empty", StringComparison.Ordinal);
             IconGlyph.WrappedColored(isError ? Theme.Danger : Theme.Success, importResult);
         }
+        if (resetImportsResult is not null)
+            IconGlyph.WrappedColored(Theme.Success, resetImportsResult);
+    }
+
+    /// collar/ui-organization: draws a section's icon+title, then (if `showClearAll`) a "Clear all" button
+    /// right-aligned on that same row - no prior "title ... [button]" row existed anywhere in this UI, so
+    /// this is the one shared right-alignment routine every quick-command section now uses (design.md
+    /// decision #3), based on the same GetContentRegionAvail math DrawImportCommandsButton already used to
+    /// center its own button. Wraps to its own line instead of being clipped when the window is too narrow
+    /// for the button to fit next to the title.
+    private static void DrawSectionTitleRow(FontAwesomeIcon icon, string title, bool showClearAll, string idSuffix, Action onClearAll)
+    {
+        IconGlyph.Text(icon, title);
+        if (!showClearAll)
+            return;
+
+        const string label = "Clear all";
+        var buttonWidth = ButtonWidth(label);
+        ImGui.SameLine();
+        var avail = ImGui.GetContentRegionAvail().X;
+        if (avail < buttonWidth)
+            ImGui.NewLine();
+        else if (avail > buttonWidth)
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + avail - buttonWidth);
+        if (ImGui.SmallButton($"{label}##{idSuffix}"))
+            onClearAll();
+    }
+
+    /// The rendered width of a button carrying this visible text, ignoring any "##id" suffix - used to
+    /// decide whether the next control in a row still fits before wrapping (see ContinueRowOrWrap).
+    private static float ButtonWidth(string visibleLabel) =>
+        ImGui.CalcTextSize(visibleLabel).X + ImGui.GetStyle().FramePadding.X * 2f;
+
+    /// collar/ui-organization: keeps a horizontal row of buttons from being clipped off-window when it's
+    /// too narrow to fit them all - continues the row with SameLine() when the next control still fits,
+    /// otherwise wraps it onto a fresh line (ImGui.NewLine() undoes the SameLine positioning it just did).
+    private static void ContinueRowOrWrap(float nextControlWidth)
+    {
+        ImGui.SameLine();
+        if (ImGui.GetContentRegionAvail().X < nextControlWidth)
+            ImGui.NewLine();
     }
 
     private static void DrawOwnerSection(string label, Action draw, bool defaultOpen = false)
@@ -773,20 +857,18 @@ public class CollarWindow : Window, IDisposable
 
     private void DrawMoodlesQuickSection(bool canSend)
     {
-        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles");
         var quick = plugin.Configuration.QuickCommands.Moodles;
-
-        if (quick.Count > 0 && ImGui.SmallButton("Clear all##moodlesQuick"))
+        DrawSectionTitleRow(FontAwesomeIcon.TheaterMasks, "Moodles", quick.Count > 0, "moodlesQuick", () =>
         {
             quick.Clear();
             plugin.Configuration.Save();
-        }
+        });
 
         DrawFixedQuickRow("Clear moodle", "moodle clear", canSend);
 
         if (quick.Count == 0)
         {
-            ImGui.TextDisabled("No Moodles presets imported yet - use \"Import commands\" above.");
+            ImGui.TextDisabled("No Moodles statuses imported yet - use \"Import commands\" above.");
             return;
         }
 
@@ -795,23 +877,23 @@ public class CollarWindow : Window, IDisposable
             DrawSavedQuickRow(cmd, quick, canSend);
     }
 
-    /// collar/restraints: Owner-tab quick commands for the first time - no per-category import button
-    /// here (collar/catalog-sync's unified "Import commands" is the only way to populate this list; see
-    /// DrawOwnerModule), just browse/send/remove and the fixed force-unlock row.
+    /// collar/restraints: Owner-tab quick commands - no per-category import button here (collar/catalog-
+    /// sync's unified "Import commands" is the only way to populate this list; see DrawOwnerModule). Every
+    /// imported entry starts with no rules assigned (RestraintCommand.ExportNames now exports every
+    /// scanned design, tagged or not), so each row exposes a "Configure rules" editor - the same rule set
+    /// DrawRestraintsModule's "Tag a new device" section uses - and Send/Copy stay disabled until at least
+    /// one rule is assigned (collar/restraints "Owner quick command with no rules assigned yet").
     private void DrawRestraintQuickSection(bool canSend)
     {
-        IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints");
         var quick = plugin.Configuration.QuickCommands.Restraints;
-
-        DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend);
-        IconGlyph.HelpMarker("Force-releases every active restraint device and clears the force-lock, the same as your Sub's panic would for restraints specifically.");
-
-        if (quick.Count > 0 && ImGui.SmallButton("Clear all##restraintsQuick"))
+        DrawSectionTitleRow(FontAwesomeIcon.Handcuffs, "Restraints", quick.Count > 0, "restraintsQuick", () =>
         {
             quick.Clear();
             plugin.Configuration.Save();
-            return;
-        }
+        });
+
+        DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend);
+        IconGlyph.HelpMarker("Force-releases every active restraint device and clears the force-lock, the same as your Sub's panic would for restraints specifically.");
 
         if (quick.Count == 0)
         {
@@ -819,9 +901,112 @@ public class CollarWindow : Window, IDisposable
             return;
         }
 
-        using var _ = ImRaii.Child("restraintsQuickList", new Vector2(0, 120), true);
+        using var _ = ImRaii.Child("restraintsQuickList", new Vector2(0, 260), true);
         foreach (var cmd in quick.ToArray())
-            DrawSavedQuickRow(cmd, quick, canSend);
+            DrawRestraintQuickRow(cmd, quick, canSend);
+    }
+
+    private void DrawRestraintQuickRow(QuickCommand cmd, List<QuickCommand> list, bool canSend)
+    {
+        ImGui.PushID($"restraintQuick_{cmd.Label}");
+        var hasRules = cmd.RestraintRules is { Count: > 0 };
+
+        ImGui.TextUnformatted(cmd.Label);
+        ContinueRowOrWrap(ButtonWidth("Send"));
+        using (ImRaii.Disabled(!hasRules))
+            DrawSendCopyButtons(cmd.Command, canSend, $"{cmd.Label}_{cmd.Command}");
+        var configureLabel = hasRules ? "Edit rules" : "Configure rules";
+        ContinueRowOrWrap(ButtonWidth(configureLabel));
+        var expanded = expandedRestraintRuleEditors.Contains(cmd.Label);
+        if (ImGui.SmallButton(configureLabel))
+        {
+            if (expanded)
+            {
+                expandedRestraintRuleEditors.Remove(cmd.Label);
+            }
+            else
+            {
+                expandedRestraintRuleEditors.Add(cmd.Label);
+                restraintRuleEdits[cmd.Label] = FromRules(cmd.RestraintRules);
+            }
+            expanded = !expanded;
+        }
+        ContinueRowOrWrap(ButtonWidth("Remove"));
+        if (ImGui.SmallButton("Remove"))
+        {
+            list.Remove(cmd);
+            expandedRestraintRuleEditors.Remove(cmd.Label);
+            restraintRuleEdits.Remove(cmd.Label);
+            plugin.Configuration.Save();
+            ImGui.PopID();
+            return;
+        }
+
+        if (!hasRules)
+        {
+            IconGlyph.WrappedColored(Theme.Warning, "No rules assigned yet - configure rules before this can be sent.");
+        }
+
+        if (expanded && restraintRuleEdits.TryGetValue(cmd.Label, out var edit))
+        {
+            ImGui.Indent();
+            ImGui.Checkbox("Forced pose##restraintQuickRule", ref edit.ForcedPose);
+            if (edit.ForcedPose)
+                ImGui.Combo("Pose##restraintQuickRule", ref edit.PoseIndex, PoseNames, PoseNames.Length);
+            ImGui.Checkbox("Walk-only##restraintQuickRule", ref edit.WalkOnly);
+            ImGui.Checkbox("Action block##restraintQuickRule", ref edit.ActionBlock);
+            ImGui.Checkbox("Gag chat##restraintQuickRule", ref edit.GagChat);
+
+            var hasAnyRule = edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat;
+            using (ImRaii.Disabled(!hasAnyRule))
+            {
+                if (ImGui.SmallButton("Save rules##restraintQuickRule"))
+                {
+                    var rules = ToRules(edit);
+                    cmd.RestraintRules = rules;
+                    cmd.Command = RestraintCommand.BuildLockCommand(cmd.Label, rules);
+                    plugin.Configuration.Save();
+                    expandedRestraintRuleEditors.Remove(cmd.Label);
+                    restraintRuleEdits.Remove(cmd.Label);
+                }
+            }
+            ImGui.Unindent();
+        }
+
+        ImGui.PopID();
+    }
+
+    private static RestraintRuleEditState FromRules(List<RestraintRuleAssignment>? rules)
+    {
+        var edit = new RestraintRuleEditState();
+        foreach (var rule in rules ?? [])
+        {
+            switch (rule.Kind)
+            {
+                case RestraintRuleKind.ForcedPose:
+                    edit.ForcedPose = true;
+                    edit.PoseIndex = Math.Clamp(rule.PoseModeId - 1, 0, PoseNames.Length - 1);
+                    break;
+                case RestraintRuleKind.WalkOnly: edit.WalkOnly = true; break;
+                case RestraintRuleKind.ActionBlock: edit.ActionBlock = true; break;
+                case RestraintRuleKind.GagChat: edit.GagChat = true; break;
+            }
+        }
+        return edit;
+    }
+
+    private static List<RestraintRuleAssignment> ToRules(RestraintRuleEditState edit)
+    {
+        var rules = new List<RestraintRuleAssignment>();
+        if (edit.ForcedPose)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = edit.PoseIndex + 1 });
+        if (edit.WalkOnly)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.WalkOnly });
+        if (edit.ActionBlock)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ActionBlock });
+        if (edit.GagChat)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
+        return rules;
     }
 
     private void DrawTitleQuickSection(bool canSend)
@@ -853,14 +1038,12 @@ public class CollarWindow : Window, IDisposable
 
     private void DrawOutfitQuickSection(bool canSend)
     {
-        IconGlyph.Text(FontAwesomeIcon.Tshirt, "Outfit");
         var quick = plugin.Configuration.QuickCommands.Outfits;
-
-        if (quick.Count > 0 && ImGui.SmallButton("Clear all##outfitQuick"))
+        DrawSectionTitleRow(FontAwesomeIcon.Tshirt, "Outfit", quick.Count > 0, "outfitQuick", () =>
         {
             quick.Clear();
             plugin.Configuration.Save();
-        }
+        });
 
         DrawFixedQuickRow("Unlock outfit", "outfit unlock", canSend);
 
@@ -875,16 +1058,18 @@ public class CollarWindow : Window, IDisposable
             DrawSavedQuickRow(cmd, quick, canSend);
     }
 
+    /// collar/ui-organization: reworked to match the Sub's animation picker (AnimationPickerWindow) instead
+    /// of one flat scrolling list - a Sub with 1000+ gestures made the old fixed-height flat child
+    /// unusable. Grouped by GestureModName/GestureGroupName (carried through import - see
+    /// CatalogSyncService.ImportGestureLines) with a search box filtering by mod/group/label.
     private void DrawGestureQuickSection(bool canSend)
     {
-        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Gesture");
         var quick = plugin.Configuration.QuickCommands.Gestures;
-
-        if (quick.Count > 0 && ImGui.SmallButton("Clear all##gestureQuick"))
+        DrawSectionTitleRow(FontAwesomeIcon.TheaterMasks, "Gesture", quick.Count > 0, "gestureQuick", () =>
         {
             quick.Clear();
             plugin.Configuration.Save();
-        }
+        });
 
         if (quick.Count == 0)
         {
@@ -892,9 +1077,56 @@ public class CollarWindow : Window, IDisposable
             return;
         }
 
-        using var _ = ImRaii.Child("gestureQuickList", new Vector2(0, 120), true);
-        foreach (var cmd in quick.ToArray())
-            DrawSavedQuickRow(cmd, quick, canSend);
+        ImGui.SetNextItemWidth(Math.Max(180, ImGui.GetContentRegionAvail().X));
+        ImGui.InputTextWithHint("##gestureQuickSearch", "Search mod, group, or animation...", ref gestureQuickSearch, 128);
+
+        var filter = gestureQuickSearch.Trim();
+        var visible = quick.Where(c => filter.Length == 0
+            || c.Label.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || (c.GestureModName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (c.GestureGroupName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false))
+            .ToList();
+
+        ImGui.TextDisabled($"{visible.Count} shown / {quick.Count} imported");
+
+        using var _ = ImRaii.Child("gestureQuickList", new Vector2(0, 260), true);
+        if (visible.Count == 0)
+        {
+            ImGui.TextDisabled("No gestures match this search.");
+            return;
+        }
+
+        foreach (var modGroup in visible.GroupBy(c => c.GestureModName ?? "Ungrouped").OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var modFlags = filter.Length > 0 ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+            if (!ImGui.CollapsingHeader($"{modGroup.Key} ({modGroup.Count()})##gestureQuickMod_{modGroup.Key}", modFlags))
+                continue;
+
+            ImGui.Indent();
+            // Ordered by GestureGroupOrder/GestureOptionOrder (the Sub's own Penumbra manifest order,
+            // carried through import - see CatalogSyncService.ImportGestureLines), not alphabetically -
+            // an alphabetic sort of option names like "1".."400" would put "10" before "2".
+            foreach (var subGroup in modGroup.GroupBy(c => c.GestureGroupName ?? "").OrderBy(g => g.Min(c => c.GestureGroupOrder)))
+            {
+                var hasGroupLabel = subGroup.Key.Length > 0;
+                var groupOpen = true;
+                if (hasGroupLabel)
+                {
+                    var groupFlags = subGroup.Count() <= 4 || filter.Length > 0 ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+                    groupOpen = ImGui.TreeNodeEx($"{subGroup.Key}##gestureQuickGroup_{modGroup.Key}_{subGroup.Key}", groupFlags);
+                }
+
+                if (groupOpen)
+                {
+                    foreach (var cmd in subGroup.OrderBy(c => c.GestureOptionOrder))
+                        DrawSavedQuickRow(cmd, quick, canSend);
+                }
+
+                if (hasGroupLabel && groupOpen)
+                    ImGui.TreePop();
+            }
+            ImGui.Unindent();
+        }
     }
 
     /// Follow has no reserved-keyword override the way Title/Outfit/Gesture do (ChatCommandListener never
@@ -984,16 +1216,16 @@ public class CollarWindow : Window, IDisposable
     private void DrawFixedQuickRow(string label, string command, bool canSend)
     {
         ImGui.TextUnformatted(label);
-        ImGui.SameLine();
+        ContinueRowOrWrap(ButtonWidth("Send"));
         DrawSendCopyButtons(command, canSend, $"fixed_{label}");
     }
 
     private void DrawSavedQuickRow(QuickCommand cmd, List<QuickCommand> list, bool canSend)
     {
         ImGui.TextUnformatted(cmd.Label);
-        ImGui.SameLine();
+        ContinueRowOrWrap(ButtonWidth("Send"));
         DrawSendCopyButtons(cmd.Command, canSend, $"{cmd.Label}_{cmd.Command}");
-        ImGui.SameLine();
+        ContinueRowOrWrap(ButtonWidth("Remove"));
         if (ImGui.SmallButton($"Remove##{cmd.Label}_{cmd.Command}"))
         {
             list.Remove(cmd);
@@ -1013,7 +1245,7 @@ public class CollarWindow : Window, IDisposable
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
 
-        ImGui.SameLine();
+        ContinueRowOrWrap(ButtonWidth("Copy"));
         if (ImGui.SmallButton($"Copy##{idSuffix}"))
             ImGui.SetClipboardText(composed);
     }
