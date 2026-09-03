@@ -98,12 +98,13 @@ Automation risk below for what the Send button on each one actually does.
   locks exactly like a force-applied outfit (the Sub's own casual removal is refused), and `/collarpanic`
   always releases it, no exception - the Owner also has a `collar unlock` override for releasing it without
   the Sub needing to panic.
-- **Panic is a typed safeword, not a button.** There's no panic button anywhere in the UI on purpose -
+- **Panic is a typed safeword, not a button.** The main character header always exposes the safeword
+  setting, whether paired or not, but there's no panic button anywhere in the UI on purpose -
   `/collarpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
   state, clears any Honorific title, and releases any active movement lock, all from local state only. Set
-  a safeword in Settings and `/collarpanic` requires it as an argument (`/collarpanic red`); leave it blank
-  and plain `/collarpanic` keeps working unconditionally, same as before - a forgotten safeword must never
-  be the reason panic stops working.
+  a safeword in the header or Settings and `/collarpanic` requires it as an argument (`/collarpanic red`);
+  leave it blank and plain `/collarpanic` keeps working unconditionally - a forgotten safeword must never
+  be the reason panic stops working. Safewords are masked by default and can be deliberately revealed.
 - **Uninstalling the plugin is always the ultimate safeword.** Since nothing can be applied to a Sub's
   character without the Sub's own plugin running, uninstalling (or simply disabling) it ends all collar
   control immediately. This is the honest FFXIV equivalent of SL OpenCollar's "detach," and there is no
@@ -193,12 +194,14 @@ build task, or building via the `.slnx` all land in the same place.
    * Once both sides have entered each other's code, either side copies the pairing message from Settings
      and sends it as a `/tell` to the other. The receiving side gets a Pending request naming the verified
      sender and their declared role - click **Accept**. Pairing is then locked for a Sub; an Owner can
-     Release it any time (both in the pairing card, or in Settings).
-   * Optionally set a **Safeword** - if set, `/collarpanic` requires it as an argument; if left blank,
-     plain `/collarpanic` keeps working.
+     Release it any time (both in the character header, or in Settings).
+   * Optionally set a **Safeword** in the always-visible main character header or in Settings - if set,
+     `/collarpanic` requires it as an argument; if left blank, plain `/collarpanic` keeps working.
 4. `/collar` opens the one main window; `/collarpanic` (with your safeword as its argument, if you set
-   one) always works from anywhere. Title/Wardrobe/Gesture/Permissions are where a Sub sets up what
-   they'll accept; the **Owner** tab is where you build one-click Quick Commands per category, or compose
+   one) always works from anywhere. The header shows your live character name, home world, optional Free
+   Company tag, and an explicit Not paired/Owns/Owned by/pending relationship state.
+   Title/Wardrobe/Gesture/Permissions are where a Sub sets up what they'll accept; the **Owner** tab is
+   where you build one-click Quick Commands per category, or compose
    a one-off - each has a Send button (fires immediately) and a Copy button (paste it yourself instead).
    Gesture entries show the mod's human-readable animation option and tied trigger; permitted commands
    temporarily activate that option and play it immediately.

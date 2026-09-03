@@ -22,7 +22,7 @@ public class SettingsWindow : Window, IDisposable
     private readonly Plugin plugin;
     private string peerCodeInput = "";
     private string triggerPhraseInput = "";
-    private string safewordInput = "";
+    private bool revealSafeword;
     private string gestureModSearch = "";
     private string newWardrobeAllowlistFolder = "";
 
@@ -41,7 +41,6 @@ public class SettingsWindow : Window, IDisposable
         var config = plugin.Configuration;
         peerCodeInput = config.Pairing.PeerCode ?? "";
         triggerPhraseInput = config.TriggerPhrase;
-        safewordInput = config.PanicSafeword ?? "";
     }
 
     public override void Draw()
@@ -165,11 +164,7 @@ public class SettingsWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.TextWrapped("/collarpanic always reverts everything (unpair, outfit, title, movement lock) from local state only.");
 
-        if (ImGui.InputText("Safeword", ref safewordInput, 32))
-        {
-            config.PanicSafeword = safewordInput.Trim().Length > 0 ? safewordInput.Trim() : null;
-            config.Save();
-        }
+        SafewordEditor.Draw(config, "settings", ref revealSafeword);
         IconGlyph.HelpMarker("If set, /collarpanic requires this exact word as its argument (e.g. \"/collarpanic red\") - typed panic instead of a clickable button. Leave blank and plain /collarpanic keeps working with no argument needed.");
     }
 

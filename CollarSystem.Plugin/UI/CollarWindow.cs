@@ -42,6 +42,7 @@ public class CollarWindow : Window, IDisposable
     private string? outfitImportError;
     private string? gestureImportError;
     private string? moodlesImportError;
+    private bool revealSafeword;
 
     private static readonly (string Id, FontAwesomeIcon Icon, string Tooltip)[] NavItems =
     [
@@ -70,7 +71,7 @@ public class CollarWindow : Window, IDisposable
 
     public override void Draw()
     {
-        DrawPairingCard();
+        DrawCharacterHeader();
         ImGui.Spacing();
 
         if (NavBar.Draw(activeModule, NavItems) is { } clicked)
@@ -106,21 +107,47 @@ public class CollarWindow : Window, IDisposable
     /// half. Sub's accepted pairing stays locked (only /collarpanic, the safeword command, undoes it);
     /// Owner's has a plain Release button, since nothing is actually applied to the Owner's own character
     /// for panic to revert.
-    private void DrawPairingCard()
+    private void DrawCharacterHeader()
     {
         var pending = plugin.ChatCommandListener.Pending;
         var pairing = plugin.Configuration.Pairing;
         var config = plugin.Configuration;
+        var character = CharacterHeaderModel.Current();
         var sameRoleWarning = pending is { } p && p.SenderRole == config.Role;
-        var height = pending is not null
-            ? (sameRoleWarning ? 130 : 100)
-            : pairing.IsPaired ? (config.Role == PluginRole.Owner ? 90 : 70) : 90;
-        using var card = Card.Begin("pairingCard", new Vector2(0, height));
+
+        ImGui.PushID("characterHeader");
+        if (!ImGui.BeginTable("banner", 1, ImGuiTableFlags.Borders | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.PopID();
+            return;
+        }
+        ImGui.TableNextRow();
+        ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, ImGui.GetColorU32(Theme.CardBg));
+        ImGui.TableNextColumn();
+
+        ImGui.PushStyleColor(ImGuiCol.Text, Theme.AccentHover);
+        IconGlyph.Text(FontAwesomeIcon.UserCircle, character.Name ?? "Character loading…");
+        ImGui.PopStyleColor();
+
+        if (character.IsAvailable)
+        {
+            var details = character.HomeWorld is { Length: > 0 } ? character.HomeWorld : "Home world unavailable";
+            if (character.FreeCompany is { Length: > 0 })
+                details += $"  ·  «{character.FreeCompany}»";
+            IconGlyph.WrappedDisabled(details);
+        }
+        else
+        {
+            IconGlyph.WrappedDisabled("Local character details will appear after login. Pairing and safety controls remain available.");
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
 
         if (pending is { } request)
         {
             var roleLabel = request.SenderRole == PluginRole.Owner ? "your Owner" : "your Sub";
-            IconGlyph.WrappedColored(Theme.Warning, $"Pairing request from {request.Name}@{request.World} (code matched) - they say they'll be {roleLabel}.");
+            IconGlyph.WrappedColored(Theme.Warning, $"Pending request: {request.Name}@{request.World} wants to pair as {roleLabel}.");
             if (sameRoleWarning)
                 IconGlyph.WrappedColored(Theme.Danger, $"You're both set to {config.Role} in Settings - one of you should switch, or nothing will ever trigger.");
 
@@ -130,16 +157,13 @@ public class CollarWindow : Window, IDisposable
             ImGui.SameLine();
             if (ImGui.Button("Reject"))
                 plugin.ChatCommandListener.DismissPending();
-            return;
         }
-
-        if (!pairing.IsPaired)
+        else if (!pairing.IsPaired)
         {
-            IconGlyph.WrappedColored(Theme.Warning, "Not paired - set your codes and send the pairing message in Settings (gear icon).");
-            return;
+            IconGlyph.WrappedColored(Theme.TextMuted, "Not paired");
+            IconGlyph.WrappedDisabled("Set your codes and send the pairing message from Settings when you're ready.");
         }
-
-        if (config.Role == PluginRole.Owner)
+        else if (config.Role == PluginRole.Owner)
         {
             IconGlyph.WrappedColored(Theme.Success, $"Owns: {pairing.PeerName}@{pairing.PeerWorld}");
             if (ImGui.Button("Release pairing"))
@@ -148,9 +172,18 @@ public class CollarWindow : Window, IDisposable
         }
         else
         {
-            IconGlyph.WrappedColored(Theme.Success, $"Paired with: {pairing.PeerName}@{pairing.PeerWorld}");
-            ImGui.TextDisabled("Locked - use /collarpanic (your safeword) to unpair.");
+            IconGlyph.WrappedColored(Theme.Success, $"Owned by: {pairing.PeerName}@{pairing.PeerWorld}");
+            IconGlyph.WrappedDisabled("Locked until you use /collarpanic.");
         }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        IconGlyph.Text(FontAwesomeIcon.ShieldAlt, "Safeword");
+        SafewordEditor.Draw(config, "mainHeader", ref revealSafeword);
+        IconGlyph.HelpMarker("This only configures the typed /collarpanic command; editing it never triggers panic or changes pairing.");
+        ImGui.Spacing();
+        ImGui.EndTable();
+        ImGui.PopID();
     }
 
     private void DrawPermissionsCard()
