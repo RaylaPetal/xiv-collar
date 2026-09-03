@@ -36,6 +36,7 @@ public sealed class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("CollarSystem");
     private CollarWindow CollarWindow { get; }
     private SettingsWindow SettingsWindow { get; }
+    public AnimationPickerWindow AnimationPickerWindow { get; }
 
     public SubRuntimeState RuntimeState { get; } = new();
 
@@ -87,8 +88,10 @@ public sealed class Plugin : IDalamudPlugin
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
+        AnimationPickerWindow = new AnimationPickerWindow(this);
         WindowSystem.AddWindow(CollarWindow);
         WindowSystem.AddWindow(SettingsWindow);
+        WindowSystem.AddWindow(AnimationPickerWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -123,6 +126,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.RemoveAllWindows();
         CollarWindow.Dispose();
         SettingsWindow.Dispose();
+        AnimationPickerWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(PanicCommandName);

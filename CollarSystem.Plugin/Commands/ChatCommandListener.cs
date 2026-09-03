@@ -189,7 +189,7 @@ public sealed class ChatCommandListener : IDisposable
                     HandleForceOutfit(rest);
                 return;
             case "gesture":
-                if (permissions.Gesture)
+                if (permissions.Gesture && config.TosAcknowledged)
                     HandleForceGesture(rest);
                 return;
             case "collar":
@@ -249,7 +249,7 @@ public sealed class ChatCommandListener : IDisposable
     {
         var name = StripQuotes(rest.Trim());
         if (name.Length > 0)
-            gesture.ForceQueue(name);
+            gesture.ForceApply(name);
     }
 
     /// Only `collar unlock` exists - the collar only ever applies as a side effect of pairing acceptance
@@ -353,8 +353,8 @@ public sealed class ChatCommandListener : IDisposable
         var gestureAlias = aliases.Gestures.FirstOrDefault(a => Matches(alias, a.Alias));
         if (gestureAlias is not null)
         {
-            if (permissions.Gesture)
-                gesture.Queue(gestureAlias);
+            if (permissions.Gesture && config.TosAcknowledged)
+                gesture.Apply(gestureAlias);
             return;
         }
 

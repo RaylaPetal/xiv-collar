@@ -34,8 +34,7 @@ public class CollarWindow : Window, IDisposable
     private bool newOutfitLocked = true;
 
     private string newGestureAlias = "";
-    private string gestureAliasSearch = "";
-    private (string ModDirectory, string ModName, string EmoteName)? selectedAliasGesture;
+    private GestureCatalogEntry? selectedAliasGesture;
 
     private string commandInput = "";
     private string newTitleQuickText = "";
@@ -178,7 +177,7 @@ public class CollarWindow : Window, IDisposable
         {
             if (ImGuiCheckbox("Gesture", permissions.Gesture, out var newGesture))
                 SavePermission(() => permissions.Gesture = newGesture);
-            IconGlyph.HelpMarker("Lets a paired Owner queue an emote via a trigger tell - it never plays automatically, you still confirm it in the Gesture tab.");
+            IconGlyph.HelpMarker("Lets a paired Owner temporarily enable a selected animation mod and immediately play its tied gesture. Disable this permission at any time to reject commands.");
 
             if (ImGuiCheckbox("Follow / Leash (hardcore)", permissions.Follow, out var newFollow))
                 SavePermission(() => permissions.Follow = newFollow);
@@ -307,29 +306,39 @@ public class CollarWindow : Window, IDisposable
         var config = plugin.Configuration;
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Gesture");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Mod folder allowlist and scanning live in Settings (gear icon). Define your gesture aliases below.");
+        IconGlyph.WrappedDisabled("Select animation mods and scan them in Settings, then define aliases from their named options here.");
 
         var gestures = config.Aliases.Gestures;
-        for (var i = 0; i < gestures.Count; i++)
+        var removeGestureIndex = -1;
+        if (gestures.Count > 0 && ImGui.BeginTable("gestureAliases", 2,
+                ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
         {
-            ImGui.PushID($"gesture_{i}");
-            var g = gestures[i];
-            ImGui.BulletText($"{g.Alias} -> {g.EmoteName} ({g.ModName})");
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Remove"))
+            ImGui.TableSetupColumn("Animation", ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, 72);
+            for (var i = 0; i < gestures.Count; i++)
             {
-                gestures.RemoveAt(i);
-                config.Save();
+                ImGui.PushID($"gesture_{i}");
+                var g = gestures[i];
+                var invalid = string.IsNullOrEmpty(g.GestureId) || !config.GestureMapping.LocalCatalog.ContainsKey(g.GestureId);
+
+                ImGui.TableNextRow();
+                ImGui.TableSetColumnIndex(0);
+                ImGui.TextWrapped($"{g.Alias} → {(g.AnimationName.Length > 0 ? g.AnimationName : g.EmoteName)} ({g.ModName}){(invalid ? " — rescan/recreate required" : "")}");
+
+                ImGui.TableSetColumnIndex(1);
+                if (ImGui.SmallButton("Remove")) removeGestureIndex = i;
                 ImGui.PopID();
-                break;
             }
-            ImGui.PopID();
+            ImGui.EndTable();
+        }
+        if (removeGestureIndex >= 0)
+        {
+            gestures.RemoveAt(removeGestureIndex);
+            config.Save();
         }
 
         ImGui.Spacing();
-        var allOptions = config.GestureMapping.LocalCatalog.Values
-            .SelectMany(e => e.EmoteNames.Select(emote => (e.ModDirectory, e.ModName, EmoteName: emote)))
-            .ToList();
+        var allOptions = config.GestureMapping.LocalCatalog.Values.Where(e => e.Trigger != null).ToList();
         if (allOptions.Count == 0)
         {
             ImGui.TextDisabled("No scanned/resolved gestures yet - rescan in Settings (gear icon) first.");
@@ -337,10 +346,11 @@ public class CollarWindow : Window, IDisposable
         }
 
         ImGui.InputText("Alias##newGesture", ref newGestureAlias, 32);
-        IconGlyph.HelpMarker("Short word the Owner types after the trigger phrase to queue this gesture. It never fires automatically - you still confirm it below.");
+        IconGlyph.HelpMarker("Short word the Owner types. With Gesture permission enabled, this immediately enables the chosen animation temporarily and plays its tied trigger.");
         DrawReservedWordWarning(newGestureAlias);
 
-        DrawGesturePicker(allOptions);
+        if (ImGui.Button(selectedAliasGesture is null ? "Add animation..." : "Change animation..."))
+            plugin.AnimationPickerWindow.Open(entry => selectedAliasGesture = entry);
 
         var canAdd = newGestureAlias.Length > 0 && !IsReserved(newGestureAlias) && selectedAliasGesture is not null;
         using (ImRaii.Disabled(!canAdd))
@@ -350,9 +360,11 @@ public class CollarWindow : Window, IDisposable
                 gestures.Add(new GestureAliasDefinition
                 {
                     Alias = newGestureAlias,
+                    GestureId = chosen.Id,
+                    AnimationName = chosen.AnimationName,
                     ModDirectory = chosen.ModDirectory,
                     ModName = chosen.ModName,
-                    EmoteName = chosen.EmoteName,
+                    EmoteName = chosen.Trigger!.DisplayName.TrimStart('/'),
                 });
                 config.Save();
                 newGestureAlias = "";
@@ -362,63 +374,7 @@ public class CollarWindow : Window, IDisposable
         if (selectedAliasGesture is { } picked)
         {
             ImGui.SameLine();
-            ImGui.TextDisabled($"Selected: {picked.EmoteName} ({picked.ModName})");
-        }
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.TextUnformatted("Pending gesture prompts");
-        IconGlyph.HelpMarker("A valid gesture trigger tell never plays automatically - it only queues here. Confirm plays the emote now (via ECommons chat automation); Dismiss discards it silently.");
-        foreach (var prompt in plugin.GestureCommand.PendingPrompts.ToArray())
-        {
-            ImGui.PushID(prompt.Id);
-            ImGui.TextUnformatted($"{prompt.EmoteName} ({prompt.ModName})");
-            ImGui.SameLine();
-            if (ImGui.Button("Confirm"))
-                plugin.GestureCommand.ConfirmAndTrigger(prompt.Id);
-            ImGui.SameLine();
-            if (ImGui.Button("Dismiss"))
-                plugin.GestureCommand.DismissPrompt(prompt.Id);
-            ImGui.PopID();
-        }
-    }
-
-    /// Grouped by mod with a search/filter box, instead of one flat "Emote (ModName)" combo - a folder
-    /// with a lot of pose mods makes a flat list unusable to scan through. Filtering matches either the
-    /// mod name or the emote name; each mod only renders (and only auto-expands) when it still has a
-    /// match, so a search narrows the whole tree instead of just graying out non-matches.
-    private void DrawGesturePicker(List<(string ModDirectory, string ModName, string EmoteName)> options)
-    {
-        ImGui.InputTextWithHint("##gestureSearch", "Search mods or emotes...", ref gestureAliasSearch, 64);
-
-        var filter = gestureAliasSearch.Trim();
-        var groups = options
-            .Where(o => filter.Length == 0
-                        || o.ModName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-                        || o.EmoteName.Contains(filter, StringComparison.OrdinalIgnoreCase))
-            .GroupBy(o => (o.ModDirectory, o.ModName))
-            .OrderBy(g => g.Key.ModName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        using var _ = ImRaii.Child("gesturePicker", new Vector2(0, 160), true);
-        if (groups.Count == 0)
-        {
-            ImGui.TextDisabled("No matches.");
-            return;
-        }
-
-        foreach (var group in groups)
-        {
-            var headerFlags = filter.Length > 0 ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
-            if (!ImGui.CollapsingHeader($"{group.Key.ModName}##{group.Key.ModDirectory}", headerFlags))
-                continue;
-
-            foreach (var entry in group.OrderBy(e => e.EmoteName, StringComparer.OrdinalIgnoreCase))
-            {
-                var isSelected = selectedAliasGesture is { } sel && sel.ModDirectory == entry.ModDirectory && sel.EmoteName == entry.EmoteName;
-                if (ImGui.Selectable($"  {entry.EmoteName}##{entry.ModDirectory}_{entry.EmoteName}", isSelected))
-                    selectedAliasGesture = entry;
-            }
+            ImGui.TextDisabled($"Selected: {picked.Label}");
         }
     }
 
@@ -535,7 +491,7 @@ public class CollarWindow : Window, IDisposable
 
         if (ImGui.SmallButton("Add from clipboard##moodlesQuick"))
             moodlesImportError = ImportQuickCommands(quick, name => $"moodle apply {name}");
-        IconGlyph.HelpMarker("Paste your Sub's \"Copy names\" output (their Settings' Moodles scan card) - one ready-to-use button per preset name, no extra save step. Applies immediately - no confirmation queue on your Sub's end, unlike Gesture.");
+        IconGlyph.HelpMarker("Paste your Sub's \"Copy names\" output (their Settings' Moodles scan card) - one ready-to-use button per preset name, no extra save step. Applies immediately while Moodles permission is enabled.");
         if (quick.Count > 0)
         {
             ImGui.SameLine();
@@ -629,8 +585,8 @@ public class CollarWindow : Window, IDisposable
         var quick = plugin.Configuration.QuickCommands.Gestures;
 
         if (ImGui.SmallButton("Add from clipboard##gestureQuick"))
-            gestureImportError = ImportQuickCommands(quick, name => $"gesture {name}");
-        IconGlyph.HelpMarker("Paste your Sub's \"Copy names\" output (their Settings' Gesture scan card). Sending still only ever queues it on their end - your Sub confirms it themselves before it plays, same as always.");
+            gestureImportError = ImportGestureCommands(quick);
+        IconGlyph.HelpMarker("Imports the Sub's versioned animation catalog. Each button shows the mod, animation option, and tied trigger; sending plays immediately when their Gesture permission is enabled.");
         if (quick.Count > 0)
         {
             ImGui.SameLine();
@@ -821,6 +777,32 @@ public class CollarWindow : Window, IDisposable
         target.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
         plugin.Configuration.Save();
         return addedCount == 0 ? "Nothing new - all of those were already imported." : null;
+    }
+
+    private string? ImportGestureCommands(List<QuickCommand> target)
+    {
+        var text = ImGui.GetClipboardText();
+        if (string.IsNullOrWhiteSpace(text)) return "Clipboard is empty - nothing to import.";
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (lines.Length > 300) return "Too many animation entries; nothing imported.";
+        var parsed = new List<GestureCatalogEntry>();
+        foreach (var line in lines)
+        {
+            if (!GestureCommand.TryParseExport(line, out var entry) || entry is null)
+                return "Clipboard is not a valid Collar gesture catalog; nothing imported.";
+            parsed.Add(entry);
+        }
+        var added = 0;
+        foreach (var entry in parsed)
+        {
+            var command = $"gesture {entry.Id}";
+            if (target.Any(x => x.Command.Equals(command, StringComparison.OrdinalIgnoreCase))) continue;
+            target.Add(new QuickCommand { Label = entry.Label, Command = command });
+            added++;
+        }
+        target.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+        plugin.Configuration.Save();
+        return added == 0 ? "Nothing new - all animations were already imported." : null;
     }
 
     /// "title"/"outfit"/"gesture" are reserved for the Owner's direct override grammar (see

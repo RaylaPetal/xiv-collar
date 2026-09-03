@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using CollarSystem.Plugin.Config;
+using CollarSystem.Plugin.Ipc;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Utility.Raii;
@@ -22,7 +23,7 @@ public class SettingsWindow : Window, IDisposable
     private string peerCodeInput = "";
     private string triggerPhraseInput = "";
     private string safewordInput = "";
-    private string newGestureAllowlistFolder = "";
+    private string gestureModSearch = "";
     private string newWardrobeAllowlistFolder = "";
 
     private static readonly string[] RoleNames = ["Sub", "Owner"];
@@ -220,19 +221,42 @@ public class SettingsWindow : Window, IDisposable
 
     private void DrawGestureScanCard(PluginConfig config)
     {
-        using var card = Card.Begin("gestureScanCard", new Vector2(0, 320));
+        using var card = Card.Begin("gestureScanCard", new Vector2(0, 430));
 
-        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Gesture mod folder allowlist & scan");
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation mods to scan");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Empty allowlist = scan finds nothing. Gesture aliases live in the main window's Gesture tab.");
-        IconGlyph.HelpMarker("Only mods inside these folders (matched as a Penumbra sort-folder prefix) are ever scanned or available to pick as a gesture alias's target.");
+        IconGlyph.WrappedDisabled("Select the exact Penumbra mods whose named animation options should be scanned. Disabled mods are allowed and will be enabled temporarily when played.");
 
-        DrawAllowlistBody(config.GestureFolderAllowlist, ref newGestureAllowlistFolder, "gesture");
+        var folderFilter = config.GestureModFolderFilter;
+        if (ImGui.InputTextWithHint("##gestureFolder", "Penumbra sort folder (optional)...", ref folderFilter, 128))
+        {
+            config.GestureModFolderFilter = folderFilter;
+            config.Save();
+        }
+        ImGui.InputTextWithHint("##gestureModSearch", "Search mod names...", ref gestureModSearch, 128);
+        var installed = plugin.GestureCommand.GetInstalledMods();
+        using (ImRaii.Child("gestureModPicker", new Vector2(0, 180), true))
+        {
+            foreach (var mod in installed.Where(m =>
+                         (string.IsNullOrWhiteSpace(config.GestureModFolderFilter) || (m.SortPath is { } path &&
+                             (path.Equals(config.GestureModFolderFilter.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase) ||
+                              path.StartsWith(config.GestureModFolderFilter.Trim().TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase)))) &&
+                         (string.IsNullOrWhiteSpace(gestureModSearch) || m.Name.Contains(gestureModSearch.Trim(), StringComparison.OrdinalIgnoreCase))))
+            {
+                var selected = config.SelectedGestureMods.Contains(mod.Directory);
+                if (ImGui.Checkbox($"{mod.Name}##gestureMod_{mod.Directory}", ref selected))
+                {
+                    if (selected) config.SelectedGestureMods.Add(mod.Directory); else config.SelectedGestureMods.Remove(mod.Directory);
+                    config.Save();
+                }
+                if (mod.SortPath != null) { ImGui.SameLine(); ImGui.TextDisabled(mod.SortPath); }
+            }
+        }
 
         ImGui.Spacing();
         if (ImGui.Button("Rescan gestures"))
             plugin.GestureCommand.Rescan();
-        IconGlyph.HelpMarker("Re-scans installed Penumbra mods inside the allowlisted folders above and resolves their emotes - run this after installing/enabling a mod before it'll show up as an option in the Gesture tab.");
+        IconGlyph.HelpMarker("Reads each selected mod's Penumbra option names and animation redirects, including currently disabled mods.");
 
         DrawGestureScanFeedback();
     }
@@ -248,15 +272,19 @@ public class SettingsWindow : Window, IDisposable
             return;
         }
 
+        if (plugin.GestureCommand.LastScanError is { } error)
+        {
+            IconGlyph.WrappedColored(Theme.Danger, error);
+            return;
+        }
         var matched = gestureMapping.LocalCatalog.Count;
         var color = matched > 0 ? Theme.Success : Theme.Warning;
-        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} installed mod(s), {matched} matched your allowlist folder(s).");
+        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} installed mod(s); {plugin.Configuration.SelectedGestureMods.Count} selected; {matched} animation trigger(s) discovered.");
 
         if (matched == 0 && lastScanTotal > 0)
         {
             ImGui.TextWrapped(
-                "Zero matches usually means either the allowlist is empty, or a folder name above doesn't " +
-                "exactly match the sort folder shown in Penumbra's own mod list.");
+                "No animation options were found. Select at least one mod above, then rescan.");
             return;
         }
 
@@ -265,16 +293,14 @@ public class SettingsWindow : Window, IDisposable
 
         if (ImGui.SmallButton("Copy names##gesture"))
         {
-            var names = gestureMapping.LocalCatalog.Values.SelectMany(e => e.EmoteNames);
-            ImGui.SetClipboardText(string.Join("\n", names));
+            ImGui.SetClipboardText(plugin.GestureCommand.ExportCatalog());
         }
-        IconGlyph.HelpMarker("Copies the resolved emote names as plain text, one per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with a direct override (\"gesture <name>\").");
+        IconGlyph.HelpMarker("Copies versioned entries containing the mod, animation option, tied trigger, and selections for the Owner's Add from clipboard action.");
 
         using var _ = ImRaii.Child("gestureCatalog", new Vector2(0, 80), true);
         foreach (var entry in gestureMapping.LocalCatalog.Values)
         {
-            var summary = entry.EmoteNames.Count > 0 ? string.Join(", ", entry.EmoteNames) : "unresolved - no matching emote";
-            ImGui.BulletText($"{entry.ModName}: {summary}");
+            ImGui.BulletText(entry.Label);
         }
     }
 
@@ -300,20 +326,27 @@ public class SettingsWindow : Window, IDisposable
         var moodlesMapping = plugin.Configuration.MoodlesMapping;
         var lastScanTotal = plugin.MoodlesCommand.LastScanTotalPresets;
 
+        if (plugin.MoodlesCommand.LastScanStatus is MoodlesScanStatus.Unavailable or MoodlesScanStatus.Failed)
+        {
+            IconGlyph.WrappedColored(Theme.Danger, plugin.MoodlesCommand.LastScanError ?? "Moodles preset scan failed.");
+            if (moodlesMapping.LocalCatalog.Count > 0)
+                ImGui.TextDisabled($"Keeping {moodlesMapping.LocalCatalog.Count} preset(s) from the last successful scan.");
+            return;
+        }
+
         if (lastScanTotal is null)
         {
             ImGui.TextDisabled("Not scanned yet this session.");
             return;
         }
 
-        var color = lastScanTotal > 0 ? Theme.Success : Theme.Warning;
-        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved preset(s).");
+        IconGlyph.WrappedColored(Theme.Success, $"Scan succeeded: found {lastScanTotal} saved preset(s).");
 
         if (lastScanTotal == 0)
             return;
 
         if (ImGui.SmallButton("Copy names##moodles"))
-            ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(p => p.Name)));
+            ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x)));
         IconGlyph.HelpMarker("Copies the list below as plain text, one preset per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
 
         using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);

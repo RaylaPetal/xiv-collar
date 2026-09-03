@@ -17,6 +17,8 @@ public sealed class MoodlesCommand
 
     /// How many presets the last scan found - so the UI can say "found N" even before anything is picked.
     public int? LastScanTotalPresets { get; private set; }
+    public MoodlesScanStatus? LastScanStatus { get; private set; }
+    public string? LastScanError { get; private set; }
 
     public MoodlesCommand(PluginConfig config, MoodlesIpc moodles)
     {
@@ -29,10 +31,14 @@ public sealed class MoodlesCommand
     /// shape" decision, minus the allowlist).
     public void Rescan()
     {
-        var presets = moodles.GetOwnPresets();
-        LastScanTotalPresets = presets.Count;
+        var result = moodles.GetOwnPresets();
+        LastScanStatus = result.Status;
+        LastScanError = result.Error;
+        if (result.Status != MoodlesScanStatus.Success)
+            return;
 
-        config.MoodlesMapping.LocalCatalog = presets
+        LastScanTotalPresets = result.Presets.Count;
+        config.MoodlesMapping.LocalCatalog = result.Presets
             .Select(p => new MoodlesPresetEntry { PresetId = p.Id.ToString(), Name = p.Name })
             .ToDictionary(e => e.PresetId);
         config.Save();
@@ -40,7 +46,7 @@ public sealed class MoodlesCommand
 
     /// The Owner's direct override: matches `presetName` against the Sub's own scanned catalog
     /// (case-insensitive) - the Owner never sees preset GUIDs, only whatever name the Sub told them out of
-    /// band, same pattern as OutfitCommand.ForceApply/GestureCommand.ForceQueue.
+    /// band, same pattern as OutfitCommand.ForceApply/GestureCommand.ForceApply.
     public bool ForceApply(string presetName)
     {
         var entry = config.MoodlesMapping.LocalCatalog.Values

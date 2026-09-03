@@ -126,9 +126,14 @@ public class PluginConfig : IPluginConfiguration
     /// safeword must never become the reason panic stops working.
     public string? PanicSafeword { get; set; }
 
-    /// Sub-side: mod folders (Penumbra "Approved for <role>"-style paths) that gesture scanning is scoped to.
-    /// Empty means "no folders selected" - gesture scanning finds nothing until the Sub opts folders in.
+    /// Legacy folder allowlist, retained only to seed the explicit mod picker during migration.
     public List<string> GestureFolderAllowlist { get; set; } = new();
+
+    /// PoseKit-style explicit Penumbra mod directories to inspect for animation options.
+    public HashSet<string> SelectedGestureMods { get; set; } = new();
+
+    /// Non-mutating convenience filter for the explicit mod picker.
+    public string GestureModFolderFilter { get; set; } = "";
 
     /// Sub-side: Glamourer design-browser folders that wardrobe scanning is scoped to - same allowlist
     /// pattern as GestureFolderAllowlist, applied to `Glamourer.GetDesignListExtended`'s FullPath.

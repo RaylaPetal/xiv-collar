@@ -1,10 +1,4 @@
-# collar/gesture Specification
-
-## Purpose
-
-Lets a Sub share an auto-generated catalog of their installed gesture (emote) mods with a paired Owner, and lets the Owner trigger a selected animation locally under the Sub's permission controls.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Automatic gesture catalog from installed mods
 The Sub's client SHALL build its gesture catalog from explicitly selected installed Penumbra mods using each mod's own option-group metadata. The catalog SHALL preserve the mod, group, and human-readable animation option names and SHALL associate each option with every detected slash-emote or supported pose trigger derived from explicit command hints and redirected animation paths, without requiring manual tagging for recognized triggers.
@@ -52,6 +46,8 @@ The system SHALL let a Sub explicitly select which installed Penumbra mods parti
 - **WHEN** a Sub triggers a scan without selecting any Penumbra mods
 - **THEN** the UI explains that no mods are selected and does not scan the entire installed mod library
 
+## ADDED Requirements
+
 ### Requirement: Animation identity is preserved across sharing and commands
 The system SHALL identify a commandable gesture by its mod and named animation option plus its tied trigger, and SHALL display that animation name and trigger when the Sub browses or exports the catalog, when the Owner imports or sends it, and when the Sub receives it.
 
@@ -85,3 +81,10 @@ The system SHALL execute a valid Owner gesture command immediately when the pair
 #### Scenario: Temporary activation fails
 - **WHEN** the selected mod/options cannot be applied temporarily to the Sub's effective Penumbra collection
 - **THEN** the Sub's client does not play the tied trigger and reports the failure
+
+## REMOVED Requirements
+
+### Requirement: Gesture trigger requires Sub confirmation
+**Reason**: Gesture permission is the Sub's explicit, revocable consent gate; the requested PoseKit-equivalent flow must activate the animation and play its tied trigger as one command instead of stopping in a second confirmation queue.
+
+**Migration**: Remove pending gesture prompts and confirmation/dismiss actions. Existing saved aliases that can be mapped unambiguously to the new mod/option/trigger identity are migrated; unresolved legacy aliases must be recreated from a fresh scan.

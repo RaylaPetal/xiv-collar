@@ -33,6 +33,8 @@ public class OutfitAliasDefinition
 public class GestureAliasDefinition
 {
     public string Alias { get; set; } = "";
+    public string GestureId { get; set; } = "";
+    public string AnimationName { get; set; } = "";
     public string ModDirectory { get; set; } = "";
     public string ModName { get; set; } = "";
     public string EmoteName { get; set; } = "";

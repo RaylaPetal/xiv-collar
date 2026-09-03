@@ -1,121 +1,119 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
 using CollarSystem.Plugin.Config;
 using CollarSystem.Plugin.Ipc;
 using ECommons.Automation;
-using Lumina.Excel.Sheets;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 
 namespace CollarSystem.Plugin.Commands;
 
-public sealed record QueuedGesture(string Id, string ModDirectory, string ModName, string EmoteName);
-
-/// collar/gesture: Penumbra-backed gesture cataloging and sub-confirmed triggering. A resolved alias is
-/// never auto-fired - Queue() only ever enqueues it; ConfirmAndTrigger() is the sole path that plays an
-/// emote, and it must be wired to a direct Sub UI action (design.md's queue-and-confirm decision,
-/// unchanged by the chat-transport switch - only how a trigger arrives changed, not this safety property).
 public sealed class GestureCommand
 {
+    private const string ExportPrefix = "COLLAR-GESTURE-V1|";
     private readonly PluginConfig config;
     private readonly PenumbraIpc penumbra;
+    private readonly GestureCatalogScanner scanner;
 
-    public List<QueuedGesture> PendingPrompts { get; } = [];
-
-    /// Sub-side: how many mods the last scan found in total, before the allowlist filter - so the UI can
-    /// say "found N, M matched" instead of an unexplained empty list. Null until the first scan runs.
     public int? LastScanTotalMods { get; private set; }
-
-    public event Action<QueuedGesture>? PromptQueued;
+    public string? LastScanError { get; private set; }
 
     public GestureCommand(PluginConfig config, PenumbraIpc penumbra)
     {
         this.config = config;
         this.penumbra = penumbra;
+        scanner = new GestureCatalogScanner(penumbra, config);
     }
 
-    /// Sub-side: rescan installed mods, scoped to the configured folder allowlist. Purely local - the Sub
-    /// picks a resolved mod/emote here to name a gesture alias after in Settings.
     public void Rescan()
     {
-        var scan = penumbra.ScanGestureMods(config.GestureFolderAllowlist);
-        LastScanTotalMods = scan.TotalModsScanned;
-        config.GestureMapping.LocalCatalog = scan.Entries.ToDictionary(e => e.ModDirectory);
+        var result = scanner.Scan();
+        LastScanTotalMods = result.TotalMods;
+        LastScanError = result.Error;
+        if (result.Error != null) return;
+        config.GestureMapping.LocalCatalog = result.Entries.ToDictionary(e => e.Id);
+        MigrateAliases();
         config.Save();
     }
 
-    /// Owner-side: manually assign an emote to a mod GetChangedItems could not resolve, before prompting it.
-    public void SetManualAssignment(string modDirectory, string emoteName)
+    public IReadOnlyList<(string Directory, string Name, string? SortPath)> GetInstalledMods()
     {
-        if (config.GestureMapping.LocalCatalog.TryGetValue(modDirectory, out var entry))
-        {
-            entry.EmoteNames = [emoteName];
-            entry.IsManualAssignment = true;
-            config.Save();
-        }
+        var mods = penumbra.TryGetModList();
+        return mods is null ? [] : mods.Select(x => (x.Key, x.Value, penumbra.TryGetModPath(x.Key, x.Value))).OrderBy(x => x.Value).ToList();
     }
 
-    public void Queue(GestureAliasDefinition alias) => QueueInternal(alias.ModDirectory, alias.ModName, alias.EmoteName);
+    public string ExportCatalog() => string.Join("\n", config.GestureMapping.LocalCatalog.Values
+        .Where(e => e.Trigger != null).OrderBy(e => e.Label)
+        .Select(e => ExportPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(e)))));
 
-    /// The Owner's direct override: matches `name` against the Sub's own scanned+allowlisted catalog
-    /// (mod name or resolved emote name, case-insensitive) instead of requiring a pre-defined alias. Still
-    /// only ever queues - the confirm-required safety property is identical to the alias path, since a
-    /// gesture is a one-shot action with nothing to "lock" the way title/outfit have.
-    public bool ForceQueue(string name)
+    public static bool TryParseExport(string line, out GestureCatalogEntry? entry)
     {
-        var match = config.GestureMapping.LocalCatalog.Values
-            .SelectMany(e => e.EmoteNames.Select(emote => (Entry: e, Emote: emote)))
-            .FirstOrDefault(x => string.Equals(x.Emote, name, StringComparison.OrdinalIgnoreCase)
-                                  || string.Equals(x.Entry.ModName, name, StringComparison.OrdinalIgnoreCase));
-        if (match.Entry is null)
-            return false;
+        entry = null;
+        if (!line.StartsWith(ExportPrefix, StringComparison.Ordinal)) return false;
+        try { entry = JsonSerializer.Deserialize<GestureCatalogEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[ExportPrefix.Length..]))); return entry?.Trigger != null; }
+        catch { return false; }
+    }
 
-        QueueInternal(match.Entry.ModDirectory, match.Entry.ModName, match.Emote);
+    public bool Apply(GestureAliasDefinition alias)
+    {
+        if (!string.IsNullOrEmpty(alias.GestureId) && config.GestureMapping.LocalCatalog.TryGetValue(alias.GestureId, out var exact)) return Execute(exact);
+        var matches = config.GestureMapping.LocalCatalog.Values.Where(e => e.Trigger != null && e.ModDirectory == alias.ModDirectory &&
+            string.Equals(e.Trigger.DisplayName.TrimStart('/'), alias.EmoteName.TrimStart('/'), StringComparison.OrdinalIgnoreCase)).ToList();
+        return matches.Count == 1 && Execute(matches[0]);
+    }
+
+    public bool ForceApply(string idOrName)
+    {
+        if (config.GestureMapping.LocalCatalog.TryGetValue(idOrName, out var byId)) return Execute(byId);
+        var matches = config.GestureMapping.LocalCatalog.Values.Where(e => e.Trigger != null &&
+            (e.AnimationName.Equals(idOrName, StringComparison.OrdinalIgnoreCase) || e.Label.Equals(idOrName, StringComparison.OrdinalIgnoreCase))).ToList();
+        return matches.Count == 1 && Execute(matches[0]);
+    }
+
+    private bool Execute(GestureCatalogEntry entry)
+    {
+        if (entry.Trigger is null) return false;
+        var collection = penumbra.TryGetLocalPlayerCollectionId();
+        if (collection is null) return false;
+        var selections = entry.GroupSelections.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
+        if (!penumbra.TrySetTemporarySettings(collection.Value, entry.ModDirectory, selections)) return false;
+        if (!penumbra.TryRedrawLocalPlayer()) return false;
+        return Play(entry.Trigger);
+    }
+
+    private static unsafe bool Play(GestureTrigger trigger)
+    {
+        if (trigger.Kind == GestureTriggerKind.SlashCommand)
+        {
+            Chat.SendMessage($"/{trigger.SlashCommand.TrimStart('/')} motion");
+            return true;
+        }
+        var playerState = PlayerState.Instance();
+        if (playerState == null || trigger.EmoteModeId is < 1 or > 3) return false;
+        var poseType = trigger.EmoteModeId switch
+        {
+            1 => EmoteController.PoseType.GroundSit,
+            2 => EmoteController.PoseType.Sit,
+            3 => EmoteController.PoseType.Doze,
+            _ => throw new ArgumentOutOfRangeException(),
+        };
+        playerState->SelectedPoses[(int)poseType] = trigger.CPoseState;
+        Chat.SendMessage(trigger.EmoteModeId switch { 1 => "/groundsit", 2 => "/sit", 3 => "/doze", _ => "" });
         return true;
     }
 
-    private void QueueInternal(string modDirectory, string modName, string emoteName)
+    private void MigrateAliases()
     {
-        var queued = new QueuedGesture(Guid.NewGuid().ToString("N"), modDirectory, modName, emoteName);
-        PendingPrompts.Add(queued);
-        PromptQueued?.Invoke(queued);
-    }
-
-    /// Sub-side only, and only ever called from a direct confirmation click - never automatically.
-    public bool ConfirmAndTrigger(string id)
-    {
-        var queued = PendingPrompts.FirstOrDefault(p => p.Id == id);
-        if (queued is null)
-            return false;
-
-        PendingPrompts.Remove(queued);
-
-        if (!penumbra.ActivateModForLocalPlayer(queued.ModDirectory, queued.ModName))
-            return false;
-
-        var command = ResolveEmoteTextCommand(queued.EmoteName);
-        if (command is null)
-            return false;
-
-        Chat.SendMessage(command);
-        return true;
-    }
-
-    public void DismissPrompt(string id) => PendingPrompts.RemoveAll(p => p.Id == id);
-
-    private static string? ResolveEmoteTextCommand(string emoteName)
-    {
-        var sheet = Plugin.DataManager.GetExcelSheet<Emote>();
-        foreach (var row in sheet)
+        foreach (var alias in config.Aliases.Gestures.Where(a => string.IsNullOrEmpty(a.GestureId)))
         {
-            if (!string.Equals(row.Name.ExtractText(), emoteName, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var command = row.TextCommand.ValueNullable?.Command.ExtractText();
-            if (!string.IsNullOrEmpty(command))
-                return command;
+            var hits = config.GestureMapping.LocalCatalog.Values.Where(e => e.Trigger != null && e.ModDirectory == alias.ModDirectory &&
+                e.Trigger.DisplayName.TrimStart('/').Equals(alias.EmoteName.TrimStart('/'), StringComparison.OrdinalIgnoreCase)).ToList();
+            if (hits.Count != 1) continue;
+            alias.GestureId = hits[0].Id;
+            alias.AnimationName = hits[0].AnimationName;
         }
-
-        Plugin.Log.Warning($"Could not resolve a text command for emote \"{emoteName}\".");
-        return null;
     }
 }
