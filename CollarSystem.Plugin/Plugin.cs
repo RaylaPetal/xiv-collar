@@ -8,6 +8,7 @@ using CollarSystem.Plugin.UI;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Game.Command;
 using Dalamud.IoC;
+using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -35,6 +36,11 @@ public sealed class Plugin : IDalamudPlugin
     public PluginConfig Configuration { get; }
 
     public readonly WindowSystem WindowSystem = new("CollarSystem");
+
+    /// collar/catalog-sync: the one native save/open dialog instance backing Export/"Import commands" -
+    /// owned here rather than per-window since both Settings (export) and CollarWindow (import) need it,
+    /// same "shared, drawn every frame from the UiBuilder.Draw hook" shape WindowSystem already has.
+    public readonly FileDialogManager FileDialogManager = new();
     private CollarWindow CollarWindow { get; }
     private SettingsWindow SettingsWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
@@ -47,6 +53,10 @@ public sealed class Plugin : IDalamudPlugin
     public PenumbraIpc PenumbraIpc { get; }
     public MoodlesIpc MoodlesIpc { get; }
     public MovementLockService MovementLockService { get; }
+    public WalkOnlyService WalkOnlyService { get; }
+    public ActionBlockService ActionBlockService { get; }
+    public ChatGagService ChatGagService { get; }
+    public RestrictionRuleManager RestrictionRuleManager { get; }
 
     public PairingCommand PairingCommand { get; }
     public TitleCommand TitleCommand { get; }
@@ -55,6 +65,8 @@ public sealed class Plugin : IDalamudPlugin
     public FollowCommand FollowCommand { get; }
     public CollarCommand CollarCommand { get; }
     public MoodlesCommand MoodlesCommand { get; }
+    public RestraintCommand RestraintCommand { get; }
+    public CatalogSyncService CatalogSyncService { get; }
     public ChatComposer ChatComposer { get; }
     public ChatSender ChatSender { get; }
     public ChatCommandListener ChatCommandListener { get; }
@@ -79,6 +91,14 @@ public sealed class Plugin : IDalamudPlugin
         PenumbraIpc = new PenumbraIpc();
         MoodlesIpc = new MoodlesIpc();
         MovementLockService = new MovementLockService();
+        WalkOnlyService = new WalkOnlyService();
+        ActionBlockService = new ActionBlockService();
+        ChatGagService = new ChatGagService();
+        RestrictionRuleManager = new RestrictionRuleManager();
+        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ForcedPose, new MovementLockEnforcer(MovementLockService));
+        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.WalkOnly, WalkOnlyService);
+        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ActionBlock, ActionBlockService);
+        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.GagChat, ChatGagService);
 
         PairingCommand = new PairingCommand(Configuration);
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
@@ -87,12 +107,14 @@ public sealed class Plugin : IDalamudPlugin
         FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
         CollarCommand = new CollarCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
+        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, SlotLockManager, RestrictionRuleManager, RuntimeState);
+        CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
-        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand);
         LocalTestCoordinator = new LocalTestCoordinator(Configuration, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
 
-        PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RuntimeState);
+        PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RuntimeState);
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
@@ -115,6 +137,7 @@ public sealed class Plugin : IDalamudPlugin
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
+        PluginInterface.UiBuilder.Draw += FileDialogManager.Draw;
         PluginInterface.UiBuilder.OpenConfigUi += SettingsWindow.Toggle;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
 
@@ -128,9 +151,11 @@ public sealed class Plugin : IDalamudPlugin
         Framework.Update -= OnFrameworkUpdate;
 
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
+        PluginInterface.UiBuilder.Draw -= FileDialogManager.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= SettingsWindow.Toggle;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
 
+        FileDialogManager.Reset();
         WindowSystem.RemoveAllWindows();
         CollarWindow.Dispose();
         SettingsWindow.Dispose();
@@ -142,6 +167,8 @@ public sealed class Plugin : IDalamudPlugin
 
         ChatCommandListener.Dispose();
         MovementLockService.Dispose();
+        ActionBlockService.Dispose();
+        ChatGagService.Dispose();
         SlotLockManager.Dispose();
         GlamourerIpc.Dispose();
 
@@ -185,6 +212,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         GestureCommand.OnFrameworkUpdate();
+        WalkOnlyService.OnFrameworkUpdate();
     }
 
     private void MigrateConfiguration()

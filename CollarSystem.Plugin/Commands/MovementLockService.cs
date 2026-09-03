@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Dalamud.Hooking;
 using Dalamud.Utility.Signatures;
 using ECommons.DalamudServices;
@@ -40,7 +41,12 @@ public sealed unsafe class MovementLockService : IDisposable
     [Signature(SigIsInputIdHeld, DetourName = nameof(IsInputIdHeldDetour), Fallibility = Fallibility.Auto)]
     private readonly Hook<IsInputIdDelegate>? isInputIdHeldHook;
 
-    private bool locked;
+    /// Which independent callers currently want movement suppressed - a Set rather than a bare bool so two
+    /// unrelated callers (Follow's leash, a forced-pose restraint device - collar/restraints) can each
+    /// Engage/Release their own claim without one caller's Release prematurely lifting the other's.
+    /// Add/Remove are naturally idempotent for repeat same-token calls, unlike a naive increment/decrement
+    /// counter would be.
+    private readonly HashSet<string> engagedBy = new();
 
     public MovementLockService()
     {
@@ -64,23 +70,32 @@ public sealed unsafe class MovementLockService : IDisposable
 
     public bool IsAvailable { get; }
 
-    public bool IsLocked => IsAvailable && locked;
+    public bool IsLocked => IsAvailable && engagedBy.Count > 0;
 
     /// collar/follow: "Movement lock releases on panic, unpair, or Owner release" - all three paths call
-    /// this, and it is safe to call even if IsAvailable is false (locked just never becomes true).
-    public void Engage() => locked = IsAvailable;
+    /// Release(owner) for their own token, and it is safe to call Engage even if IsAvailable is false
+    /// (engagedBy just never gains an entry that would suppress anything).
+    public void Engage(string owner)
+    {
+        if (IsAvailable)
+            engagedBy.Add(owner);
+    }
 
-    public void Release() => locked = false;
+    public void Release(string owner) => engagedBy.Remove(owner);
+
+    /// Panic's own release: drops every caller's claim unconditionally, regardless of who engaged it -
+    /// same "full teardown, nothing needs preserving" shape as SlotLockManager.ReleaseAllForPanic.
+    public void ReleaseAll() => engagedBy.Clear();
 
     private byte IsInputIdPressedDetour(void* unk, InputId inputId) => Suppress(inputId) ? (byte)0 : isInputIdPressedHook!.Original(unk, inputId);
     private byte IsInputIdDownDetour(void* unk, InputId inputId) => Suppress(inputId) ? (byte)0 : isInputIdDownHook!.Original(unk, inputId);
     private byte IsInputIdHeldDetour(void* unk, InputId inputId) => Suppress(inputId) ? (byte)0 : isInputIdHeldHook!.Original(unk, inputId);
 
-    private bool Suppress(InputId inputId) => locked && Array.IndexOf(MovementInputs, inputId) >= 0;
+    private bool Suppress(InputId inputId) => engagedBy.Count > 0 && Array.IndexOf(MovementInputs, inputId) >= 0;
 
     public void Dispose()
     {
-        locked = false;
+        engagedBy.Clear();
         isInputIdPressedHook?.Dispose();
         isInputIdDownHook?.Dispose();
         isInputIdHeldHook?.Dispose();

@@ -29,6 +29,16 @@ public class OutfitAliasDefinition
 }
 
 [Serializable]
+public class RestraintAliasDefinition
+{
+    public string Alias { get; set; } = "";
+    public string DeviceId { get; set; } = "";
+
+    /// Display only, so the Sub can recognize the entry in Settings - not used for matching.
+    public string DeviceName { get; set; } = "";
+}
+
+[Serializable]
 public class GestureAliasDefinition
 {
     public string Alias { get; set; } = "";
@@ -62,4 +72,9 @@ public class AliasBook
 
     public List<GestureAliasDefinition> Gestures { get; set; } = new();
     public FollowAliasWords Follow { get; set; } = new();
+
+    /// Unlike Outfit's single "one design locked at a time" + shared Unlock alias, multiple restraint
+    /// devices can be active at once (collar/restraints), so each device's alias toggles that one device:
+    /// applies it if not currently active, releases it (and only its own rules) if it is.
+    public List<RestraintAliasDefinition> Restraints { get; set; } = new();
 }

@@ -6,3 +6,5 @@ bin/
 # Claude Code tooling (skills, commands, local settings) - not part of the plugin source
 .claude/
 .agents/
+.cline/
+.clinerules/

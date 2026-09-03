@@ -139,4 +139,9 @@ public sealed class OutfitCommand
 
     private static bool IsUnderFolder(string fullPath, string folder) =>
         fullPath.StartsWith(folder.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase);
+
+    /// collar/catalog-sync: every scanned (allowlist-filtered) design's display name, deduplicated - the
+    /// same plain-name shape Settings' former "Copy names" button produced.
+    public IReadOnlyList<string> ExportNames() =>
+        config.WardrobeMapping.LocalDesigns.Values.Select(d => d.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
 }

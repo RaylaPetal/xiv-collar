@@ -40,6 +40,15 @@ public sealed class SubRuntimeState
         set { config.CollarForceLocked = value; config.Save(); }
     }
 
+    /// collar/restraints: set by RestraintCommand.ForceApply (the Owner's "joker" override). While true,
+    /// the Sub's own alias-triggered device apply/release is refused - only the matching ForceUnlock (or
+    /// panic) can undo it, same pattern as OutfitForceLocked/CollarForceLocked.
+    public bool RestraintsForceLocked
+    {
+        get => config.RestraintsForceLocked;
+        set { config.RestraintsForceLocked = value; config.Save(); }
+    }
+
     public void Reset()
     {
         TitleApplied = false;
@@ -47,5 +56,6 @@ public sealed class SubRuntimeState
         TitleForceLocked = false;
         OutfitForceLocked = false;
         CollarForceLocked = false;
+        RestraintsForceLocked = false;
     }
 }

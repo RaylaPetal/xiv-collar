@@ -24,7 +24,7 @@ public sealed class ChatCommandListener : IDisposable
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
     /// lookup (see Resolve/HandleForce*). A Sub alias can never be named one of these - CollarWindow's
     /// alias-creation forms validate against this list so the two paths can never collide.
-    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle"];
+    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint"];
 
     private readonly PluginConfig config;
     private readonly PairingCommand pairing;
@@ -34,11 +34,12 @@ public sealed class ChatCommandListener : IDisposable
     private readonly FollowCommand follow;
     private readonly CollarCommand collar;
     private readonly MoodlesCommand moodles;
+    private readonly RestraintCommand restraints;
 
     public PendingPairingRequest? Pending { get; private set; }
     public event Action? PendingChanged;
 
-    public ChatCommandListener(PluginConfig config, PairingCommand pairing, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles)
+    public ChatCommandListener(PluginConfig config, PairingCommand pairing, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints)
     {
         this.config = config;
         this.pairing = pairing;
@@ -48,6 +49,7 @@ public sealed class ChatCommandListener : IDisposable
         this.follow = follow;
         this.collar = collar;
         this.moodles = moodles;
+        this.restraints = restraints;
 
         Plugin.ChatGui.ChatMessage += OnChatMessage;
     }
@@ -200,6 +202,10 @@ public sealed class ChatCommandListener : IDisposable
                 if (permissions.Moodles)
                     HandleForceMoodle(rest);
                 return;
+            case "restraint":
+                if (permissions.Restraints && config.TosAcknowledged)
+                    HandleForceRestraint(rest);
+                return;
         }
 
         ResolveAlias(commandText);
@@ -292,6 +298,26 @@ public sealed class ChatCommandListener : IDisposable
         Plugin.Log.Information($"Unrecognized \"moodle\" override \"{rest}\" - expected \"apply <preset name>\" or \"clear\".");
     }
 
+    private void HandleForceRestraint(string rest)
+    {
+        if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
+        {
+            restraints.ForceUnlock();
+            return;
+        }
+
+        const string lockPrefix = "lock ";
+        if (rest.StartsWith(lockPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var name = StripQuotes(rest[lockPrefix.Length..].Trim());
+            if (name.Length > 0)
+                restraints.ForceApply(name);
+            return;
+        }
+
+        Plugin.Log.Information($"Unrecognized \"restraint\" override \"{rest}\" - expected \"lock <device name>\" or \"unlock\".");
+    }
+
     private static (string First, string Remainder) SplitFirstToken(string text)
     {
         var trimmed = text.Trim();
@@ -355,6 +381,14 @@ public sealed class ChatCommandListener : IDisposable
         {
             if (permissions.Gesture && config.TosAcknowledged)
                 gesture.Apply(gestureAlias);
+            return;
+        }
+
+        var restraintAlias = aliases.Restraints.FirstOrDefault(a => Matches(alias, a.Alias));
+        if (restraintAlias is not null)
+        {
+            if (permissions.Restraints && config.TosAcknowledged)
+                restraints.Toggle(restraintAlias);
             return;
         }
 

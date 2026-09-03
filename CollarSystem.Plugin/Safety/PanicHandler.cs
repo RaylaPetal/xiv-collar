@@ -18,15 +18,17 @@ public sealed class PanicHandler
     private readonly SlotLockManager slotLocks;
     private readonly HonorificIpc honorific;
     private readonly MovementLockService movementLock;
+    private readonly RestrictionRuleManager restrictionRules;
     private readonly SubRuntimeState runtimeState;
 
-    public PanicHandler(PairingCommand pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, SubRuntimeState runtimeState)
+    public PanicHandler(PairingCommand pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, SubRuntimeState runtimeState)
     {
         this.pairing = pairing;
         this.glamourer = glamourer;
         this.slotLocks = slotLocks;
         this.honorific = honorific;
         this.movementLock = movementLock;
+        this.restrictionRules = restrictionRules;
         this.runtimeState = runtimeState;
     }
 
@@ -43,10 +45,11 @@ public sealed class PanicHandler
                 honorific.ClearTitle();
         });
 
-        RunStep("release movement lock", () => movementLock.Release());
+        RunStep("release movement lock", movementLock.ReleaseAll);
+        RunStep("release restriction rules", restrictionRules.ReleaseAllForPanic);
 
         runtimeState.Reset();
-        Plugin.Log.Information("Panic triggered: unpaired, outfit/collar reverted, title cleared, movement lock released, all slot locks released.");
+        Plugin.Log.Information("Panic triggered: unpaired, outfit/collar reverted, title cleared, movement lock released, all slot locks and restriction rules released.");
     }
 
     private static void RunStep(string name, Action step)

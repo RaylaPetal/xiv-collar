@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using CollarSystem.Plugin.Config;
 using CollarSystem.Plugin.Ipc;
@@ -58,4 +59,9 @@ public sealed class MoodlesCommand
     }
 
     public bool ForceClear() => moodles.ClearStatus();
+
+    /// collar/catalog-sync: every scanned preset's display name, deduplicated - the same plain-name shape
+    /// Settings' former "Copy names" button produced.
+    public IReadOnlyList<string> ExportNames() =>
+        config.MoodlesMapping.LocalCatalog.Values.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
 }

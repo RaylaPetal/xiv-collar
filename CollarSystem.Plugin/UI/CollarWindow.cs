@@ -39,12 +39,23 @@ public class CollarWindow : Window, IDisposable
     private string newGestureAlias = "";
     private GestureCatalogEntry? selectedAliasGesture;
 
+    private string newDeviceName = "";
+    private int newDeviceDesignIndex;
+    private bool newDeviceForcedPose;
+    private int newDevicePoseIndex;
+    private bool newDeviceWalkOnly;
+    private bool newDeviceActionBlock;
+    private bool newDeviceGagChat;
+
+    private string newRestraintAlias = "";
+    private int newRestraintDeviceIndex;
+
+    private static readonly string[] PoseNames = ["Ground Sit", "Sit", "Doze"];
+
     private string commandInput = "";
     private string newTitleQuickText = "";
     private string newFollowQuickText = "";
-    private string? outfitImportError;
-    private string? gestureImportError;
-    private string? moodlesImportError;
+    private string? importResult;
     private bool revealSafeword;
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - never saved,
@@ -57,6 +68,7 @@ public class CollarWindow : Window, IDisposable
         ("title", FontAwesomeIcon.Heading, "Title"),
         ("wardrobe", FontAwesomeIcon.Tshirt, "Wardrobe"),
         ("gesture", FontAwesomeIcon.TheaterMasks, "Gesture"),
+        ("restraints", FontAwesomeIcon.Handcuffs, "Restraints"),
         ("collar", FontAwesomeIcon.Lock, "Collar"),
         ("permissions", FontAwesomeIcon.ShieldAlt, "Permissions"),
         ("owner", FontAwesomeIcon.Crown, "Owner"),
@@ -97,6 +109,9 @@ public class CollarWindow : Window, IDisposable
                 break;
             case "gesture":
                 DrawGestureModule();
+                break;
+            case "restraints":
+                DrawRestraintsModule();
                 break;
             case "collar":
                 DrawCollarModule();
@@ -212,7 +227,7 @@ public class CollarWindow : Window, IDisposable
         ImGui.Spacing();
         var config = plugin.Configuration;
         if (!config.TosAcknowledged)
-            IconGlyph.WrappedColored(Theme.Warning, "Gesture/Follow require the ToS acknowledgement in Settings (gear icon) first.");
+            IconGlyph.WrappedColored(Theme.Warning, "Gesture/Follow/Restraints require the ToS acknowledgement in Settings (gear icon) first.");
 
         using (ImRaii.Disabled(!config.TosAcknowledged))
         {
@@ -223,6 +238,10 @@ public class CollarWindow : Window, IDisposable
             if (ImGuiCheckbox("Follow / Leash (hardcore)", permissions.Follow, out var newFollow))
                 SavePermission(() => permissions.Follow = newFollow);
             IconGlyph.HelpMarker("Lets a paired Owner lock your movement to follow them, blocking your own WASD input until released. Heavier automation footprint than the other three - see the README's Automation risk section.");
+
+            if (ImGuiCheckbox("Restraints", permissions.Restraints, out var newRestraints))
+                SavePermission(() => permissions.Restraints = newRestraints);
+            IconGlyph.HelpMarker("Lets a paired Owner apply or release a restraint device via a trigger tell. Restraint devices can suppress movement, force walking, block actions, or garble your outgoing chat while active - the gag chat rule rewrites content you actually typed, a heavier automation footprint than the other three - see the Restraints tab and the README's Automation risk section.");
         }
 
         ImGui.Spacing();
@@ -348,6 +367,138 @@ public class CollarWindow : Window, IDisposable
             newOutfitAlias = "";
         }
     }
+
+    /// collar/restraints: tag designs from Restraints' own independent scan (Settings - separate folder
+    /// allowlist from collar/outfit's Wardrobe scan, since bondage/restriction-themed designs and everyday
+    /// outfits live in different Glamourer folders in practice) as restraint devices carrying restriction
+    /// rules, then create Sub-alias entries that toggle them (RestraintCommand.Toggle). Untagged designs
+    /// never appear here - only tagged devices and their aliases do, mirroring Outfit's design-then-alias
+    /// flow.
+    private void DrawRestraintsModule()
+    {
+        var config = plugin.Configuration;
+        IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Tag designs from Restraints' own scan (Settings gear icon - separate folder allowlist from Wardrobe) as restraint devices carrying restriction rules, then alias them below so an Owner - or your own alias - can apply/release them.");
+
+        var devices = config.RestraintMapping.Devices.Values.ToList();
+        if (devices.Count > 0)
+        {
+            ImGui.Spacing();
+            ImGui.TextUnformatted("Tagged devices");
+            foreach (var device in devices)
+            {
+                ImGui.PushID($"device_{device.Id}");
+                var active = plugin.RestraintCommand.IsActive(device.Id);
+                var ruleSummary = string.Join(", ", device.Rules.Select(r => r.Kind switch
+                {
+                    RestraintRuleKind.ForcedPose => $"forced pose ({PoseName(r.PoseModeId)})",
+                    RestraintRuleKind.WalkOnly => "walk-only",
+                    RestraintRuleKind.ActionBlock => "action-block",
+                    RestraintRuleKind.GagChat => "gag chat",
+                    _ => r.Kind.ToString(),
+                }));
+                ImGui.BulletText($"{device.Name}{(active ? " (active)" : "")} - {ruleSummary}");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Untag"))
+                {
+                    plugin.RestraintCommand.UntagDevice(device.Id);
+                    ImGui.PopID();
+                    break;
+                }
+                ImGui.PopID();
+            }
+        }
+
+        ImGui.Spacing();
+        var designs = plugin.RestraintCommand.ScannedDesigns();
+        if (designs.Count == 0)
+        {
+            ImGui.TextDisabled("No scanned designs yet - rescan Restraints in Settings (gear icon) first.");
+        }
+        else
+        {
+            ImGui.TextUnformatted("Tag a new device");
+            var designNames = designs.Select(d => d.Name).ToArray();
+            newDeviceDesignIndex = Math.Clamp(newDeviceDesignIndex, 0, designNames.Length - 1);
+            ImGui.InputText("Device name##newDevice", ref newDeviceName, 32);
+            ImGui.Combo("Design##newDevice", ref newDeviceDesignIndex, designNames, designNames.Length);
+            IconGlyph.HelpMarker("Which scanned Glamourer design this device applies when engaged - its equipment slots lock the same way a locked Outfit alias's do.");
+
+            ImGui.Checkbox("Forced pose##newDevice", ref newDeviceForcedPose);
+            IconGlyph.HelpMarker("Places you into the chosen pose and fully blocks movement input until released.");
+            if (newDeviceForcedPose)
+                ImGui.Combo("Pose##newDevice", ref newDevicePoseIndex, PoseNames, PoseNames.Length);
+
+            ImGui.Checkbox("Walk-only##newDevice", ref newDeviceWalkOnly);
+            IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
+
+            ImGui.Checkbox("Action block##newDevice", ref newDeviceActionBlock);
+            IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
+
+            ImGui.Checkbox("Gag chat##newDevice", ref newDeviceGagChat);
+            IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
+
+            var hasAnyRule = newDeviceForcedPose || newDeviceWalkOnly || newDeviceActionBlock || newDeviceGagChat;
+            if (ImGui.Button("Tag device") && newDeviceName.Length > 0 && hasAnyRule)
+            {
+                var design = designs[newDeviceDesignIndex];
+                var rules = new List<RestraintRuleAssignment>();
+                if (newDeviceForcedPose)
+                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = newDevicePoseIndex + 1 });
+                if (newDeviceWalkOnly)
+                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.WalkOnly });
+                if (newDeviceActionBlock)
+                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ActionBlock });
+                if (newDeviceGagChat)
+                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
+
+                plugin.RestraintCommand.TagDevice(null, design.DesignId, newDeviceName, rules);
+                newDeviceName = "";
+                newDeviceForcedPose = newDeviceWalkOnly = newDeviceActionBlock = newDeviceGagChat = false;
+            }
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextUnformatted("Aliases");
+        var aliases = config.Aliases.Restraints;
+        for (var i = 0; i < aliases.Count; i++)
+        {
+            ImGui.PushID($"restraintAlias_{i}");
+            var a = aliases[i];
+            ImGui.BulletText($"{a.Alias} -> {a.DeviceName} (toggles)");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Remove"))
+            {
+                aliases.RemoveAt(i);
+                config.Save();
+                ImGui.PopID();
+                break;
+            }
+            ImGui.PopID();
+        }
+
+        if (devices.Count > 0)
+        {
+            ImGui.Spacing();
+            var deviceNames = devices.Select(d => d.Name).ToArray();
+            newRestraintDeviceIndex = Math.Clamp(newRestraintDeviceIndex, 0, deviceNames.Length - 1);
+            ImGui.InputText("Alias##newRestraint", ref newRestraintAlias, 32);
+            IconGlyph.HelpMarker("Short word that toggles this device: applies it if inactive, releases it if active.");
+            ImGui.Combo("Device##newRestraint", ref newRestraintDeviceIndex, deviceNames, deviceNames.Length);
+            DrawReservedWordWarning(newRestraintAlias);
+            if (ImGui.Button("Add restraint alias") && newRestraintAlias.Length > 0 && !IsReserved(newRestraintAlias))
+            {
+                var device = devices[newRestraintDeviceIndex];
+                aliases.Add(new RestraintAliasDefinition { Alias = newRestraintAlias, DeviceId = device.Id, DeviceName = device.Name });
+                config.Save();
+                newRestraintAlias = "";
+            }
+        }
+    }
+
+    private static string PoseName(int poseModeId) => poseModeId is >= 1 and <= 3 ? PoseNames[poseModeId - 1] : "unknown";
 
     private void DrawGestureModule()
     {
@@ -525,16 +676,20 @@ public class CollarWindow : Window, IDisposable
         return string.IsNullOrWhiteSpace(name) ? $"Item #{itemId}" : name;
     }
 
-    /// The Owner-facing tab. Title/Outfit/Gesture each get a one-click QuickCommand list - Outfit/Gesture
-    /// auto-populate one button per imported name ("Add from clipboard"), Title is built one at a time
-    /// since there's nothing to bulk-import for freeform text. Every button offers Send (ChatSender - one
-    /// click, one /tell, disabled until pairing has captured a peer to address it to) alongside Copy
-    /// (always available). The freeform box at the bottom covers a plain alias or a one-off not worth
-    /// saving.
+    /// The Owner-facing tab. Title/Outfit/Gesture/Moodles/Restraints each get a one-click QuickCommand
+    /// list - Outfit/Gesture/Moodles/Restraints are populated in one action by the "Import commands" button
+    /// at the top (collar/catalog-sync - a Sub-exported catalog file fills every one of them at once);
+    /// Title is built one at a time since there's nothing to bulk-import for freeform text. Every button
+    /// offers Send (ChatSender - one click, one /tell, disabled until pairing has captured a peer to
+    /// address it to) alongside Copy (always available). The freeform box at the bottom covers a plain
+    /// alias or a one-off not worth saving.
     private void DrawOwnerModule()
     {
         IconGlyph.Text(FontAwesomeIcon.Crown, "Owner - commands");
         ImGui.Separator();
+
+        DrawImportCommandsButton();
+        ImGui.Spacing();
 
         var pairing = plugin.Configuration.Pairing;
         var canSend = !string.IsNullOrWhiteSpace(pairing.PeerName) && !string.IsNullOrWhiteSpace(pairing.PeerWorld);
@@ -548,7 +703,47 @@ public class CollarWindow : Window, IDisposable
         DrawOwnerSection($"Leash ({quick.Follow.Count} saved)##ownerLeash", () => DrawFollowQuickSection(canSend));
         DrawOwnerSection("Collar (2 actions)##ownerCollar", () => DrawCollarQuickSection(canSend));
         DrawOwnerSection($"Moodles ({quick.Moodles.Count} imported)##ownerMoodles", () => DrawMoodlesQuickSection(canSend));
+        DrawOwnerSection($"Restraints ({quick.Restraints.Count} imported)##ownerRestraints", () => DrawRestraintQuickSection(canSend));
         DrawOwnerSection($"Alias / one-off ({quick.Aliases.Count} saved)##ownerAlias", () => DrawFreeformComposer(canSend));
+    }
+
+    /// collar/catalog-sync: the single Owner-side entry point that replaces the three former per-category
+    /// "Add from clipboard" buttons - opens a native file picker for a Sub-exported catalog file and fills
+    /// every category's quick-command list from it in one action (CatalogSyncService.ParseImport).
+    private void DrawImportCommandsButton()
+    {
+        const string label = "Import commands";
+        var buttonWidth = ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2f;
+        var avail = ImGui.GetContentRegionAvail().X;
+        if (avail > buttonWidth)
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (avail - buttonWidth) / 2f);
+
+        if (ImGui.Button(label))
+        {
+            plugin.FileDialogManager.OpenFileDialog("Import Collar catalog", ".txt", (ok, path) =>
+            {
+                if (!ok)
+                    return;
+                try
+                {
+                    var text = System.IO.File.ReadAllText(path);
+                    var result = plugin.CatalogSyncService.ParseImport(text);
+                    importResult = result.Error ?? (result.TotalAdded == 0
+                        ? "Nothing new - everything in that file was already imported."
+                        : $"Imported {result.TotalAdded} new command(s): {result.Wardrobe} outfit, {result.Gesture} gesture, {result.Moodles} moodles, {result.Restraints} restraint.");
+                }
+                catch (Exception ex)
+                {
+                    importResult = $"Import failed: {ex.Message}";
+                }
+            });
+        }
+
+        if (importResult is not null)
+        {
+            var isError = importResult.StartsWith("Import failed", StringComparison.Ordinal) || importResult.Contains("doesn't look like", StringComparison.Ordinal) || importResult.Contains("is empty", StringComparison.Ordinal);
+            IconGlyph.WrappedColored(isError ? Theme.Danger : Theme.Success, importResult);
+        }
     }
 
     private static void DrawOwnerSection(string label, Action draw, bool defaultOpen = false)
@@ -581,31 +776,50 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles");
         var quick = plugin.Configuration.QuickCommands.Moodles;
 
-        if (ImGui.SmallButton("Add from clipboard##moodlesQuick"))
-            moodlesImportError = ImportQuickCommands(quick, name => $"moodle apply {name}");
-        IconGlyph.HelpMarker("Paste your Sub's \"Copy names\" output (their Settings' Moodles scan card) - one ready-to-use button per preset name, no extra save step. Applies immediately while Moodles permission is enabled.");
-        if (quick.Count > 0)
+        if (quick.Count > 0 && ImGui.SmallButton("Clear all##moodlesQuick"))
         {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Clear all##moodlesQuick"))
-            {
-                quick.Clear();
-                moodlesImportError = null;
-                plugin.Configuration.Save();
-            }
+            quick.Clear();
+            plugin.Configuration.Save();
         }
-        if (moodlesImportError is not null)
-            IconGlyph.WrappedColored(Theme.Warning, moodlesImportError);
 
         DrawFixedQuickRow("Clear moodle", "moodle clear", canSend);
 
         if (quick.Count == 0)
         {
-            ImGui.TextDisabled("No Moodles presets imported yet.");
+            ImGui.TextDisabled("No Moodles presets imported yet - use \"Import commands\" above.");
             return;
         }
 
         using var _ = ImRaii.Child("moodlesQuickList", new Vector2(0, 120), true);
+        foreach (var cmd in quick.ToArray())
+            DrawSavedQuickRow(cmd, quick, canSend);
+    }
+
+    /// collar/restraints: Owner-tab quick commands for the first time - no per-category import button
+    /// here (collar/catalog-sync's unified "Import commands" is the only way to populate this list; see
+    /// DrawOwnerModule), just browse/send/remove and the fixed force-unlock row.
+    private void DrawRestraintQuickSection(bool canSend)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints");
+        var quick = plugin.Configuration.QuickCommands.Restraints;
+
+        DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend);
+        IconGlyph.HelpMarker("Force-releases every active restraint device and clears the force-lock, the same as your Sub's panic would for restraints specifically.");
+
+        if (quick.Count > 0 && ImGui.SmallButton("Clear all##restraintsQuick"))
+        {
+            quick.Clear();
+            plugin.Configuration.Save();
+            return;
+        }
+
+        if (quick.Count == 0)
+        {
+            ImGui.TextDisabled("No restraint devices imported yet - use \"Import commands\" above.");
+            return;
+        }
+
+        using var _ = ImRaii.Child("restraintsQuickList", new Vector2(0, 120), true);
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend);
     }
@@ -642,27 +856,17 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.Text(FontAwesomeIcon.Tshirt, "Outfit");
         var quick = plugin.Configuration.QuickCommands.Outfits;
 
-        if (ImGui.SmallButton("Add from clipboard##outfitQuick"))
-            outfitImportError = ImportQuickCommands(quick, name => $"outfit lock {name}");
-        IconGlyph.HelpMarker("Paste your Sub's \"Copy names\" output (their Settings' Wardrobe scan card) - one ready-to-use button per name, no extra save step.");
-        if (quick.Count > 0)
+        if (quick.Count > 0 && ImGui.SmallButton("Clear all##outfitQuick"))
         {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Clear all##outfitQuick"))
-            {
-                quick.Clear();
-                outfitImportError = null;
-                plugin.Configuration.Save();
-            }
+            quick.Clear();
+            plugin.Configuration.Save();
         }
-        if (outfitImportError is not null)
-            IconGlyph.WrappedColored(Theme.Warning, outfitImportError);
 
         DrawFixedQuickRow("Unlock outfit", "outfit unlock", canSend);
 
         if (quick.Count == 0)
         {
-            ImGui.TextDisabled("No outfits imported yet.");
+            ImGui.TextDisabled("No outfits imported yet - use \"Import commands\" above.");
             return;
         }
 
@@ -676,25 +880,15 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Gesture");
         var quick = plugin.Configuration.QuickCommands.Gestures;
 
-        if (ImGui.SmallButton("Add from clipboard##gestureQuick"))
-            gestureImportError = ImportGestureCommands(quick);
-        IconGlyph.HelpMarker("Imports the Sub's versioned animation catalog. Each button shows the mod, animation option, and tied trigger; sending plays immediately when their Gesture permission is enabled.");
-        if (quick.Count > 0)
+        if (quick.Count > 0 && ImGui.SmallButton("Clear all##gestureQuick"))
         {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Clear all##gestureQuick"))
-            {
-                quick.Clear();
-                gestureImportError = null;
-                plugin.Configuration.Save();
-            }
+            quick.Clear();
+            plugin.Configuration.Save();
         }
-        if (gestureImportError is not null)
-            IconGlyph.WrappedColored(Theme.Warning, gestureImportError);
 
         if (quick.Count == 0)
         {
-            ImGui.TextDisabled("No gestures imported yet.");
+            ImGui.TextDisabled("No gestures imported yet - use \"Import commands\" above.");
             return;
         }
 
@@ -822,79 +1016,6 @@ public class CollarWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.SmallButton($"Copy##{idSuffix}"))
             ImGui.SetClipboardText(composed);
-    }
-
-    /// Guards against pasting something that isn't actually a name list (a Discord message, a URL, code, a
-    /// whole document pasted by accident) - this is a local convenience list only, but garbage entries
-    /// would still clutter the picker with buttons that never match anything on the Sub's side. Rejects
-    /// the whole paste rather than silently keeping only the "valid-looking" lines, since a rejection is
-    /// far more noticeable than a list that's quietly missing half its entries. Returns an error message
-    /// to show, or null on success. `toCommand` builds the actual override command from each imported
-    /// name (e.g. "outfit lock <name>"), so every imported entry is immediately a ready one-click button.
-    private string? ImportQuickCommands(List<QuickCommand> target, Func<string, string> toCommand)
-    {
-        var text = ImGui.GetClipboardText();
-        if (string.IsNullOrWhiteSpace(text))
-            return "Clipboard is empty - nothing to import.";
-
-        var lines = text.Split('\n')
-            .Select(line => line.Trim().TrimStart('-', '*', '•').Trim())
-            .Where(line => line.Length > 0)
-            .ToList();
-
-        if (lines.Count == 0)
-            return "Clipboard is empty - nothing to import.";
-        if (lines.Count > 300)
-            return "That's way more lines than a scan result would have - doesn't look like a name list. Nothing imported.";
-
-        var badLine = lines.FirstOrDefault(line =>
-            line.Length > 80 ||
-            line.Contains("http://", StringComparison.OrdinalIgnoreCase) ||
-            line.Contains("https://", StringComparison.OrdinalIgnoreCase) ||
-            line.IndexOfAny(['{', '}', ';', '<', '>', '\t']) >= 0);
-        if (badLine is not null)
-            return $"\"{(badLine.Length > 40 ? badLine[..40] + "..." : badLine)}\" doesn't look like a design/emote name - doesn't look like a name list. Nothing imported.";
-
-        var addedCount = 0;
-        foreach (var line in lines)
-        {
-            var command = toCommand(line);
-            if (!target.Any(existing => string.Equals(existing.Command, command, StringComparison.OrdinalIgnoreCase)))
-            {
-                target.Add(new QuickCommand { Label = line, Command = command });
-                addedCount++;
-            }
-        }
-
-        target.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
-        plugin.Configuration.Save();
-        return addedCount == 0 ? "Nothing new - all of those were already imported." : null;
-    }
-
-    private string? ImportGestureCommands(List<QuickCommand> target)
-    {
-        var text = ImGui.GetClipboardText();
-        if (string.IsNullOrWhiteSpace(text)) return "Clipboard is empty - nothing to import.";
-        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (lines.Length > 300) return "Too many animation entries; nothing imported.";
-        var parsed = new List<GestureCatalogEntry>();
-        foreach (var line in lines)
-        {
-            if (!GestureCommand.TryParseExport(line, out var entry) || entry is null)
-                return "Clipboard is not a valid Collar gesture catalog; nothing imported.";
-            parsed.Add(entry);
-        }
-        var added = 0;
-        foreach (var entry in parsed)
-        {
-            var command = $"gesture {entry.Id}";
-            if (target.Any(x => x.Command.Equals(command, StringComparison.OrdinalIgnoreCase))) continue;
-            target.Add(new QuickCommand { Label = entry.Label, Command = command });
-            added++;
-        }
-        target.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
-        plugin.Configuration.Save();
-        return added == 0 ? "Nothing new - all animations were already imported." : null;
     }
 
     /// "title"/"outfit"/"gesture" are reserved for the Owner's direct override grammar (see

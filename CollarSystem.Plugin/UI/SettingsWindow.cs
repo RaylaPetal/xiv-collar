@@ -26,6 +26,8 @@ public class SettingsWindow : Window, IDisposable
     private string triggerPhraseInput = "";
     private string gestureModSearch = "";
     private string newWardrobeAllowlistFolder = "";
+    private string newRestraintAllowlistFolder = "";
+    private string? scanAndExportResult;
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - see
     /// CollarWindow's matching field for the rest of the Test controls; Moodles' only lives here since it
@@ -40,7 +42,10 @@ public class SettingsWindow : Window, IDisposable
 
     public SettingsWindow(Plugin plugin) : base("Collar - Settings###CollarSettingsWindow")
     {
-        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(460, 480), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
+        // Raised from the original 480: Scan & Export (collar/catalog-sync) now stacks four scan sections
+        // in the window's own scroll region instead of its own nested one - a taller default minimum means
+        // less scrolling to reach it and everything below (ToS card) in the common case.
+        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(460, 700), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
         this.plugin = plugin;
     }
 
@@ -60,11 +65,7 @@ public class SettingsWindow : Window, IDisposable
         DrawIdentityCard(config);
         ImGui.Spacing();
 
-        DrawWardrobeScanCard(config);
-        ImGui.Spacing();
-        DrawGestureScanCard(config);
-        ImGui.Spacing();
-        DrawMoodlesScanCard(config);
+        DrawScanAndExportCard(config);
         ImGui.Spacing();
         DrawTosCard(config);
     }
@@ -155,10 +156,77 @@ public class SettingsWindow : Window, IDisposable
         }
     }
 
-    private void DrawWardrobeScanCard(PluginConfig config)
+    /// collar/catalog-sync: one section replacing the former separate Wardrobe/Gesture/Moodles scan cards
+    /// - each category's own scope controls and feedback are unchanged, just grouped here with a "Scan
+    /// all" action and the unified file export on top. Restraints scans independently of Wardrobe, with
+    /// its own folder allowlist - bondage/restriction-themed designs and everyday outfits live in
+    /// different Glamourer folders in practice, so they need different filters.
+    ///
+    /// Deliberately NOT wrapped in a Card (unlike every other section here) - a Card is a fixed-height
+    /// BeginChild, and this section's content has grown every time a category was added to it (most
+    /// recently Restraints) and will again. A hand-guessed fixed height drifts out of sync with actual
+    /// content and creates a second, nested scroll region on top of the Settings window's own - the
+    /// "can't reach the bottom" bug this replaces. Rendering directly into the window's own flow means
+    /// there's exactly one scrollbar (the window's), which already grows/shrinks correctly with content.
+    private void DrawScanAndExportCard(PluginConfig config)
     {
-        using var card = Card.Begin("wardrobeScanCard", new Vector2(0, 320));
+        IconGlyph.Text(FontAwesomeIcon.Search, "Scan & Export");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Scan every catalog at once below, then export one file to send your Owner - they fill every quick-command list from it in one action via the Owner tab's \"Import commands\" button.");
 
+        if (ImGui.Button("Scan all"))
+        {
+            plugin.OutfitCommand.Rescan();
+            plugin.GestureCommand.Rescan();
+            plugin.MoodlesCommand.Rescan();
+            plugin.RestraintCommand.Rescan();
+            scanAndExportResult = null;
+        }
+        IconGlyph.HelpMarker("Rescans Wardrobe, Gesture, Moodles, and Restraints together, each using its own currently-configured scope below - the same result as triggering each one's own Rescan individually.");
+
+        ImGui.SameLine();
+        var hasAnythingToExport = plugin.OutfitCommand.LastScanTotalDesigns is not null || plugin.GestureCommand.LastScanTotalMods is not null ||
+            plugin.MoodlesCommand.LastScanTotalPresets is not null || plugin.RestraintCommand.LastScanTotalDesigns is not null || config.RestraintMapping.Devices.Count > 0;
+        using (ImRaii.Disabled(!hasAnythingToExport))
+        {
+            if (ImGui.Button("Export..."))
+            {
+                plugin.FileDialogManager.SaveFileDialog("Export Collar catalog", ".txt", "collar-export", ".txt", (ok, path) =>
+                {
+                    if (!ok)
+                        return;
+                    try
+                    {
+                        System.IO.File.WriteAllText(path, plugin.CatalogSyncService.BuildExport());
+                        scanAndExportResult = $"Exported to {path} - send this file to your Owner.";
+                    }
+                    catch (Exception ex)
+                    {
+                        scanAndExportResult = $"Export failed: {ex.Message}";
+                    }
+                });
+            }
+        }
+        if (!hasAnythingToExport)
+            IconGlyph.HelpMarker("Scan at least one category, or tag a Restraints device, before exporting.");
+        if (scanAndExportResult is not null)
+            IconGlyph.WrappedColored(scanAndExportResult.StartsWith("Export failed", StringComparison.Ordinal) ? Theme.Danger : Theme.Success, scanAndExportResult);
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        DrawWardrobeScanBody(config);
+        ImGui.Spacing();
+        DrawRestraintsScanBody(config);
+        ImGui.Spacing();
+        DrawGestureScanBody(config);
+        ImGui.Spacing();
+        DrawMoodlesScanBody(config);
+        ImGui.Spacing();
+        ImGui.Separator();
+    }
+
+    private void DrawWardrobeScanBody(PluginConfig config)
+    {
         IconGlyph.Text(FontAwesomeIcon.Tshirt, "Wardrobe design allowlist & scan");
         ImGui.Separator();
         IconGlyph.WrappedDisabled("No folders = all saved designs. Add folders only when you want to restrict the catalog. Outfit aliases live in the main window's Wardrobe tab.");
@@ -202,10 +270,56 @@ public class SettingsWindow : Window, IDisposable
             ImGui.BulletText(entry.Name);
     }
 
-    private void DrawGestureScanCard(PluginConfig config)
+    /// collar/restraints: scans and filters independently of Wardrobe - bondage/restriction-themed
+    /// designs and everyday outfits live in different Glamourer folders in practice, so this uses its own
+    /// allowlist (PluginConfig.RestraintFolderAllowlist) rather than sharing Wardrobe's.
+    private void DrawRestraintsScanBody(PluginConfig config)
     {
-        using var card = Card.Begin("gestureScanCard", new Vector2(0, 430));
+        IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints design allowlist & scan");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("No folders = all saved designs. Add folders only when you want to restrict which designs are eligible to tag as restraint devices. Independent of the Wardrobe allowlist above - Restraints tab tags devices from here.");
+        IconGlyph.HelpMarker("With folders configured, only designs inside those Glamourer design-browser folder prefixes are scanned. Clear every folder to scan all saved designs.");
 
+        DrawAllowlistBody(config.RestraintFolderAllowlist, ref newRestraintAllowlistFolder, "restraints");
+
+        ImGui.Spacing();
+        if (ImGui.Button("Rescan restraints"))
+            plugin.RestraintCommand.Rescan();
+        IconGlyph.HelpMarker("Re-reads your saved Glamourer designs for Restraints. An empty folder list includes all designs; otherwise only matching folders are included.");
+
+        DrawRestraintsScanFeedback();
+    }
+
+    private void DrawRestraintsScanFeedback()
+    {
+        var restraints = plugin.Configuration.RestraintMapping;
+        var lastScanTotal = plugin.RestraintCommand.LastScanTotalDesigns;
+
+        if (lastScanTotal is null)
+        {
+            ImGui.TextDisabled("Not scanned yet this session.");
+            return;
+        }
+
+        var matched = restraints.ScannedDesigns.Count;
+        var color = matched > 0 ? Theme.Success : Theme.Warning;
+        var scope = plugin.Configuration.RestraintFolderAllowlist.Count == 0 ? "all-design mode" : "folder-filtered mode";
+        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved design(s); {matched} available ({scope}).");
+
+        if (matched == 0)
+            return;
+
+        if (ImGui.SmallButton("Copy names##restraints"))
+            ImGui.SetClipboardText(string.Join("\n", restraints.ScannedDesigns.Values.Select(d => d.Name)));
+        IconGlyph.HelpMarker("Copies the list below as plain text, one design per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with a direct override (\"restraint lock <name>\").");
+
+        using var _ = ImRaii.Child("restraintsCatalog", new Vector2(0, 80), true);
+        foreach (var entry in restraints.ScannedDesigns.Values)
+            ImGui.BulletText(entry.Name);
+    }
+
+    private void DrawGestureScanBody(PluginConfig config)
+    {
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation mods to scan");
         ImGui.Separator();
         IconGlyph.WrappedDisabled("No selected mods = scan every installed mod. Select one or more to restrict scanning. Folder and text fields only filter this list.");
@@ -290,10 +404,8 @@ public class SettingsWindow : Window, IDisposable
 
     /// collar/moodles: no folder allowlist, unlike Wardrobe/Gesture - Moodles presets have no folder-
     /// organization concept, every saved preset is eligible (design.md's decision).
-    private void DrawMoodlesScanCard(PluginConfig config)
+    private void DrawMoodlesScanBody(PluginConfig config)
     {
-        using var card = Card.Begin("moodlesScanCard", new Vector2(0, 200));
-
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles preset scan");
         ImGui.Separator();
         IconGlyph.WrappedDisabled("Reads your own saved Moodles presets directly - nothing to allowlist. Moodles apply/clear commands live in the main window's Owner tab.");

@@ -61,12 +61,13 @@ Sub's own client. The Owner learns alias names the same way they'd learn anythin
 Sub tells them, out of band.
 
 Alongside that, the same composer box also accepts a **direct override** for `title`, `outfit`, `gesture`,
-`collar`, and `moodle` - five words reserved so a Sub alias can never be named one of them, no separate
-menu needed. A tell like `command title create Good Girl` or `command outfit lock Casual Blue` bypasses
-the Sub's own alias dictionary entirely and applies immediately (matching an outfit/gesture/Moodle by
-whatever name the Sub told the Owner from their own scan results - Settings has a "Copy names" button next
-to each scan so the Sub can hand over the exact list instead of reciting it). Title and outfit also
-**lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
+`collar`, `moodle`, and `restraint` - six words reserved so a Sub alias can never be named one of them, no
+separate menu needed. A tell like `command title create Good Girl` or `command outfit lock Casual Blue`
+bypasses the Sub's own alias dictionary entirely and applies immediately (matching an outfit/gesture/
+Moodle/restraint device by whatever name the Sub told the Owner - Settings' unified **Scan & Export**
+section scans every catalog at once and exports one file the Sub can hand to their Owner, who fills every
+category's Quick Commands from it in one action via the Owner tab's "Import commands" button, instead of
+reciting names one by one). Title and outfit also **lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
 `title clear` / `outfit unlock` override tell (or the Sub's own panic, which always works regardless)
 releases it. An outfit lock only ever covers the equipment slots the applied design itself changes - never
 Glamourer's own whole-character lock, and never any slot the design doesn't touch, so the rest of your
@@ -83,9 +84,11 @@ remove a status effect from the Sub's own saved Moodles presets, immediately, wi
 a Moodle is a visual status icon, not a real emote/animation the way Gesture is.
 
 The Owner's window builds these into one-click **Quick Commands** per category (Title/Outfit/Gesture/
-Follow/Moodles, plus a general Alias/one-off box with its own "Add Command", and a fixed "Collar unlock"
-row), auto-populated for Outfit/Gesture/Moodles straight from the Sub's clipboard-exported name list - see
-Automation risk below for what the Send button on each one actually does.
+Follow/Moodles/Restraints, plus a general Alias/one-off box with its own "Add Command", and fixed
+"Collar unlock"/"Restraint unlock" rows). Outfit/Gesture/Moodles/Restraints are populated together by the
+centered **"Import commands"** button at the top of the Owner tab, which reads a file the Sub exported from
+Settings' unified Scan & Export section and fills all four in one action - see Automation risk below for
+what the Send button on each Quick Command actually does.
 
 ## Consent model
 
@@ -150,10 +153,21 @@ Automation risk below for what the Send button on each one actually does.
   the hook signatures are version-specific reverse-engineering artifacts that can break on any game patch
   (see `MovementLockService.cs`) - if they fail to resolve on load, the movement lock stays disabled
   rather than silently doing nothing while claiming to work.
+- **Restraints** ties a Glamourer design to one or more restriction rules (Restraints tab): forced pose
+  (blocks movement, same mechanism as Follow/leash), walk-only (forces walking, blocks running, leaves
+  directional input untouched), action block (hooks `ActionManager`'s own action-use entry point to
+  suppress hotbar/skill execution), and gag chat mangling. **Gag chat mangling is a materially different
+  automation surface from everything else in this plugin**: it intercepts your own outgoing chat message
+  after you press Enter but before it reaches the server, and replaces the actually-transmitted text with a
+  muffled/nonsense variant - not just your own local display of it. Every other feature here either applies
+  a cosmetic/state change to your own character or blocks an input; this one rewrites content you yourself
+  typed. It only ever runs while a gag-rule device is applied (an explicit, reversible opt-in you or your
+  Owner toggle the same way as any other device), never unconditionally, and it never touches slash
+  commands. See `ChatGagService.cs`.
 
-Gesture and Follow are gated behind their own permission toggle, and both require the Sub to check an
-in-UI acknowledgement of this section (Settings) before either toggle can be enabled at all. Make an
-informed choice before turning them on.
+Gesture, Follow, and Restraints are gated behind their own permission toggle, and all three require the Sub
+to check an in-UI acknowledgement of this section (Settings) before any of the three toggles can be enabled
+at all. Make an informed choice before turning them on.
 
 ## Testing locally, before pairing
 
@@ -161,7 +175,7 @@ Every configurable Sub action has its own action-specific **Test** button (e.g. 
 "Test Apply", "Test Clear", "Test Play", "Test Engage", "Test Release" - the label alone identifies what it
 does, no tooltip needed), right next to where it's configured: title apply/clear (Title tab), outfit
 apply/unlock (Wardrobe tab), gesture playback (Gesture tab), collar lock/unlock and leash/unleash (Collar
-tab), and Moodles apply/clear (Settings' Moodles scan card). A Test button runs the action through the
+tab), and Moodles apply/clear (Settings' Scan & Export section). A Test button runs the action through the
 exact same local code path an accepted Owner's command would use - `LocalTestCoordinator` calls straight
 into the same `TitleCommand`/`OutfitCommand`/`GestureCommand`/`FollowCommand`/`CollarCommand`/
 `MoodlesCommand` methods `ChatCommandListener` calls for a real trigger tell - so a passing test is a real
@@ -230,12 +244,15 @@ build task, or building via the `.slnx` all land in the same place.
    * Set your **Role** (Owner/Sub) - it only affects whether incoming tells apply locally and what the
      pairing handshake declares; it doesn't hide anything else.
    * Share your generated code with your pair out of band, and enter theirs as **Their code**.
-   * Check the ToS acknowledgement, optionally select Penumbra animation mods or wardrobe folders to
-     restrict scanning, and define your aliases. Empty animation selection and empty wardrobe folder
-     scope both mean **scan everything available**; folder/text search fields only filter the visible picker.
-     Define aliases in the main window's Title/Wardrobe/Gesture tabs, which stay available regardless of
-     Role. Rescan your Moodles presets here too
-     if you want the Moodles category available.
+   * Check the ToS acknowledgement, then use Settings' unified **Scan & Export** section: optionally select
+     Penumbra animation mods or wardrobe folders to restrict scanning (empty animation selection and empty
+     wardrobe folder scope both mean **scan everything available**; folder/text search fields only filter
+     the visible picker), then hit **Scan all** to rescan Wardrobe, Gesture, and Moodles together. Define
+     aliases in the main window's Title/Wardrobe/Gesture/Restraints tabs, which stay available regardless
+     of Role. Once you've scanned (and tagged any Restraints devices you want), hit **Export...** to save a
+     single file covering every category - hand that file to your Owner however you like (Discord, a
+     shared folder), and they fill every Quick Command list from it in one action via the Owner tab's
+     **Import commands** button.
    * If you want a collar: equip the item you want in your Neck slot, then capture it from the main
      window's **Collar** tab. Enable the **Collar** permission (Permissions tab) - configuring an item
      alone does nothing without it. The collar applies and locks automatically the next time you accept a

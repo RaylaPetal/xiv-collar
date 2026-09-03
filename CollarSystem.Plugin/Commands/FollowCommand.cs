@@ -7,6 +7,8 @@ namespace CollarSystem.Plugin.Commands;
 /// requires, kept separate from the other three categories by construction.
 public sealed class FollowCommand
 {
+    private const string Owner = "Follow";
+
     private readonly MovementLockService movementLock;
     private readonly SubRuntimeState runtimeState;
 
@@ -21,14 +23,14 @@ public sealed class FollowCommand
         if (!movementLock.IsAvailable)
             return false;
 
-        movementLock.Engage();
+        movementLock.Engage(Owner);
         runtimeState.MovementLockActive = true;
         return true;
     }
 
     public void Release()
     {
-        movementLock.Release();
+        movementLock.Release(Owner);
         runtimeState.MovementLockActive = false;
     }
 }
