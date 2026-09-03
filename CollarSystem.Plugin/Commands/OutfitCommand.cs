@@ -89,9 +89,9 @@ public sealed class OutfitCommand
         return true;
     }
 
-    /// Sub-side: rescan the Sub's own Glamourer designs, scoped to the wardrobe folder allowlist. Purely
+    /// Sub-side: rescan the Sub's own Glamourer designs; an empty folder scope includes all designs. Purely
     /// local - there is no live channel to push the result anywhere; the Sub picks a design here to name
-    /// an alias after in Settings.
+    /// an alias after in the Wardrobe tab.
     public void Rescan()
     {
         var allDesigns = glamourer.GetDesigns();
@@ -99,7 +99,7 @@ public sealed class OutfitCommand
 
         var allowlist = config.WardrobeFolderAllowlist;
         var matched = allowlist.Count == 0
-            ? []
+            ? allDesigns
             : allDesigns.Where(d => allowlist.Any(folder => IsUnderFolder(d.FullPath, folder))).ToList();
 
         var entries = matched.Select(d => new WardrobeDesignEntry { DesignId = d.Id, Name = d.DisplayName });

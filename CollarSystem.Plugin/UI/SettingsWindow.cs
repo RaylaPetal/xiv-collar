@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using CollarSystem.Plugin.Commands;
 using CollarSystem.Plugin.Config;
 using CollarSystem.Plugin.Ipc;
 using Dalamud.Bindings.ImGui;
@@ -11,10 +12,11 @@ using Dalamud.Interface.Windowing;
 
 namespace CollarSystem.Plugin.UI;
 
-/// Role, pairing identity, trigger phrase, folder allowlists, and scanning live here - the "infrastructure"
+/// Role, pairing identity, trigger phrase, scan scopes, and scanning live here - the "infrastructure"
 /// side of setup, shared regardless of which alias you're about to define. What each alias actually maps
 /// to (title text, which scanned design/gesture, follow words) lives in CollarWindow's own Title/Wardrobe/
-/// Gesture tabs instead, next to the scan results and pending prompts it depends on. Everything here stays
+/// Gesture/Collar tabs instead. Safeword configuration stays in the always-visible character header.
+/// Everything here stays
 /// visible regardless of Role, same as CollarWindow's tabs - you can scan/configure before ever flipping
 /// to Sub. Opened via the plugin installer's gear icon (OpenConfigUi) and the `/collarsettings` command.
 public class SettingsWindow : Window, IDisposable
@@ -22,9 +24,13 @@ public class SettingsWindow : Window, IDisposable
     private readonly Plugin plugin;
     private string peerCodeInput = "";
     private string triggerPhraseInput = "";
-    private bool revealSafeword;
     private string gestureModSearch = "";
     private string newWardrobeAllowlistFolder = "";
+
+    /// Transient, session-only per-action local Test feedback (collar/ui-organization) - see
+    /// CollarWindow's matching field for the rest of the Test controls; Moodles' only lives here since it
+    /// has no Sub-facing module of its own.
+    private readonly Dictionary<string, LocalTestResult> testResults = new();
 
     private static readonly string[] RoleNames = ["Sub", "Owner"];
 
@@ -50,18 +56,12 @@ public class SettingsWindow : Window, IDisposable
         DrawIdentityCard(config);
         ImGui.Spacing();
 
-        DrawSafetyCard(config);
-        ImGui.Spacing();
-
         DrawWardrobeScanCard(config);
         ImGui.Spacing();
         DrawGestureScanCard(config);
         ImGui.Spacing();
         DrawMoodlesScanCard(config);
         ImGui.Spacing();
-        DrawFollowAliasesCard(config);
-        ImGui.Spacing();
-
         DrawTosCard(config);
     }
 
@@ -151,38 +151,21 @@ public class SettingsWindow : Window, IDisposable
         }
     }
 
-    /// There is deliberately no panic button anywhere in this plugin's UI - /collarpanic is a typed
-    /// safeword instead, the same convention as any other safeword: memorized, not clicked, and not
-    /// visible on screen for someone else to see or accidentally hit. Leaving this blank keeps
-    /// /collarpanic working unconditionally with no argument, exactly like before - a forgotten/unset
-    /// safeword must never be the reason panic stops working.
-    private void DrawSafetyCard(PluginConfig config)
-    {
-        using var card = Card.Begin("safetyCard", new Vector2(0, 100));
-
-        IconGlyph.Text(FontAwesomeIcon.ExclamationTriangle, "Safety");
-        ImGui.Separator();
-        ImGui.TextWrapped("/collarpanic always reverts everything (unpair, outfit, title, movement lock) from local state only.");
-
-        SafewordEditor.Draw(config, "settings", ref revealSafeword);
-        IconGlyph.HelpMarker("If set, /collarpanic requires this exact word as its argument (e.g. \"/collarpanic red\") - typed panic instead of a clickable button. Leave blank and plain /collarpanic keeps working with no argument needed.");
-    }
-
     private void DrawWardrobeScanCard(PluginConfig config)
     {
         using var card = Card.Begin("wardrobeScanCard", new Vector2(0, 320));
 
         IconGlyph.Text(FontAwesomeIcon.Tshirt, "Wardrobe design allowlist & scan");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Empty allowlist = scan finds nothing. Outfit aliases (which design each one applies) live in the main window's Wardrobe tab.");
-        IconGlyph.HelpMarker("Only designs inside these folders (matched as a Glamourer design-browser folder prefix) are ever scanned or available to pick as an outfit alias's target.");
+        IconGlyph.WrappedDisabled("No folders = all saved designs. Add folders only when you want to restrict the catalog. Outfit aliases live in the main window's Wardrobe tab.");
+        IconGlyph.HelpMarker("With folders configured, only designs inside those Glamourer design-browser folder prefixes are scanned. Clear every folder to scan all saved designs.");
 
         DrawAllowlistBody(config.WardrobeFolderAllowlist, ref newWardrobeAllowlistFolder, "wardrobe");
 
         ImGui.Spacing();
         if (ImGui.Button("Rescan wardrobe"))
             plugin.OutfitCommand.Rescan();
-        IconGlyph.HelpMarker("Re-reads your saved Glamourer designs and keeps the ones inside the allowlisted folders above - run this after saving/renaming a design before it'll show up as an option in the Wardrobe tab.");
+        IconGlyph.HelpMarker("Re-reads your saved Glamourer designs. An empty folder list includes all designs; otherwise only matching folders are included.");
 
         DrawWardrobeScanFeedback();
     }
@@ -200,7 +183,8 @@ public class SettingsWindow : Window, IDisposable
 
         var matched = wardrobe.LocalDesigns.Count;
         var color = matched > 0 ? Theme.Success : Theme.Warning;
-        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved design(s), {matched} matched your allowlist folder(s).");
+        var scope = plugin.Configuration.WardrobeFolderAllowlist.Count == 0 ? "all-design mode" : "folder-filtered mode";
+        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved design(s); {matched} available ({scope}).");
 
         if (matched == 0)
             return;
@@ -220,7 +204,7 @@ public class SettingsWindow : Window, IDisposable
 
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation mods to scan");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Select the exact Penumbra mods whose named animation options should be scanned. Disabled mods are allowed and will be enabled temporarily when played.");
+        IconGlyph.WrappedDisabled("No selected mods = scan every installed mod. Select one or more to restrict scanning. Folder and text fields only filter this list.");
 
         var folderFilter = config.GestureModFolderFilter;
         if (ImGui.InputTextWithHint("##gestureFolder", "Penumbra sort folder (optional)...", ref folderFilter, 128))
@@ -251,7 +235,7 @@ public class SettingsWindow : Window, IDisposable
         ImGui.Spacing();
         if (ImGui.Button("Rescan gestures"))
             plugin.GestureCommand.Rescan();
-        IconGlyph.HelpMarker("Reads each selected mod's Penumbra option names and animation redirects, including currently disabled mods.");
+        IconGlyph.HelpMarker("Reads every installed mod when none are selected, or only explicit selections otherwise. Disabled mods remain eligible and are enabled temporarily when played.");
 
         DrawGestureScanFeedback();
     }
@@ -274,12 +258,13 @@ public class SettingsWindow : Window, IDisposable
         }
         var matched = gestureMapping.LocalCatalog.Count;
         var color = matched > 0 ? Theme.Success : Theme.Warning;
-        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} installed mod(s); {plugin.Configuration.SelectedGestureMods.Count} selected; {matched} animation trigger(s) discovered.");
+        var selectionCount = plugin.Configuration.SelectedGestureMods.Count;
+        var scope = selectionCount == 0 ? "all-mod mode" : $"{selectionCount} explicitly selected";
+        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} installed mod(s); {scope}; {matched} animation trigger(s) discovered.");
 
         if (matched == 0 && lastScanTotal > 0)
         {
-            ImGui.TextWrapped(
-                "No animation options were found. Select at least one mod above, then rescan.");
+            ImGui.TextWrapped("No playable animation options were found in the current scan scope.");
             return;
         }
 
@@ -344,13 +329,36 @@ public class SettingsWindow : Window, IDisposable
             ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x)));
         IconGlyph.HelpMarker("Copies the list below as plain text, one preset per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
 
+        ImGui.SameLine();
+        DrawTestButton("moodlesClear", plugin.LocalTestCoordinator.TestMoodlesClear);
+        IconGlyph.HelpMarker("Locally clears your active Moodle right now, the same way an accepted Owner's \"moodle clear\" would - no pairing or chat involved.");
+
         using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);
         foreach (var entry in moodlesMapping.LocalCatalog.Values)
+        {
+            ImGui.PushID(entry.PresetId);
             ImGui.BulletText(entry.Name);
+            ImGui.SameLine();
+            DrawTestButton($"moodlesApply_{entry.PresetId}", () => plugin.LocalTestCoordinator.TestMoodlesApply(entry));
+            ImGui.PopID();
+        }
     }
 
-    /// Shared by the wardrobe (Glamourer design folders) and gesture (Penumbra mod folders) allowlists -
-    /// same "empty = finds nothing" semantics, same folder-prefix matching on the other side.
+    /// See CollarWindow's identically-named helper - Moodles' Test controls live here instead since
+    /// Moodles has no Sub-facing module of its own (its catalog lives entirely in this scan card).
+    private void DrawTestButton(string key, Func<LocalTestResult> run)
+    {
+        if (ImGui.SmallButton($"Test##{key}"))
+            testResults[key] = run();
+
+        if (testResults.TryGetValue(key, out var last))
+        {
+            ImGui.SameLine();
+            IconGlyph.WrappedColored(last.Success ? Theme.Success : Theme.Danger, last.Message);
+        }
+    }
+
+    /// Wardrobe folder scopes use "empty = all" semantics and prefix matching when narrowed.
     private void DrawAllowlistBody(List<string> allowlist, ref string newFolderInput, string idSuffix)
     {
         for (var i = 0; i < allowlist.Count; i++)
@@ -376,29 +384,6 @@ public class SettingsWindow : Window, IDisposable
             plugin.Configuration.Save();
             newFolderInput = "";
         }
-    }
-
-    private void DrawFollowAliasesCard(PluginConfig config)
-    {
-        using var card = Card.Begin("followAliasesCard", new Vector2(0, 110));
-        IconGlyph.Text(FontAwesomeIcon.Link, "Follow / Leash Triggers");
-        ImGui.Separator();
-
-        var follow = config.Aliases.Follow;
-        var engage = follow.EngageAlias;
-        var release = follow.ReleaseAlias;
-        if (ImGui.InputText("Engage alias", ref engage, 32))
-        {
-            follow.EngageAlias = engage;
-            config.Save();
-        }
-        IconGlyph.HelpMarker("Locks your movement to follow the Owner and blocks your own WASD input until released - the hardcore permission, gated separately below by its own toggle and the ToS acknowledgement.");
-        if (ImGui.InputText("Release alias", ref release, 32))
-        {
-            follow.ReleaseAlias = release;
-            config.Save();
-        }
-        IconGlyph.HelpMarker("Releases the movement lock and returns normal input control.");
     }
 
     private void DrawTosCard(PluginConfig config)

@@ -33,7 +33,8 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
 
         MigrateFolderSelection(mods);
         var entries = new List<GestureCatalogEntry>();
-        foreach (var directory in config.SelectedGestureMods)
+        IEnumerable<string> directories = config.SelectedGestureMods.Count == 0 ? mods.Keys : config.SelectedGestureMods;
+        foreach (var directory in directories)
         {
             if (!mods.TryGetValue(directory, out var modName)) continue;
             var (enabled, current) = ipc.TryGetCurrentSettings(collection.Value, directory);

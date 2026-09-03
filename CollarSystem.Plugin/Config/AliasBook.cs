@@ -45,8 +45,8 @@ public class GestureAliasDefinition
 [Serializable]
 public class FollowAliasWords
 {
-    public string EngageAlias { get; set; } = "leash-on";
-    public string ReleaseAlias { get; set; } = "leash-off";
+    public string EngageAlias { get; set; } = "leash";
+    public string ReleaseAlias { get; set; } = "unleash";
 }
 
 [Serializable]

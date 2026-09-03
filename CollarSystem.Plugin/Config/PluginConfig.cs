@@ -129,14 +129,14 @@ public class PluginConfig : IPluginConfiguration
     /// Legacy folder allowlist, retained only to seed the explicit mod picker during migration.
     public List<string> GestureFolderAllowlist { get; set; } = new();
 
-    /// PoseKit-style explicit Penumbra mod directories to inspect for animation options.
+    /// PoseKit-style Penumbra mod scope. Empty means every installed mod; entries restrict the scan.
     public HashSet<string> SelectedGestureMods { get; set; } = new();
 
     /// Non-mutating convenience filter for the explicit mod picker.
     public string GestureModFolderFilter { get; set; } = "";
 
-    /// Sub-side: Glamourer design-browser folders that wardrobe scanning is scoped to - same allowlist
-    /// pattern as GestureFolderAllowlist, applied to `Glamourer.GetDesignListExtended`'s FullPath.
+    /// Sub-side: optional Glamourer design-browser folders applied to `Glamourer.GetDesignListExtended`'s
+    /// FullPath. Empty means every saved design; entries restrict the scan.
     public List<string> WardrobeFolderAllowlist { get; set; } = new();
 
     /// Gate per collar/gesture and collar/follow's ToS-disclosure requirement: the Sub must acknowledge

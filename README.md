@@ -102,7 +102,7 @@ Automation risk below for what the Send button on each one actually does.
   setting, whether paired or not, but there's no panic button anywhere in the UI on purpose -
   `/collarpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
   state, clears any Honorific title, and releases any active movement lock, all from local state only. Set
-  a safeword in the header or Settings and `/collarpanic` requires it as an argument (`/collarpanic red`);
+  a safeword in the header and `/collarpanic` requires it as an argument (`/collarpanic red`);
   leave it blank and plain `/collarpanic` keeps working unconditionally - a forgotten safeword must never
   be the reason panic stops working. Safewords are masked by default and can be deliberately revealed.
 - **Uninstalling the plugin is always the ultimate safeword.** Since nothing can be applied to a Sub's
@@ -136,6 +136,28 @@ Automation risk below for what the Send button on each one actually does.
 Gesture and Follow are gated behind their own permission toggle, and both require the Sub to check an
 in-UI acknowledgement of this section (Settings) before either toggle can be enabled at all. Make an
 informed choice before turning them on.
+
+## Testing locally, before pairing
+
+Every configurable Sub action has its own **Test** button, right next to where it's configured: title
+apply/clear (Title tab), outfit apply/unlock (Wardrobe tab), gesture playback (Gesture tab), collar
+lock/unlock and leash/unleash (Collar tab), and Moodles apply/clear (Settings' Moodles scan card). A Test
+button runs the action through the exact same local code path an accepted Owner's command would use -
+`LocalTestCoordinator` calls straight into the same `TitleCommand`/`OutfitCommand`/`GestureCommand`/
+`FollowCommand`/`CollarCommand`/`MoodlesCommand` methods `ChatCommandListener` calls for a real trigger tell
+- so a passing test is a real guarantee the configuration works, not a simulation.
+
+**Testing never touches pairing or chat.** No pairing (active or pending) is required to test, and no test
+ever composes or sends a `/tell` - `ChatComposer`/`ChatSender` are never involved. Testing only changes your
+own local game state (title, outfit, collar, animation, or movement lock), exactly like accepting the
+matching command would.
+
+**The normal gates still apply.** A Test button still requires that action's category permission
+(Permissions tab) to be enabled, and Gesture/Leash tests additionally require the automation-risk
+acknowledgement (Settings) - a disabled permission or missing acknowledgement makes the test a no-op and
+shows why, right next to the button, instead of silently doing nothing. Every test shows a transient
+success or failure result next to its button (not saved anywhere) naming the action that was attempted, so
+a failed Glamourer/Penumbra/Moodles integration is easy to tell apart from a gating failure.
 
 ## Project layout
 
@@ -183,9 +205,11 @@ build task, or building via the `.slnx` all land in the same place.
    * Set your **Role** (Owner/Sub) - it only affects whether incoming tells apply locally and what the
      pairing handshake declares; it doesn't hide anything else.
    * Share your generated code with your pair out of band, and enter theirs as **Their code**.
-   * Check the ToS acknowledgement, explicitly select the Penumbra animation mods to scan, set your wardrobe folder allowlist, and define your aliases
-     (each one maps a short name to a title/outfit/gesture action) - the main window's Title/Wardrobe/
-     Gesture tabs handle that, and stay available regardless of Role. Rescan your Moodles presets here too
+   * Check the ToS acknowledgement, optionally select Penumbra animation mods or wardrobe folders to
+     restrict scanning, and define your aliases. Empty animation selection and empty wardrobe folder
+     scope both mean **scan everything available**; folder/text search fields only filter the visible picker.
+     Define aliases in the main window's Title/Wardrobe/Gesture tabs, which stay available regardless of
+     Role. Rescan your Moodles presets here too
      if you want the Moodles category available.
    * If you want a collar: equip the item you want in your Neck slot, then capture it from the main
      window's **Collar** tab. Enable the **Collar** permission (Permissions tab) - configuring an item
@@ -195,16 +219,20 @@ build task, or building via the `.slnx` all land in the same place.
      and sends it as a `/tell` to the other. The receiving side gets a Pending request naming the verified
      sender and their declared role - click **Accept**. Pairing is then locked for a Sub; an Owner can
      Release it any time (both in the character header, or in Settings).
-   * Optionally set a **Safeword** in the always-visible main character header or in Settings - if set,
+   * Optionally set a **Safeword** in the always-visible main character header - if set,
      `/collarpanic` requires it as an argument; if left blank, plain `/collarpanic` keeps working.
 4. `/collar` opens the one main window; `/collarpanic` (with your safeword as its argument, if you set
    one) always works from anywhere. The header shows your live character name, home world, optional Free
    Company tag, and an explicit Not paired/Owns/Owned by/pending relationship state.
-   Title/Wardrobe/Gesture/Permissions are where a Sub sets up what they'll accept; the **Owner** tab is
-   where you build one-click Quick Commands per category, or compose
+   Title/Wardrobe/Gesture/Permissions are where a Sub sets up what they'll accept. The **Collar** tab also
+   owns the Sub's leash trigger words, defaulting to `leash` and `unleash`. The visually separated,
+   far-right **Owner** tab groups each command category into an independent collapsible section where you
+   build one-click Quick Commands or compose
    a one-off - each has a Send button (fires immediately) and a Copy button (paste it yourself instead).
    Gesture entries show the mod's human-readable animation option and tied trigger; permitted commands
    temporarily activate that option and play it immediately.
+   Each configured action also has its own **Test** button so you can verify it works locally before you've
+   even paired - see Testing locally, before pairing below.
 
 All participation in this repository is governed by the [Dalamud Code of Conduct](https://dalamud.dev/code-of-conduct).
 If you used AI tooling at any point, review the [AI Usage Policy](https://dalamud.dev/plugin-publishing/ai-policy)

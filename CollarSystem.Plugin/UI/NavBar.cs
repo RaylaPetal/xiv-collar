@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -10,7 +11,7 @@ namespace CollarSystem.Plugin.UI;
 /// bar or another accordion buried in the window body.
 public static class NavBar
 {
-    public static string? Draw(string activeId, params (string Id, FontAwesomeIcon Icon, string Tooltip)[] items)
+    public static string? Draw(string activeId, string trailingId, params (string Id, FontAwesomeIcon Icon, string Tooltip)[] items)
     {
         string? clicked = null;
 
@@ -18,26 +19,44 @@ public static class NavBar
         // few-pixel vertical overflow and a sliver of scrollbar inside the nav bar itself. noScroll is
         // the hard guarantee; the taller size just avoids clipping the buttons.
         using var card = Card.Begin("navBar", new Vector2(0, 56), noScroll: true);
-        for (var i = 0; i < items.Length; i++)
+        var leading = items.Where(item => item.Id != trailingId).ToArray();
+        for (var i = 0; i < leading.Length; i++)
         {
-            var (id, icon, tooltip) = items[i];
-            var active = id == activeId;
-
-            using (ImRaii.PushColor(ImGuiCol.Button, active ? Theme.Accent : Theme.TileBg))
-            using (ImRaii.PushColor(ImGuiCol.ButtonHovered, active ? Theme.AccentHover : Theme.TileBgHover))
-            using (ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, Theme.TileRounding))
-            {
-                if (IconGlyph.Button(icon, new Vector2(32, 32)))
-                    clicked = id;
-            }
-
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(tooltip);
-
-            if (i < items.Length - 1)
+            var itemClicked = DrawItem(activeId, leading[i]);
+            if (clicked is null && itemClicked is not null)
+                clicked = itemClicked;
+            if (i < leading.Length - 1)
                 ImGui.SameLine();
         }
 
+        var trailing = items.FirstOrDefault(item => item.Id == trailingId);
+        if (!string.IsNullOrEmpty(trailing.Id))
+        {
+            ImGui.SameLine();
+            var rightX = ImGui.GetWindowContentRegionMax().X - 32f;
+            if (rightX > ImGui.GetCursorPosX())
+                ImGui.SetCursorPosX(rightX);
+            var itemClicked = DrawItem(activeId, trailing);
+            if (clicked is null && itemClicked is not null)
+                clicked = itemClicked;
+        }
+
         return clicked;
+    }
+
+    private static string? DrawItem(string activeId, (string Id, FontAwesomeIcon Icon, string Tooltip) item)
+    {
+        var active = item.Id == activeId;
+        using (ImRaii.PushColor(ImGuiCol.Button, active ? Theme.Accent : Theme.TileBg))
+        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, active ? Theme.AccentHover : Theme.TileBgHover))
+        using (ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, Theme.TileRounding))
+        {
+            if (IconGlyph.Button(item.Icon, new Vector2(32, 32)))
+                return item.Id;
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(item.Tooltip);
+        return null;
     }
 }

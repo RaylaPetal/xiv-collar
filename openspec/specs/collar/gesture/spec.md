@@ -34,14 +34,14 @@ The Sub's client SHALL build its gesture catalog from explicitly selected instal
 - **THEN** the catalog exposes a named default animation entry with its detected trigger
 
 ### Requirement: Sub can scope which mods are scanned
-The system SHALL let a Sub explicitly select which installed Penumbra mods participate in gesture scanning. The selection UI SHALL show mod display names and MAY be narrowed by Penumbra sort folder or text search; changing a filter SHALL NOT itself add or remove selected mods.
+The system SHALL let a Sub explicitly select which installed Penumbra mods participate in gesture scanning. An empty selected-mod set SHALL include every installed mod, while one or more explicit selections SHALL restrict scanning to those mods. The selection UI SHALL show mod display names and MAY be narrowed visually by Penumbra sort folder or text search; changing or clearing a visual filter SHALL NOT itself change the persisted selected set.
 
 #### Scenario: Sub scopes to an allowlisted folder
 - **WHEN** a Sub uses a Penumbra sort-folder filter and explicitly selects mods from the filtered results
-- **THEN** only those explicitly selected mods participate in scanning, while the folder filter itself neither selects nor exposes additional mods
+- **THEN** only those explicitly selected mods participate in scanning after at least one selection exists, while the folder filter itself neither selects nor excludes additional mods
 
 #### Scenario: Sub selects mods to scan
-- **WHEN** a Sub selects one or more installed Penumbra mods and triggers a rescan
+- **WHEN** a Sub explicitly selects one or more installed Penumbra mods and triggers a rescan
 - **THEN** the generated catalog contains animation metadata only from those selected mods
 
 #### Scenario: Selected mod is disabled
@@ -49,8 +49,12 @@ The system SHALL let a Sub explicitly select which installed Penumbra mods parti
 - **THEN** its animations remain discoverable and a later command can enable the chosen configuration temporarily
 
 #### Scenario: No mods are selected
-- **WHEN** a Sub triggers a scan without selecting any Penumbra mods
-- **THEN** the UI explains that no mods are selected and does not scan the entire installed mod library
+- **WHEN** a Sub triggers a scan with an empty selected-mod set
+- **THEN** the generated catalog contains animation metadata from every installed Penumbra mod
+
+#### Scenario: Visual filters are empty
+- **WHEN** the folder and text filters are empty
+- **THEN** the selection UI shows every installed mod without mutating the selected-mod set
 
 ### Requirement: Animation identity is preserved across sharing and commands
 The system SHALL identify a commandable gesture by its mod and named animation option plus its tied trigger, and SHALL display that animation name and trigger when the Sub browses or exports the catalog, when the Owner imports or sends it, and when the Sub receives it.

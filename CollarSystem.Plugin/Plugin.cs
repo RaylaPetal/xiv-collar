@@ -56,6 +56,7 @@ public sealed class Plugin : IDalamudPlugin
     public ChatComposer ChatComposer { get; }
     public ChatSender ChatSender { get; }
     public ChatCommandListener ChatCommandListener { get; }
+    public LocalTestCoordinator LocalTestCoordinator { get; }
 
     public PanicHandler PanicHandler { get; }
 
@@ -66,6 +67,7 @@ public sealed class Plugin : IDalamudPlugin
         ECommons.ECommonsMain.Init(PluginInterface, this);
 
         Configuration = PluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
+        MigrateConfiguration();
 
         GlamourerIpc = new GlamourerIpc();
         HonorificIpc = new HonorificIpc();
@@ -83,6 +85,7 @@ public sealed class Plugin : IDalamudPlugin
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
         ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
+        LocalTestCoordinator = new LocalTestCoordinator(Configuration, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
 
         PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, HonorificIpc, MovementLockService, RuntimeState);
 
@@ -173,6 +176,18 @@ public sealed class Plugin : IDalamudPlugin
         if (isPressed && !panicHotkeyWasPressed)
             PanicHandler.Panic();
         panicHotkeyWasPressed = isPressed;
+    }
+
+    private void MigrateConfiguration()
+    {
+        var follow = Configuration.Aliases.Follow;
+        if (!string.Equals(follow.EngageAlias, "leash-on", StringComparison.Ordinal) ||
+            !string.Equals(follow.ReleaseAlias, "leash-off", StringComparison.Ordinal))
+            return;
+
+        follow.EngageAlias = "leash";
+        follow.ReleaseAlias = "unleash";
+        Configuration.Save();
     }
 
     internal static void FireAndForget(Task task) =>

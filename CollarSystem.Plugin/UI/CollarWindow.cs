@@ -44,14 +44,18 @@ public class CollarWindow : Window, IDisposable
     private string? moodlesImportError;
     private bool revealSafeword;
 
+    /// Transient, session-only per-action local Test feedback (collar/ui-organization) - never saved,
+    /// keyed by a stable per-row id so each row's last result shows independently of the others.
+    private readonly Dictionary<string, LocalTestResult> testResults = new();
+
     private static readonly (string Id, FontAwesomeIcon Icon, string Tooltip)[] NavItems =
     [
         ("title", FontAwesomeIcon.Heading, "Title"),
         ("wardrobe", FontAwesomeIcon.Tshirt, "Wardrobe"),
         ("gesture", FontAwesomeIcon.TheaterMasks, "Gesture"),
         ("collar", FontAwesomeIcon.Lock, "Collar"),
-        ("owner", FontAwesomeIcon.Crown, "Owner"),
         ("permissions", FontAwesomeIcon.ShieldAlt, "Permissions"),
+        ("owner", FontAwesomeIcon.Crown, "Owner"),
     ];
 
     public CollarWindow(Plugin plugin) : base("Collar System###CollarWindow")
@@ -74,7 +78,7 @@ public class CollarWindow : Window, IDisposable
         DrawCharacterHeader();
         ImGui.Spacing();
 
-        if (NavBar.Draw(activeModule, NavItems) is { } clicked)
+        if (NavBar.Draw(activeModule, "owner", NavItems) is { } clicked)
             activeModule = clicked;
 
         ImGui.Spacing();
@@ -235,6 +239,8 @@ public class CollarWindow : Window, IDisposable
 
         DrawClearAliasField("Clear-title alias", () => config.Aliases.ClearTitleAlias, v => config.Aliases.ClearTitleAlias = v, config);
         IconGlyph.HelpMarker("The alias that removes your current Honorific title when triggered - separate from the named aliases below, which each apply a specific title.");
+        DrawTestButton("titleClear", plugin.LocalTestCoordinator.TestTitleClear);
+        IconGlyph.HelpMarker("Locally clears your title right now, the same way an accepted Owner's clear-title alias would - no pairing or chat involved.");
 
         ImGui.Spacing();
         var titles = config.Aliases.Titles;
@@ -251,6 +257,8 @@ public class CollarWindow : Window, IDisposable
                 ImGui.PopID();
                 break;
             }
+            ImGui.SameLine();
+            DrawTestButton($"title_{t.Alias}", () => plugin.LocalTestCoordinator.TestTitleApply(t));
             ImGui.PopID();
         }
 
@@ -282,6 +290,8 @@ public class CollarWindow : Window, IDisposable
 
         DrawClearAliasField("Unlock alias", () => config.Aliases.UnlockOutfitAlias, v => config.Aliases.UnlockOutfitAlias = v, config);
         IconGlyph.HelpMarker("The alias that unlocks your current Glamourer design, using whichever lock key that design was last applied with.");
+        DrawTestButton("outfitUnlock", plugin.LocalTestCoordinator.TestOutfitUnlock);
+        IconGlyph.HelpMarker("Locally unlocks your outfit right now, the same way an accepted Owner's unlock alias would - no pairing or chat involved.");
 
         ImGui.Spacing();
         var outfits = config.Aliases.Outfits;
@@ -298,6 +308,8 @@ public class CollarWindow : Window, IDisposable
                 ImGui.PopID();
                 break;
             }
+            ImGui.SameLine();
+            DrawTestButton($"outfit_{o.Alias}", () => plugin.LocalTestCoordinator.TestOutfitApply(o));
             ImGui.PopID();
         }
 
@@ -343,11 +355,12 @@ public class CollarWindow : Window, IDisposable
 
         var gestures = config.Aliases.Gestures;
         var removeGestureIndex = -1;
-        if (gestures.Count > 0 && ImGui.BeginTable("gestureAliases", 2,
+        if (gestures.Count > 0 && ImGui.BeginTable("gestureAliases", 3,
                 ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
         {
             ImGui.TableSetupColumn("Animation", ImGuiTableColumnFlags.WidthStretch);
             ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, 72);
+            ImGui.TableSetupColumn("Test", ImGuiTableColumnFlags.WidthFixed, 220);
             for (var i = 0; i < gestures.Count; i++)
             {
                 ImGui.PushID($"gesture_{i}");
@@ -360,6 +373,10 @@ public class CollarWindow : Window, IDisposable
 
                 ImGui.TableSetColumnIndex(1);
                 if (ImGui.SmallButton("Remove")) removeGestureIndex = i;
+
+                ImGui.TableSetColumnIndex(2);
+                using (ImRaii.Disabled(invalid))
+                    DrawTestButton($"gesture_{g.Alias}", () => plugin.LocalTestCoordinator.TestGesturePlay(g));
                 ImGui.PopID();
             }
             ImGui.EndTable();
@@ -449,6 +466,41 @@ public class CollarWindow : Window, IDisposable
                     plugin.CollarCommand.ClearConfiguredCollar();
             }
         }
+
+        ImGui.Spacing();
+        DrawTestButton("collarLock", plugin.LocalTestCoordinator.TestCollarLock);
+        IconGlyph.HelpMarker("Locally applies and locks your configured collar right now, the same way an accepted Owner's \"collar lock\" would - no pairing or chat involved.");
+        ImGui.SameLine();
+        DrawTestButton("collarUnlock", plugin.LocalTestCoordinator.TestCollarUnlock);
+        IconGlyph.HelpMarker("Locally releases the collar lock, the same way an accepted Owner's \"collar unlock\" would.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        IconGlyph.Text(FontAwesomeIcon.Link, "Leash triggers");
+        IconGlyph.WrappedDisabled("The words your Owner sends to engage or release the movement lock. Defaults: leash / unleash.");
+        var follow = config.Aliases.Follow;
+        var engage = follow.EngageAlias;
+        if (ImGui.InputText("Leash", ref engage, 32))
+        {
+            follow.EngageAlias = engage.Trim();
+            config.Save();
+        }
+        IconGlyph.HelpMarker("Engages follow and blocks your own movement while the Follow / Leash permission is enabled.");
+
+        var release = follow.ReleaseAlias;
+        if (ImGui.InputText("Unleash", ref release, 32))
+        {
+            follow.ReleaseAlias = release.Trim();
+            config.Save();
+        }
+        IconGlyph.HelpMarker("Releases the movement lock and restores normal input.");
+
+        ImGui.Spacing();
+        DrawTestButton("leashEngage", plugin.LocalTestCoordinator.TestLeashEngage);
+        IconGlyph.HelpMarker("Locally engages the movement lock right now, the same way an accepted Owner's leash trigger would - blocks your own WASD input until released. Requires Follow / Leash permission and the automation-risk acknowledgement (Settings).");
+        ImGui.SameLine();
+        DrawTestButton("leashRelease", plugin.LocalTestCoordinator.TestLeashRelease);
+        IconGlyph.HelpMarker("Locally releases the movement lock, the same way an accepted Owner's unleash trigger would.");
     }
 
     /// Best-effort display name for a raw Glamourer item id via Lumina's own Item sheet - falls back to
@@ -477,31 +529,26 @@ public class CollarWindow : Window, IDisposable
         if (!canSend)
             IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until pairing captures your Sub's name (Settings' handshake). Copy still works any time.");
 
-        DrawTitleQuickSection(canSend);
+        var quick = plugin.Configuration.QuickCommands;
+        DrawOwnerSection($"Title ({quick.Titles.Count} saved)##ownerTitle", () => DrawTitleQuickSection(canSend), defaultOpen: true);
+        DrawOwnerSection($"Outfit ({quick.Outfits.Count} imported)##ownerOutfit", () => DrawOutfitQuickSection(canSend));
+        DrawOwnerSection($"Gesture ({quick.Gestures.Count} imported)##ownerGesture", () => DrawGestureQuickSection(canSend));
+        DrawOwnerSection($"Leash ({quick.Follow.Count} saved)##ownerLeash", () => DrawFollowQuickSection(canSend));
+        DrawOwnerSection("Collar (2 actions)##ownerCollar", () => DrawCollarQuickSection(canSend));
+        DrawOwnerSection($"Moodles ({quick.Moodles.Count} imported)##ownerMoodles", () => DrawMoodlesQuickSection(canSend));
+        DrawOwnerSection($"Alias / one-off ({quick.Aliases.Count} saved)##ownerAlias", () => DrawFreeformComposer(canSend));
+    }
+
+    private static void DrawOwnerSection(string label, Action draw, bool defaultOpen = false)
+    {
+        var flags = defaultOpen ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+        if (ImGui.CollapsingHeader(label, flags))
+        {
+            ImGui.Indent();
+            draw();
+            ImGui.Unindent();
+        }
         ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawOutfitQuickSection(canSend);
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawGestureQuickSection(canSend);
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawFollowQuickSection(canSend);
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawCollarQuickSection(canSend);
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawMoodlesQuickSection(canSend);
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawFreeformComposer(canSend);
     }
 
     /// Collar only ever has one override verb - `collar unlock` - since the collar itself only ever
@@ -646,7 +693,7 @@ public class CollarWindow : Window, IDisposable
 
     /// Follow has no reserved-keyword override the way Title/Outfit/Gesture do (ChatCommandListener never
     /// added a "force follow" - it's always a plain alias), so there's nothing to auto-populate from a
-    /// scan. "leash-on"/"leash-off" are AliasBook's own defaults, shown as ready-to-use fixed rows so
+    /// scan. "leash"/"unleash" are AliasBook's own defaults, shown as ready-to-use fixed rows so
     /// there's a working Send/Copy immediately even before the Owner adds anything - if the Sub renamed
     /// their engage/release words, the Owner adds the real ones the same way as any other Quick Command.
     private void DrawFollowQuickSection(bool canSend)
@@ -664,12 +711,12 @@ public class CollarWindow : Window, IDisposable
             plugin.Configuration.Save();
             newFollowQuickText = "";
         }
-        IconGlyph.HelpMarker("Follow has no direct-override syntax - this saves a plain alias word, exactly what your Sub set as their engage/release alias in their own Settings (default \"leash-on\"/\"leash-off\" unless they changed it).");
+        IconGlyph.HelpMarker("Follow has no direct-override syntax - this saves a plain alias word, exactly what your Sub set as their leash/unleash trigger in the Collar tab.");
 
         if (quick.Count == 0)
         {
-            DrawFixedQuickRow("Leash on (default)", "leash-on", canSend);
-            DrawFixedQuickRow("Leash off (default)", "leash-off", canSend);
+            DrawFixedQuickRow("Leash (default)", "leash", canSend);
+            DrawFixedQuickRow("Unleash (default)", "unleash", canSend);
             ImGui.TextDisabled("Defaults shown above - add your own if your Sub customized their alias words.");
             return;
         }
@@ -857,6 +904,22 @@ public class CollarWindow : Window, IDisposable
         {
             set(value);
             config.Save();
+        }
+    }
+
+    /// A local pre-pair Test control (collar/ui-organization) - labeled "Test" so it can never be mistaken
+    /// for an Owner-send control, dispatches through LocalTestCoordinator (same local action path an
+    /// accepted Owner command would use, no pairing/chat involved), and shows only its own last transient
+    /// result next to it.
+    private void DrawTestButton(string key, Func<LocalTestResult> run)
+    {
+        if (ImGui.SmallButton($"Test##{key}"))
+            testResults[key] = run();
+
+        if (testResults.TryGetValue(key, out var last))
+        {
+            ImGui.SameLine();
+            IconGlyph.WrappedColored(last.Success ? Theme.Success : Theme.Danger, last.Message);
         }
     }
 
