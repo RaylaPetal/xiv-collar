@@ -17,6 +17,12 @@ public sealed class SubRuntimeState
     public bool TitleForceLocked { get; set; }
     public bool OutfitForceLocked { get; set; }
 
+    /// collar/collaring: set when CollarCommand.ForceApply locks the Sub's configured collar at pairing
+    /// acceptance. Same in-memory-only, per-session shape as OutfitLockKey/OutfitForceLocked - released by
+    /// CollarCommand.ForceUnlock (the Owner's `collar unlock` override) or unconditionally by panic.
+    public uint? CollarLockKey { get; set; }
+    public bool CollarForceLocked { get; set; }
+
     public void Reset()
     {
         TitleApplied = false;
@@ -24,5 +30,7 @@ public sealed class SubRuntimeState
         MovementLockActive = false;
         TitleForceLocked = false;
         OutfitForceLocked = false;
+        CollarLockKey = null;
+        CollarForceLocked = false;
     }
 }

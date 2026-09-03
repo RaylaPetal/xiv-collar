@@ -42,6 +42,7 @@ public sealed class Plugin : IDalamudPlugin
     public GlamourerIpc GlamourerIpc { get; }
     public HonorificIpc HonorificIpc { get; }
     public PenumbraIpc PenumbraIpc { get; }
+    public MoodlesIpc MoodlesIpc { get; }
     public MovementLockService MovementLockService { get; }
 
     public PairingCommand PairingCommand { get; }
@@ -49,6 +50,8 @@ public sealed class Plugin : IDalamudPlugin
     public OutfitCommand OutfitCommand { get; }
     public GestureCommand GestureCommand { get; }
     public FollowCommand FollowCommand { get; }
+    public CollarCommand CollarCommand { get; }
+    public MoodlesCommand MoodlesCommand { get; }
     public ChatComposer ChatComposer { get; }
     public ChatSender ChatSender { get; }
     public ChatCommandListener ChatCommandListener { get; }
@@ -66,6 +69,7 @@ public sealed class Plugin : IDalamudPlugin
         GlamourerIpc = new GlamourerIpc();
         HonorificIpc = new HonorificIpc();
         PenumbraIpc = new PenumbraIpc();
+        MoodlesIpc = new MoodlesIpc();
         MovementLockService = new MovementLockService();
 
         PairingCommand = new PairingCommand(Configuration);
@@ -73,9 +77,11 @@ public sealed class Plugin : IDalamudPlugin
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, RuntimeState);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
         FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
+        CollarCommand = new CollarCommand(Configuration, GlamourerIpc, RuntimeState);
+        MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
-        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand);
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
 
         PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, HonorificIpc, MovementLockService, RuntimeState);
 

@@ -60,22 +60,25 @@ specific gesture mod's emote. Only the alias *name* crosses chat; what it actual
 Sub's own client. The Owner learns alias names the same way they'd learn anything else about a scene: the
 Sub tells them, out of band.
 
-Alongside that, the same composer box also accepts a **direct override** for `title`, `outfit`, and
-`gesture` - three words reserved so a Sub alias can never be named one of them, no separate menu needed. A
-tell like `command title create Good Girl` or `command outfit lock Casual Blue` bypasses the Sub's own
-alias dictionary entirely and applies immediately (matching an outfit/gesture by whatever name the Sub
-told the Owner from their own scan results - Settings has a "Copy names" button next to each scan so the
-Sub can hand over the exact list instead of reciting it). Title and outfit also **lock** when
-force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching `title clear` /
-`outfit unlock` override tell (or the Sub's own panic, which always works regardless) releases it. Gesture
-has nothing to lock - a
-force-queued gesture still only ever queues, and the Sub still has to confirm it themselves before it
-plays, exactly like an alias-queued one.
+Alongside that, the same composer box also accepts a **direct override** for `title`, `outfit`, `gesture`,
+`collar`, and `moodle` - five words reserved so a Sub alias can never be named one of them, no separate
+menu needed. A tell like `command title create Good Girl` or `command outfit lock Casual Blue` bypasses
+the Sub's own alias dictionary entirely and applies immediately (matching an outfit/gesture/Moodle by
+whatever name the Sub told the Owner from their own scan results - Settings has a "Copy names" button next
+to each scan so the Sub can hand over the exact list instead of reciting it). Title and outfit also
+**lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
+`title clear` / `outfit unlock` override tell (or the Sub's own panic, which always works regardless)
+releases it. Gesture has nothing to lock - a force-queued gesture still only ever queues, and the Sub
+still has to confirm it themselves before it plays, exactly like an alias-queued one. `collar` only ever
+has one override, `collar unlock` - the collar itself never applies through a command, only automatically
+at pairing acceptance (see Consent model below). `moodle apply <preset name>` / `moodle clear` apply or
+remove a status effect from the Sub's own saved Moodles presets, immediately, with no confirmation queue -
+a Moodle is a visual status icon, not a real emote/animation the way Gesture is.
 
 The Owner's window builds these into one-click **Quick Commands** per category (Title/Outfit/Gesture/
-Follow, plus a general Alias/one-off box with its own "Add Command"), auto-populated for Outfit/Gesture
-straight from the Sub's clipboard-exported name list - see Automation risk below for what the Send button
-on each one actually does.
+Follow/Moodles, plus a general Alias/one-off box with its own "Add Command", and a fixed "Collar unlock"
+row), auto-populated for Outfit/Gesture/Moodles straight from the Sub's clipboard-exported name list - see
+Automation risk below for what the Send button on each one actually does.
 
 ## Consent model
 
@@ -86,8 +89,15 @@ on each one actually does.
   accepting it is the one and only consent action, and it is never auto-enabled. Once accepted, pairing is
   **locked** - there is no checkbox to uncheck. The only way to unpair is `/collarpanic` below.
 - **Scoped, revocable permissions.** A Sub independently enables or disables each command category
-  (title, outfit, gesture, follow) at any time. A command in a disabled category is silently ignored, even
-  while paired.
+  (title, outfit, gesture, follow, collar, moodles) at any time. A command in a disabled category is
+  silently ignored, even while paired.
+- **The collar is the one thing that applies itself.** Everything else in this plugin only ever happens
+  because a command arrived; the collar is different on purpose - if a Sub has captured a Neck-slot item
+  (Collar tab) and enabled the "Collar" permission, accepting a pairing request applies and locks that item
+  automatically, as the persistent marker that a contract is active, not just another swappable alias. It
+  locks exactly like a force-applied outfit (the Sub's own casual removal is refused), and `/collarpanic`
+  always releases it, no exception - the Owner also has a `collar unlock` override for releasing it without
+  the Sub needing to panic.
 - **Panic is a typed safeword, not a button.** There's no panic button anywhere in the UI on purpose -
   `/collarpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
   state, clears any Honorific title, and releases any active movement lock, all from local state only. Set
@@ -131,10 +141,10 @@ informed choice before turning them on.
 
 ```
 CollarSystem.Plugin/     the Dalamud plugin (Owner and Sub share one codebase and one window)
-  Ipc/                   thin wrappers around Glamourer.Api, Penumbra.Api, and Honorific's IPC calls
-  Commands/              one file per command category, the chat listener, and the trigger composer
+  Ipc/                   thin wrappers around Glamourer.Api, Penumbra.Api, Honorific's IPC, and Moodles' IPC
+  Commands/              one file per command category, the chat listener, and the trigger composer/sender
   Config/                persisted plugin configuration, including the Sub's alias definitions
-  UI/                    CollarWindow (Title/Wardrobe/Gesture/Owner/Permissions tabs), SettingsWindow
+  UI/                    CollarWindow (Title/Wardrobe/Gesture/Collar/Owner/Permissions tabs), SettingsWindow
   Safety/                panic handler and in-memory "what's currently applied" state
 ```
 
@@ -148,6 +158,8 @@ There is nothing to host and no second project - the whole plugin is `CollarSyst
     (e.g. `~/.xlcore/dalamud/Hooks/dev` on XIVLauncher-on-Linux/XLCore installs).
 * Penumbra, Glamourer, and Honorific installed and enabled in-game (required for the Sub role; the Owner
   role needs none of these - composing a trigger message doesn't touch any of them).
+* Moodles installed and enabled in-game if you want the Moodles category - optional, the rest of the
+  plugin works without it.
 * A Mare-successor sync tool (Snowcloak, Lightless, or similar) paired on the Sub's account, if you want
   changes visible to anyone other than the Sub - this plugin only ever writes local state.
 
@@ -173,7 +185,12 @@ build task, or building via the `.slnx` all land in the same place.
    * Share your generated code with your pair out of band, and enter theirs as **Their code**.
    * Check the ToS acknowledgement, set your gesture/wardrobe folder allowlists, and define your aliases
      (each one maps a short name to a title/outfit/gesture action) - the main window's Title/Wardrobe/
-     Gesture tabs handle that, and stay available regardless of Role.
+     Gesture tabs handle that, and stay available regardless of Role. Rescan your Moodles presets here too
+     if you want the Moodles category available.
+   * If you want a collar: equip the item you want in your Neck slot, then capture it from the main
+     window's **Collar** tab. Enable the **Collar** permission (Permissions tab) - configuring an item
+     alone does nothing without it. The collar applies and locks automatically the next time you accept a
+     pairing, not before.
    * Once both sides have entered each other's code, either side copies the pairing message from Settings
      and sends it as a `/tell` to the other. The receiving side gets a Pending request naming the verified
      sender and their declared role - click **Accept**. Pairing is then locked for a Sub; an Owner can

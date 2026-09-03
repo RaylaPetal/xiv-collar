@@ -2,10 +2,13 @@ using System.Collections.Generic;
 using System.Linq;
 using Glamourer.Api.Enums;
 using Glamourer.Api.IpcSubscribers;
+using Newtonsoft.Json.Linq;
 
 namespace CollarSystem.Plugin.Ipc;
 
 public readonly record struct GlamourerDesign(System.Guid Id, string DisplayName, string FullPath);
+
+public readonly record struct GlamourerEquippedItem(ulong ItemId, byte Stain, byte Stain2);
 
 /// Thin wrapper around the Glamourer.Api calls collar/outfit needs, always targeting the local player
 /// (objectIndex 0) - see design.md's Context: only the local client's own state change reaches anyone else.
@@ -19,6 +22,7 @@ public sealed class GlamourerIpc
     private readonly UnlockState unlockState;
     private readonly GetDesignListExtended getDesignListExtended;
     private readonly ApplyDesign applyDesign;
+    private readonly GetState getState;
 
     public GlamourerIpc()
     {
@@ -28,6 +32,7 @@ public sealed class GlamourerIpc
         unlockState = new UnlockState(Plugin.PluginInterface);
         getDesignListExtended = new GetDesignListExtended(Plugin.PluginInterface);
         applyDesign = new ApplyDesign(Plugin.PluginInterface);
+        getState = new GetState(Plugin.PluginInterface);
     }
 
     /// The Sub's own saved Glamourer designs, with the folder path shown in Glamourer's design browser -
@@ -66,4 +71,30 @@ public sealed class GlamourerIpc
     public GlamourerApiEc Revert(uint key = 0) => revertState.Invoke(LocalPlayerObjectIndex, key);
 
     public GlamourerApiEc Unlock(uint key) => unlockState.Invoke(LocalPlayerObjectIndex, key);
+
+    /// Reads the Neck slot out of the local player's current Glamourer state (collar/collaring: "Sub
+    /// configures their own collar item") - lets a Sub capture whatever they're already wearing instead of
+    /// typing a raw item id. The state JObject's shape (`Equipment.Neck.{ItemId,Stain,Stain2}`) is
+    /// confirmed against this plugin's own saved design files, which share Glamourer's internal equipment
+    /// model with the live state query - not guessed. Returns null on any failure (wrong ec, unexpected
+    /// JSON shape, no state available) rather than throwing, since this only ever feeds an explicit Sub
+    /// UI action that should just fail visibly, not crash the plugin.
+    public GlamourerEquippedItem? GetCurrentNeckItem()
+    {
+        var (ec, state) = getState.Invoke(LocalPlayerObjectIndex, 0);
+        if (ec != GlamourerApiEc.Success || state is null)
+            return null;
+
+        var neck = state["Equipment"]?["Neck"];
+        if (neck is null)
+            return null;
+
+        var itemId = neck["ItemId"]?.Value<ulong>();
+        if (itemId is null)
+            return null;
+
+        var stain = neck["Stain"]?.Value<byte>() ?? 0;
+        var stain2 = neck["Stain2"]?.Value<byte>() ?? 0;
+        return new GlamourerEquippedItem(itemId.Value, stain, stain2);
+    }
 }

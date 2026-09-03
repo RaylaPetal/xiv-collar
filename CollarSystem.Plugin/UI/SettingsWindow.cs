@@ -57,6 +57,8 @@ public class SettingsWindow : Window, IDisposable
         ImGui.Spacing();
         DrawGestureScanCard(config);
         ImGui.Spacing();
+        DrawMoodlesScanCard(config);
+        ImGui.Spacing();
         DrawFollowAliasesCard(config);
         ImGui.Spacing();
 
@@ -274,6 +276,49 @@ public class SettingsWindow : Window, IDisposable
             var summary = entry.EmoteNames.Count > 0 ? string.Join(", ", entry.EmoteNames) : "unresolved - no matching emote";
             ImGui.BulletText($"{entry.ModName}: {summary}");
         }
+    }
+
+    /// collar/moodles: no folder allowlist, unlike Wardrobe/Gesture - Moodles presets have no folder-
+    /// organization concept, every saved preset is eligible (design.md's decision).
+    private void DrawMoodlesScanCard(PluginConfig config)
+    {
+        using var card = Card.Begin("moodlesScanCard", new Vector2(0, 200));
+
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles preset scan");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Reads your own saved Moodles presets directly - nothing to allowlist. Moodles apply/clear commands live in the main window's Owner tab.");
+
+        if (ImGui.Button("Rescan Moodles presets"))
+            plugin.MoodlesCommand.Rescan();
+        IconGlyph.HelpMarker("Re-reads your saved presets from your own Moodles plugin - run this after saving a new preset before it'll show up for your Owner to reference.");
+
+        DrawMoodlesScanFeedback();
+    }
+
+    private void DrawMoodlesScanFeedback()
+    {
+        var moodlesMapping = plugin.Configuration.MoodlesMapping;
+        var lastScanTotal = plugin.MoodlesCommand.LastScanTotalPresets;
+
+        if (lastScanTotal is null)
+        {
+            ImGui.TextDisabled("Not scanned yet this session.");
+            return;
+        }
+
+        var color = lastScanTotal > 0 ? Theme.Success : Theme.Warning;
+        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved preset(s).");
+
+        if (lastScanTotal == 0)
+            return;
+
+        if (ImGui.SmallButton("Copy names##moodles"))
+            ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(p => p.Name)));
+        IconGlyph.HelpMarker("Copies the list below as plain text, one preset per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
+
+        using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);
+        foreach (var entry in moodlesMapping.LocalCatalog.Values)
+            ImGui.BulletText(entry.Name);
     }
 
     /// Shared by the wardrobe (Glamourer design folders) and gesture (Penumbra mod folders) allowlists -

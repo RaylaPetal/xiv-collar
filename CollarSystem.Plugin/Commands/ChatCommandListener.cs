@@ -24,7 +24,7 @@ public sealed class ChatCommandListener : IDisposable
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
     /// lookup (see Resolve/HandleForce*). A Sub alias can never be named one of these - CollarWindow's
     /// alias-creation forms validate against this list so the two paths can never collide.
-    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture"];
+    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle"];
 
     private readonly PluginConfig config;
     private readonly PairingCommand pairing;
@@ -32,11 +32,13 @@ public sealed class ChatCommandListener : IDisposable
     private readonly OutfitCommand outfit;
     private readonly GestureCommand gesture;
     private readonly FollowCommand follow;
+    private readonly CollarCommand collar;
+    private readonly MoodlesCommand moodles;
 
     public PendingPairingRequest? Pending { get; private set; }
     public event Action? PendingChanged;
 
-    public ChatCommandListener(PluginConfig config, PairingCommand pairing, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow)
+    public ChatCommandListener(PluginConfig config, PairingCommand pairing, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles)
     {
         this.config = config;
         this.pairing = pairing;
@@ -44,19 +46,28 @@ public sealed class ChatCommandListener : IDisposable
         this.outfit = outfit;
         this.gesture = gesture;
         this.follow = follow;
+        this.collar = collar;
+        this.moodles = moodles;
 
         Plugin.ChatGui.ChatMessage += OnChatMessage;
     }
 
     public void Dispose() => Plugin.ChatGui.ChatMessage -= OnChatMessage;
 
-    /// Called from Settings when the Sub/Owner clicks Accept on a shown Pending request.
+    /// Called from Settings when the Sub/Owner clicks Accept on a shown Pending request. collar/pairing's
+    /// "Accepting a pairing request applies a configured collar": a conditional side effect of acceptance
+    /// itself, not a separate command - only fires when the accepting side has both a configured collar
+    /// item and the "Collar" permission enabled, silently does nothing otherwise.
     public void AcceptPending()
     {
         if (Pending is not { } request)
             return;
 
         pairing.AcceptPeer(request.Name, request.World);
+
+        if (config.Permissions.Collar && config.Collar.IsConfigured)
+            collar.ForceApply();
+
         Pending = null;
         PendingChanged?.Invoke();
     }
@@ -181,6 +192,14 @@ public sealed class ChatCommandListener : IDisposable
                 if (permissions.Gesture)
                     HandleForceGesture(rest);
                 return;
+            case "collar":
+                if (permissions.Collar)
+                    HandleForceCollar(rest);
+                return;
+            case "moodle":
+                if (permissions.Moodles)
+                    HandleForceMoodle(rest);
+                return;
         }
 
         ResolveAlias(commandText);
@@ -231,6 +250,46 @@ public sealed class ChatCommandListener : IDisposable
         var name = StripQuotes(rest.Trim());
         if (name.Length > 0)
             gesture.ForceQueue(name);
+    }
+
+    /// Only `collar unlock` exists - the collar only ever applies as a side effect of pairing acceptance
+    /// (see AcceptPending), never through a chat command, so there is no `collar lock` counterpart to
+    /// title/outfit's own force-apply grammar.
+    private void HandleForceCollar(string rest)
+    {
+        if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
+        {
+            collar.ForceUnlock();
+            return;
+        }
+
+        if (rest.Equals("lock", StringComparison.OrdinalIgnoreCase))
+        {
+            collar.ForceApply();
+            return;
+        }
+
+        Plugin.Log.Information($"Unrecognized \"collar\" override \"{rest}\" - expected \"lock\" or \"unlock\".");
+    }
+
+    private void HandleForceMoodle(string rest)
+    {
+        if (rest.Equals("clear", StringComparison.OrdinalIgnoreCase))
+        {
+            moodles.ForceClear();
+            return;
+        }
+
+        const string applyPrefix = "apply ";
+        if (rest.StartsWith(applyPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var name = StripQuotes(rest[applyPrefix.Length..].Trim());
+            if (name.Length > 0)
+                moodles.ForceApply(name);
+            return;
+        }
+
+        Plugin.Log.Information($"Unrecognized \"moodle\" override \"{rest}\" - expected \"apply <preset name>\" or \"clear\".");
     }
 
     private static (string First, string Remainder) SplitFirstToken(string text)

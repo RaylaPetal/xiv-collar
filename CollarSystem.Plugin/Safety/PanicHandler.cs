@@ -41,8 +41,16 @@ public sealed class PanicHandler
 
         RunStep("release movement lock", () => movementLock.Release());
 
+        // collar/collaring: "Panic always releases the collar" - unconditional, no exception, using
+        // whatever key locked it (same reasoning as the outfit revert above).
+        RunStep("release collar", () =>
+        {
+            if (runtimeState.CollarForceLocked)
+                glamourer.Unlock(runtimeState.CollarLockKey ?? 0);
+        });
+
         runtimeState.Reset();
-        Plugin.Log.Information("Panic triggered: unpaired, outfit reverted, title cleared, movement lock released.");
+        Plugin.Log.Information("Panic triggered: unpaired, outfit reverted, title cleared, movement lock released, collar released.");
     }
 
     private static void RunStep(string name, Action step)

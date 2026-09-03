@@ -42,12 +42,14 @@ public class CollarWindow : Window, IDisposable
     private string newFollowQuickText = "";
     private string? outfitImportError;
     private string? gestureImportError;
+    private string? moodlesImportError;
 
     private static readonly (string Id, FontAwesomeIcon Icon, string Tooltip)[] NavItems =
     [
         ("title", FontAwesomeIcon.Heading, "Title"),
         ("wardrobe", FontAwesomeIcon.Tshirt, "Wardrobe"),
         ("gesture", FontAwesomeIcon.TheaterMasks, "Gesture"),
+        ("collar", FontAwesomeIcon.Lock, "Collar"),
         ("owner", FontAwesomeIcon.Crown, "Owner"),
         ("permissions", FontAwesomeIcon.ShieldAlt, "Permissions"),
     ];
@@ -87,6 +89,9 @@ public class CollarWindow : Window, IDisposable
                 break;
             case "gesture":
                 DrawGestureModule();
+                break;
+            case "collar":
+                DrawCollarModule();
                 break;
             case "owner":
                 DrawOwnerModule();
@@ -179,6 +184,15 @@ public class CollarWindow : Window, IDisposable
                 SavePermission(() => permissions.Follow = newFollow);
             IconGlyph.HelpMarker("Lets a paired Owner lock your movement to follow them, blocking your own WASD input until released. Heavier automation footprint than the other three - see the README's Automation risk section.");
         }
+
+        ImGui.Spacing();
+        if (ImGuiCheckbox("Collar", permissions.Collar, out var newCollar))
+            SavePermission(() => permissions.Collar = newCollar);
+        IconGlyph.HelpMarker("Lets your configured collar item apply and lock automatically when you accept a pairing (Collar tab). Configuring an item alone does nothing without this enabled too.");
+
+        if (ImGuiCheckbox("Moodles", permissions.Moodles, out var newMoodles))
+            SavePermission(() => permissions.Moodles = newMoodles);
+        IconGlyph.HelpMarker("Lets a paired Owner apply or clear a Moodle (status effect) from your own saved presets via a trigger tell - applies immediately, no confirmation queue.");
     }
 
     private void DrawTitleModule()
@@ -408,6 +422,56 @@ public class CollarWindow : Window, IDisposable
         }
     }
 
+    /// collar/collaring: the Sub's own configured Neck-slot collar. Capture-only (see design.md's "Collar
+    /// capture, not manual entry") - equip what you want first, then click Capture. Locked once applied at
+    /// pairing acceptance (AcceptPending), not from this tab - editing/clearing is disabled while locked,
+    /// matching "Sub configures their own collar item" and "resists casual removal" together.
+    private void DrawCollarModule()
+    {
+        var config = plugin.Configuration;
+        var locked = plugin.RuntimeState.CollarForceLocked;
+        IconGlyph.Text(FontAwesomeIcon.Lock, "Collar");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Equip the item you want in your Neck slot (any way you like), then capture it here. Applied and locked automatically the moment you accept a pairing - not from this tab.");
+
+        if (config.Collar.IsConfigured)
+            ImGui.TextUnformatted($"Configured collar: {GetItemName(config.Collar.ItemId!.Value)}");
+        else
+            ImGui.TextDisabled("No collar configured yet.");
+
+        if (locked)
+        {
+            ImGui.TextColored(Theme.Danger, "Locked - applied at pairing. Only /collarpanic (your safeword) or your Owner's \"collar unlock\" releases it.");
+        }
+
+        using (ImRaii.Disabled(locked))
+        {
+            if (ImGui.Button("Capture my current Neck item as my collar"))
+            {
+                if (!plugin.CollarCommand.CaptureCurrentAsCollar())
+                    Plugin.Log.Warning("Could not capture the current Neck item - is anything equipped there?");
+            }
+            IconGlyph.HelpMarker("Reads whatever's currently in your own Neck slot via Glamourer and saves it as your collar - never a manually typed item id.");
+
+            if (config.Collar.IsConfigured)
+            {
+                ImGui.SameLine();
+                if (ImGui.Button("Clear"))
+                    plugin.CollarCommand.ClearConfiguredCollar();
+            }
+        }
+    }
+
+    /// Best-effort display name for a raw Glamourer item id via Lumina's own Item sheet - falls back to
+    /// the numeric id for sentinel/special values (e.g. "nothing equipped") that don't resolve to a real
+    /// row, same "don't crash, just show something" spirit as GlamourerIpc.GetCurrentNeckItem.
+    private static string GetItemName(ulong itemId)
+    {
+        var row = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRowOrDefault((uint)itemId);
+        var name = row?.Name.ExtractText();
+        return string.IsNullOrWhiteSpace(name) ? $"Item #{itemId}" : name;
+    }
+
     /// The Owner-facing tab. Title/Outfit/Gesture each get a one-click QuickCommand list - Outfit/Gesture
     /// auto-populate one button per imported name ("Add from clipboard"), Title is built one at a time
     /// since there's nothing to bulk-import for freeform text. Every button offers Send (ChatSender - one
@@ -440,7 +504,62 @@ public class CollarWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
+        DrawCollarQuickSection(canSend);
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        DrawMoodlesQuickSection(canSend);
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
         DrawFreeformComposer(canSend);
+    }
+
+    /// Collar only ever has one override verb - `collar unlock` - since the collar itself only ever
+    /// applies as a side effect of pairing acceptance, never through a chat command (see
+    /// ChatCommandListener.HandleForceCollar). No "Add Command" builder needed, just the fixed release row.
+    private void DrawCollarQuickSection(bool canSend)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Lock, "Collar");
+        DrawFixedQuickRow("Collar lock", "collar lock", canSend);
+        IconGlyph.HelpMarker("(Re-)attaches your Sub's configured collar item and locks it - the same thing that happens automatically at pairing, triggered manually. Use this to re-lock after \"Collar unlock,\" or to apply it for the first time if it wasn't configured/enabled yet when pairing was accepted.");
+
+        DrawFixedQuickRow("Collar unlock", "collar unlock", canSend);
+        IconGlyph.HelpMarker("Releases your Sub's locked collar without them needing to panic - it stays equipped, just no longer locked.");
+    }
+
+    private void DrawMoodlesQuickSection(bool canSend)
+    {
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles");
+        var quick = plugin.Configuration.QuickCommands.Moodles;
+
+        if (ImGui.SmallButton("Add from clipboard##moodlesQuick"))
+            moodlesImportError = ImportQuickCommands(quick, name => $"moodle apply {name}");
+        IconGlyph.HelpMarker("Paste your Sub's \"Copy names\" output (their Settings' Moodles scan card) - one ready-to-use button per preset name, no extra save step. Applies immediately - no confirmation queue on your Sub's end, unlike Gesture.");
+        if (quick.Count > 0)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Clear all##moodlesQuick"))
+            {
+                quick.Clear();
+                moodlesImportError = null;
+                plugin.Configuration.Save();
+            }
+        }
+        if (moodlesImportError is not null)
+            IconGlyph.WrappedColored(Theme.Warning, moodlesImportError);
+
+        DrawFixedQuickRow("Clear moodle", "moodle clear", canSend);
+
+        if (quick.Count == 0)
+        {
+            ImGui.TextDisabled("No Moodles presets imported yet.");
+            return;
+        }
+
+        using var _ = ImRaii.Child("moodlesQuickList", new Vector2(0, 120), true);
+        foreach (var cmd in quick.ToArray())
+            DrawSavedQuickRow(cmd, quick, canSend);
     }
 
     private void DrawTitleQuickSection(bool canSend)

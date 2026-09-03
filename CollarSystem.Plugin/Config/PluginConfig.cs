@@ -53,7 +53,23 @@ public class OwnerQuickCommands
     public List<QuickCommand> Outfits { get; set; } = new();
     public List<QuickCommand> Gestures { get; set; } = new();
     public List<QuickCommand> Follow { get; set; } = new();
+    public List<QuickCommand> Moodles { get; set; } = new();
     public List<QuickCommand> Aliases { get; set; } = new();
+}
+
+/// The Sub's configured collar item (collar/collaring) - a single Neck-slot item, captured from whatever
+/// the Sub currently has equipped (see GlamourerIpc.GetCurrentNeckItem), never typed in as a raw item id.
+/// The lock itself (key, force-locked flag) lives in SubRuntimeState, not here - same in-memory-only
+/// precedent as the existing outfit lock (OutfitLockKey/OutfitForceLocked), applied fresh each time rather
+/// than persisted.
+[Serializable]
+public class CollarState
+{
+    public ulong? ItemId { get; set; }
+    public byte Stain { get; set; }
+    public byte Stain2 { get; set; }
+
+    public bool IsConfigured => ItemId is not null;
 }
 
 [Serializable]
@@ -65,6 +81,10 @@ public class PermissionSet
 
     // Separate, higher-risk opt-in per collar/follow's spec - never implied by the other three.
     public bool Follow { get; set; }
+
+    // collar/collaring and collar/moodles: same independent opt-in-per-category pattern as the four above.
+    public bool Collar { get; set; }
+    public bool Moodles { get; set; }
 }
 
 [Serializable]
@@ -78,6 +98,10 @@ public class PluginConfig : IPluginConfiguration
     public PermissionSet Permissions { get; set; } = new();
     public GestureMapping GestureMapping { get; set; } = new();
     public WardrobeMapping WardrobeMapping { get; set; } = new();
+    public MoodlesMapping MoodlesMapping { get; set; } = new();
+
+    /// Sub-side: the Sub's configured collar item (collar/collaring). See CollarState.
+    public CollarState Collar { get; set; } = new();
 
     /// Owner-side only in practice (a Sub has no use for their own names here) - see OwnerQuickCommands.
     public OwnerQuickCommands QuickCommands { get; set; } = new();
