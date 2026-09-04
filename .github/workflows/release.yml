@@ -33,13 +33,13 @@ jobs:
         Expand-Archive -Force dalamud-latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
 
     - name: Build with dotnet
-      run: dotnet build CollarSystem.Plugin/CollarSystem.Plugin.csproj --configuration Release
+      run: dotnet build Oathbound.Plugin/Oathbound.Plugin.csproj --configuration Release
 
     - name: Read plugin manifest
       id: manifest
       shell: pwsh
       run: |
-        $manifest = Get-Content "CollarSystem.Plugin/bin/x64/Release/CollarSystem.Plugin/CollarSystem.Plugin.json" | ConvertFrom-Json
+        $manifest = Get-Content "Oathbound.Plugin/bin/x64/Release/Oathbound.Plugin/Oathbound.Plugin.json" | ConvertFrom-Json
         "version=$($manifest.AssemblyVersion)" >> $env:GITHUB_OUTPUT
         "apilevel=$($manifest.DalamudApiLevel)" >> $env:GITHUB_OUTPUT
 
@@ -48,7 +48,7 @@ jobs:
       with:
         tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
-        files: CollarSystem.Plugin/bin/x64/Release/CollarSystem.Plugin/latest.zip
+        files: Oathbound.Plugin/bin/x64/Release/Oathbound.Plugin/latest.zip
 
     - name: Update repo.json
       shell: pwsh

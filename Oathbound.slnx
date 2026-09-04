@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Oathbound.Plugin/Oathbound.Plugin.csproj">
+    <Platform Project="x64" />
+  </Project>
+</Solution>

@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-2022
 
     env:
-      Solution_Name: CollarSystem.Plugin
+      Solution_Name: Oathbound.Plugin
 
     steps:
     - name: Checkout
@@ -27,12 +27,12 @@ jobs:
         Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
 
     - name: Build with dotnet
-      run: dotnet build CollarSystem.Plugin/CollarSystem.Plugin.csproj --configuration Release
+      run: dotnet build Oathbound.Plugin/Oathbound.Plugin.csproj --configuration Release
 
     - name: Store artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: CollarSystem.Plugin
-        path: .\CollarSystem.Plugin\bin\x64\Release\CollarSystem.Plugin\*
+        name: Oathbound.Plugin
+        path: .\Oathbound.Plugin\bin\x64\Release\Oathbound.Plugin\*
         if-no-files-found: error
         retention-days: 1

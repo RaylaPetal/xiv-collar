@@ -1,25 +1,4 @@
-# collar/catalog-sync Specification
-
-## Purpose
-
-Lets a Sub scan every commandable catalog (Wardrobe, Gesture, Moodles, Restraints) in one action and hand the whole result to their Owner as a single file, and lets the Owner turn that one file back into every category's quick-command list in one action, instead of running and sharing each category separately.
-
-## Requirements
-
-### Requirement: Scanning the scannable catalogs together
-The system SHALL let the Sub trigger a scan of Wardrobe, Gesture, and Moodles catalogs from a single action. Each category's own scan scope (Wardrobe's folder allowlist, Gesture's selected-mod set) SHALL remain independently configurable and SHALL apply exactly as it does for that category's individual scan. Restraints has no scan step and SHALL NOT be part of this unified scan action - a restraint device is captured individually (see `collar/restraints`), independent of scanning.
-
-#### Scenario: One action scans every scannable category
-- **WHEN** the Sub triggers the unified scan action
-- **THEN** Wardrobe, Gesture, and Moodles are each rescanned using their own currently-configured scope, and the results are exactly what triggering each category's own scan individually would have produced
-
-#### Scenario: A per-category scope still restricts that category's results
-- **WHEN** the Sub has configured a Wardrobe folder allowlist or a Gesture mod selection before running the unified scan
-- **THEN** the scanned results for that category are restricted to the configured scope, the same as scanning that category alone
-
-#### Scenario: Restraints is not part of the unified scan
-- **WHEN** the Sub triggers the unified scan action
-- **THEN** no Restraints scan runs as part of it, and any already-captured restraint devices are left exactly as they were
+## MODIFIED Requirements
 
 ### Requirement: Exporting every catalog to one file
 The system SHALL let the Sub export the current Title, Wardrobe, Gesture, Moodles, Restraints, and Custom Trigger Bundle catalogs together as a single text file written to a location the Sub chooses, in a format that preserves each category's own identity guarantees (the same information that category's individual export already provides). A category with an empty catalog SHALL be included in the export as empty, not omitted in a way that would prevent re-import from recognizing that category. Each single-action alias defined in the Sub's Title, Outfit, Gesture, Restraint, or Moodle alias lists, and each Custom Trigger that bundles exactly one action, SHALL be exported under that action's own category section (Title/Outfit/Gesture/Restraint/Moodle), carrying the same human-readable summary of what it does that the export already provides for that category's other entries. The Custom Trigger Bundle section SHALL contain only Custom Triggers that bundle two or more actions, each carrying a human-readable summary of every action in the bundle. Each exported Gesture entry SHALL carry only the fields the Owner's import needs to identify and group it (its id, mod name, animation name, group name, group order, option order, and its playable trigger) - it SHALL NOT carry fields meaningful only to the Sub's own local playback (such as per-entry mod-option selection state), so the exported file's size scales with the number of catalog entries, not with how many configurable option groups their source mods happen to have.

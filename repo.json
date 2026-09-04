@@ -1,8 +1,8 @@
 [
   {
     "Author": "Rayla Petal",
-    "Name": "Collar System",
-    "InternalName": "CollarSystem.Plugin",
+    "Name": "Oathbound",
+    "InternalName": "Oathbound.Plugin",
     "AssemblyVersion": "0.0.0.1",
     "TestingAssemblyVersion": null,
     "Description": "A consent-based collar control plugin. An Owner sends outfit, title, gesture, and follow/leash commands as ordinary in-game tells - no server, no hosting; the Sub's own client watches for them and applies them locally via Glamourer, Honorific, and Penumbra, and existing sync tooling propagates the result to everyone paired with the Sub.",

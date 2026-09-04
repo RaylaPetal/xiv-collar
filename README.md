@@ -1,4 +1,4 @@
-# Collar System
+# Oathbound
 
 A consent-based Owner/Sub control plugin for FINAL FANTASY XIV, built on Dalamud. An Owner sends outfit,
 title, gesture, and follow/leash commands to a paired Sub as ordinary in-game tells - no server, no
@@ -194,7 +194,7 @@ actually does.
   exceptions to this plugin's "no automated sending" rule (see Automation risk below) - which completes the
   sender's own side with no further action from them; sending the original invite was their consent action.
   Once paired, a Sub's Role, code, and trigger phrase all lock in Settings and pairing itself is **locked**
-  - there is no checkbox to uncheck. The only way to change any of it is `/collarpanic` below, which also
+  - there is no checkbox to uncheck. The only way to change any of it is `/oathboundpanic` below, which also
   sends the other of those two exceptions: a best-effort notification telling your former peer what
   happened.
 - **Scoped, revocable permissions.** A Sub independently enables or disables each command category
@@ -206,7 +206,7 @@ actually does.
   automatically, as the persistent marker that a contract is active, not just another swappable alias. It
   locks only the Neck slot (the Sub's own casual removal of that one slot is refused) - every other slot
   stays completely free to edit throughout, including while an outfit is separately locked at the same
-  time - and `/collarpanic` always releases it, no exception - the Owner also has a `collar unlock` override
+  time - and `/oathboundpanic` always releases it, no exception - the Owner also has a `collar unlock` override
   for releasing it without the Sub needing to panic.
 - **The collar can also carry a persistent Moodle.** The Collar tab lets a Sub optionally assign one status
   from their own scanned Moodles catalog to the collar, alongside its Neck-slot item - entirely optional,
@@ -214,21 +214,21 @@ actually does.
   `collar lock`), the assigned status applies at the same moment the item does, and this plugin then
   re-applies it roughly every 10 seconds for as long as the collar stays locked - so removing it through
   Moodles' own UI doesn't make it stick, it simply returns within that window. It clears only when the
-  collar's own lock releases: `/collarpanic`, or the Owner's `collar unlock` - the exact same lifecycle the
+  collar's own lock releases: `/oathboundpanic`, or the Owner's `collar unlock` - the exact same lifecycle the
   Neck-slot item already has, with no separate release path of its own. Because Moodles' own IPC has no
   per-status removal, clearing it (on unlock or panic) clears the Sub's entire active Moodles status
   manager, not just the one assigned status - the same blunt behavior the plain `moodle clear` command
   already has.
 - **Panic is a typed safeword, not a button.** The main character header always exposes the safeword
   setting, whether paired or not, but there's no panic button anywhere in the UI on purpose -
-  `/collarpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
+  `/oathboundpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
   state, clears any Honorific title, and releases any active movement lock, all from local state only.
   Panic also attempts to send one best-effort notification tell to whoever you were paired with, so their
   side finds out and can react (see Automation risk below) - but this is never guaranteed and never
   required: every local effect above happens unconditionally and instantly whether or not that notification
   can be delivered (offline, blocked, or simply no relay to check against - there isn't one). Set
-  a safeword in the header and `/collarpanic` requires it as an argument (`/collarpanic red`);
-  leave it blank and plain `/collarpanic` keeps working unconditionally - a forgotten safeword must never
+  a safeword in the header and `/oathboundpanic` requires it as an argument (`/oathboundpanic red`);
+  leave it blank and plain `/oathboundpanic` keeps working unconditionally - a forgotten safeword must never
   be the reason panic stops working. Safewords are masked by default and can be deliberately revealed.
   Outfit and Collar locks are never held through Glamourer's own lock at all - each is this plugin's own
   per-slot tracking, persisted to your plugin configuration and re-asserted automatically if anything
@@ -373,7 +373,7 @@ that, and building one from scratch off a server-info-bar click wasn't worth the
 ## Project layout
 
 ```
-CollarSystem.Plugin/     the Dalamud plugin (Owner and Sub share one codebase and one window)
+Oathbound.Plugin/        the Dalamud plugin (Owner and Sub share one codebase and one window)
   Ipc/                   thin wrappers around Glamourer.Api, Penumbra.Api, Honorific's IPC, and Moodles' IPC
   Commands/              one file per command category, the chat listener, and the trigger composer/sender
   Config/                persisted plugin configuration, including the Sub's alias definitions
@@ -382,7 +382,9 @@ CollarSystem.Plugin/     the Dalamud plugin (Owner and Sub share one codebase an
   Safety/                panic handler and in-memory "what's currently applied" state
 ```
 
-There is nothing to host and no second project - the whole plugin is `CollarSystem.Plugin`.
+There is nothing to host and no second project - the whole plugin is `Oathbound.Plugin`. The in-universe
+collar mechanic keeps the `Collar`/`CollarWindow`/`CollarCommand` naming throughout the code and UI copy -
+only the plugin's own product identity is "Oathbound," not the roleplay feature it implements.
 
 ## Prerequisites
 
@@ -400,20 +402,20 @@ There is nothing to host and no second project - the whole plugin is `CollarSyst
 ## Building
 
 ```
-dotnet build CollarSystem.slnx
+dotnet build Oathbound.slnx
 ```
 
 The plugin always builds to `bin/x64/Debug/` regardless of how you invoke it - the csproj forces
-`Platform=x64`, so a bare `dotnet build CollarSystem.Plugin/CollarSystem.Plugin.csproj`, an IDE's default
+`Platform=x64`, so a bare `dotnet build Oathbound.Plugin/Oathbound.Plugin.csproj`, an IDE's default
 build task, or building via the `.slnx` all land in the same place.
 
 ## Activating in-game
 
 1. `/xlsettings` (chat) or `xlsettings` (console) -> `Experimental` -> add the full path to
-   `CollarSystem.Plugin.dll` to Dev Plugin Locations.
+   `Oathbound.Plugin.dll` to Dev Plugin Locations.
 2. `/xlplugins` (chat) or `xlplugins` (console) -> `Dev Tools > Installed Dev Plugins` -> enable
-   `Collar System`.
-3. Open **Settings** - the gear icon in the main window's title bar, or `/collarsettings`:
+   `Oathbound`.
+3. Open **Settings** - the gear icon in the main window's title bar, or `/oathboundsettings` (`/collarsettings` still works too):
    * Set your **Role** (Owner/Sub) - it only affects whether incoming tells apply locally and what the
      pairing handshake declares; it doesn't hide anything else.
    * Share your generated code with your pair out of band, and enter theirs as **Their code**.
@@ -437,12 +439,13 @@ build task, or building via the `.slnx` all land in the same place.
      verified sender and their declared role - click **Accept**. That automatically completes pairing on
      the sender's side too, with no further action from them. Pairing is then locked for a Sub (Role, code,
      and trigger phrase all become read-only in Settings) - the only way to change any of it is
-     `/collarpanic`. An Owner's pairing is never locked and can be Released any time (both in the character
+     `/oathboundpanic`. An Owner's pairing is never locked and can be Released any time (both in the character
      header, or in Settings).
    * Optionally set a **Safeword** in the always-visible main character header - if set,
-     `/collarpanic` requires it as an argument; if left blank, plain `/collarpanic` keeps working.
-4. `/collar` opens the one main window; `/collarpanic` (with your safeword as its argument, if you set
-   one) always works from anywhere. The header shows your live character name, home world, optional Free
+     `/oathboundpanic` requires it as an argument; if left blank, plain `/oathboundpanic` keeps working.
+4. `/oathbound` (or the shorthand `/ob`) opens the one main window; `/oathboundpanic` (with your safeword as its argument, if you set
+   one) always works from anywhere. (`/collar`, `/collarpanic`, and `/collarsettings` still work too, unchanged,
+   for anyone with existing macros/keybinds on the old names.) The header shows your live character name, home world, optional Free
    Company tag, and an explicit Not paired/Owns/Owned by/pending relationship state.
    Title/Wardrobe/Gesture/Moodles/Restraints/Custom Triggers/Permissions are where a Sub sets up what
    they'll accept. The **Collar** tab also
