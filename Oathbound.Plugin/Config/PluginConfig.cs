@@ -84,6 +84,14 @@ public class QuickCommand
     /// collar/catalog-sync "Owner can reset every import to a blank slate": see ImportSource.
     public ImportSource Source { get; set; } = ImportSource.Manual;
 
+    /// collar/catalog-sync "Import skips commands that duplicate an existing quick command": the design
+    /// name, gesture id, or (markup-stripped) Moodles status name this entry applies, set only for an
+    /// imported Outfit/Gesture/Moodle entry (plain scanned name or single-action alias alike) so a later
+    /// import can recognize a same-target duplicate even when its command text takes a different shape
+    /// (an alias word vs. a "outfit lock <name>"-style override). Null for every other category, and for
+    /// any entry saved before this field existed.
+    public string? Target { get; set; }
+
     /// collar/restraints only: the Owner-assigned restriction rules for this restraint quick command, kept
     /// in sync with the encoded suffix in `Command` (see CollarWindow's restraint rule editor). Null or
     /// empty means the Owner hasn't configured this entry yet - it can't be sent until they do.

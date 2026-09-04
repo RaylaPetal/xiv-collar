@@ -1167,9 +1167,10 @@ public class CollarWindow : Window, IDisposable
                 {
                     var text = System.IO.File.ReadAllText(path);
                     var result = plugin.CatalogSyncService.ParseImport(text);
+                    var duplicateNote = result.Duplicates > 0 ? $" {result.Duplicates} duplicate(s) skipped." : "";
                     importResult = result.Error ?? (result.TotalAdded == 0
-                        ? "Nothing new - everything in that file was already imported."
-                        : $"Imported {result.TotalAdded} new command(s): {result.Title} title, {result.Wardrobe} outfit, {result.Gesture} gesture, {result.Moodles} moodles, {result.Restraints} restraint, {result.Bundles} bundle.");
+                        ? $"Nothing new - everything in that file was already imported or a duplicate.{duplicateNote}"
+                        : $"Imported {result.TotalAdded} new command(s): {result.Title} title, {result.Wardrobe} outfit, {result.Gesture} gesture, {result.Moodles} moodles, {result.Restraints} restraint, {result.Bundles} bundle.{duplicateNote}");
                     resetImportsResult = null;
                 }
                 catch (Exception ex)

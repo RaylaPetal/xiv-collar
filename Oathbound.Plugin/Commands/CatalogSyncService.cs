@@ -16,11 +16,19 @@ public class AliasExportEntry
     public string Alias { get; set; } = "";
     public string Description { get; set; } = "";
 
+    /// collar/catalog-sync "Import skips commands that duplicate an existing quick command": the design
+    /// id, gesture id, or Moodles status name this alias applies - only ever set for a single-action
+    /// Outfit/Gesture/Moodle alias (never Title, Restraint, or a multi-action bundle), so import-time
+    /// dedup can recognize "this alias and that plain scanned entry are the same target" without parsing
+    /// the human-readable Description. Null on an older export predating this field.
+    public string? Target { get; set; }
+
     public AliasExportEntry() { }
-    public AliasExportEntry(string alias, string description)
+    public AliasExportEntry(string alias, string description, string? target = null)
     {
         Alias = alias;
         Description = description;
+        Target = target;
     }
 }
 
@@ -31,7 +39,7 @@ public class AliasExportEntry
 /// same Owner quick-command list (collar/catalog-sync's "Owner imports alias names as one-off quick
 /// commands", reworked to route by category). Bundles covers only genuinely multi-action Custom Triggers
 /// (plus a single-action Chat trigger, which has no matching category list of its own).
-public readonly record struct CatalogImportResult(int Title, int Wardrobe, int Gesture, int Moodles, int Restraints, int Bundles, string? Error)
+public readonly record struct CatalogImportResult(int Title, int Wardrobe, int Gesture, int Moodles, int Restraints, int Bundles, int Duplicates, string? Error)
 {
     public int TotalAdded => Title + Wardrobe + Gesture + Moodles + Restraints + Bundles;
 }
@@ -92,11 +100,11 @@ public sealed class CatalogSyncService
         var sb = new StringBuilder();
         AppendSection(sb, TitleAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Title, config.Aliases.Titles.Select(a => new AliasExportEntry(a.Alias, DescribeTitleAlias(a)))).Select(EncodeAliasEntry));
         AppendSection(sb, WardrobeHeader, outfit.ExportNames());
-        AppendSection(sb, WardrobeAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Outfit, config.Aliases.Outfits.Select(a => new AliasExportEntry(a.Alias, DescribeOutfitAlias(a)))).Select(EncodeAliasEntry));
+        AppendSection(sb, WardrobeAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Outfit, config.Aliases.Outfits.Select(a => new AliasExportEntry(a.Alias, DescribeOutfitAlias(a), a.DesignName))).Select(EncodeAliasEntry));
         AppendSection(sb, GestureHeader, gesture.ExportCatalog().Split('\n', StringSplitOptions.RemoveEmptyEntries));
-        AppendSection(sb, GestureAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Gesture, config.Aliases.Gestures.Select(a => new AliasExportEntry(a.Alias, DescribeGestureAlias(a)))).Select(EncodeAliasEntry));
+        AppendSection(sb, GestureAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Gesture, config.Aliases.Gestures.Select(a => new AliasExportEntry(a.Alias, DescribeGestureAlias(a), a.GestureId))).Select(EncodeAliasEntry));
         AppendSection(sb, MoodlesHeader, moodles.ExportNames());
-        AppendSection(sb, MoodlesAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Moodle, config.Aliases.Moodles.Select(a => new AliasExportEntry(a.Alias, DescribeMoodleAlias(a)))).Select(EncodeAliasEntry));
+        AppendSection(sb, MoodlesAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Moodle, config.Aliases.Moodles.Select(a => new AliasExportEntry(a.Alias, DescribeMoodleAlias(a), MoodlesTextFormat.StripMarkup(a.StatusName)))).Select(EncodeAliasEntry));
         AppendSection(sb, RestraintsHeader, restraints.ExportNames());
         AppendSection(sb, RestraintsAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Restraint, config.Aliases.Restraints.Select(a => new AliasExportEntry(a.Alias, DescribeRestraintAlias(a)))).Select(EncodeAliasEntry));
         AppendSection(sb, BundlesHeader, ExportBundleEntries().Select(EncodeAliasEntry));
@@ -122,7 +130,19 @@ public sealed class CatalogSyncService
     private IEnumerable<AliasExportEntry> SingleActionTriggerEntries(CustomTriggerActionKind kind) =>
         config.Aliases.CustomTriggers
             .Where(t => t.Actions.Count == 1 && t.Actions[0].Kind == kind)
-            .Select(t => new AliasExportEntry(t.Alias, DescribeCustomTrigger(t)));
+            .Select(t => new AliasExportEntry(t.Alias, DescribeCustomTrigger(t), TargetForSingleAction(t.Actions[0])));
+
+    /// collar/catalog-sync "Import skips commands that duplicate an existing quick command": only Outfit/
+    /// Gesture/Moodle carry a target identity the Owner's import can match on - Title (free text) and
+    /// Restraint (Sub-captured, not scan-derived) fall through to null, same as their own alias
+    /// definitions never populate a `Target` on export.
+    private static string? TargetForSingleAction(CustomTriggerAction action) => action.Kind switch
+    {
+        CustomTriggerActionKind.Outfit => action.OutfitDesignName,
+        CustomTriggerActionKind.Gesture => action.GestureId,
+        CustomTriggerActionKind.Moodle => MoodlesTextFormat.StripMarkup(action.MoodleStatusName),
+        _ => null,
+    };
 
     /// Follow's fixed engage/release words and the singleton Clear-title/Unlock-outfit/Clear-moodle
     /// aliases are deliberately excluded from every section above - the Owner already has dedicated fixed
@@ -185,55 +205,68 @@ public sealed class CatalogSyncService
     public CatalogImportResult ParseImport(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return new CatalogImportResult(0, 0, 0, 0, 0, 0, "File is empty - nothing to import.");
+            return new CatalogImportResult(0, 0, 0, 0, 0, 0, 0, "File is empty - nothing to import.");
 
         var sections = SplitSections(text);
         if (sections.Count == 0)
-            return new CatalogImportResult(0, 0, 0, 0, 0, 0, "File doesn't look like a Collar export (no recognized sections) - nothing imported.");
+            return new CatalogImportResult(0, 0, 0, 0, 0, 0, 0, "File doesn't look like a Collar export (no recognized sections) - nothing imported.");
+
+        var quick = config.QuickCommands;
+
+        // collar/catalog-sync "Import skips commands that duplicate an existing quick command": seeded
+        // once, before any category import runs, from every command already saved anywhere - not just the
+        // category currently being populated - so a shared alias word is caught regardless of import
+        // order, and each import call below adds to it as it goes so a duplicate introduced earlier in
+        // this same file is caught too.
+        var usedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var cmd in quick.Titles.Concat(quick.Outfits).Concat(quick.Gestures).Concat(quick.Moodles).Concat(quick.Restraints).Concat(quick.Aliases))
+            usedCommands.Add(cmd.Command);
+
+        var duplicates = 0;
 
         var titleAdded = sections.TryGetValue(TitleAliasesHeader, out var ta)
-            ? ImportAliasLines(ta, config.QuickCommands.Titles)
+            ? ImportAliasLines(ta, quick.Titles, usedCommands, ref duplicates)
             : 0;
 
         var wardrobeAdded = sections.TryGetValue(WardrobeHeader, out var w)
-            ? ImportPlainNames(w, config.QuickCommands.Outfits, name => $"outfit lock {name}")
+            ? ImportPlainNames(w, quick.Outfits, name => $"outfit lock {name}", usedCommands, name => name, ref duplicates)
             : 0;
         wardrobeAdded += sections.TryGetValue(WardrobeAliasesHeader, out var wa)
-            ? ImportAliasLines(wa, config.QuickCommands.Outfits)
+            ? ImportAliasLines(wa, quick.Outfits, usedCommands, ref duplicates)
             : 0;
 
         var gestureAdded = sections.TryGetValue(GestureHeader, out var g)
-            ? ImportGestureLines(g, config.QuickCommands.Gestures)
+            ? ImportGestureLines(g, quick.Gestures, usedCommands, ref duplicates)
             : 0;
         gestureAdded += sections.TryGetValue(GestureAliasesHeader, out var ga)
-            ? ImportAliasLines(ga, config.QuickCommands.Gestures)
+            ? ImportAliasLines(ga, quick.Gestures, usedCommands, ref duplicates)
             : 0;
 
         var moodlesAdded = sections.TryGetValue(MoodlesHeader, out var m)
-            ? ImportPlainNames(m, config.QuickCommands.Moodles, name => $"moodle apply {name}")
+            ? ImportPlainNames(m, quick.Moodles, name => $"moodle apply {name}", usedCommands, MoodlesTextFormat.StripMarkup, ref duplicates)
             : 0;
         moodlesAdded += sections.TryGetValue(MoodlesAliasesHeader, out var ma)
-            ? ImportAliasLines(ma, config.QuickCommands.Moodles)
+            ? ImportAliasLines(ma, quick.Moodles, usedCommands, ref duplicates)
             : 0;
 
         var restraintsAdded = sections.TryGetValue(RestraintsHeader, out var r)
-            ? ImportPlainNames(r, config.QuickCommands.Restraints, name => $"restraint lock {name}")
+            ? ImportPlainNames(r, quick.Restraints, name => $"restraint lock {name}", usedCommands, targetSelector: null, ref duplicates)
             : 0;
         restraintsAdded += sections.TryGetValue(RestraintsAliasesHeader, out var ra)
-            ? ImportAliasLines(ra, config.QuickCommands.Restraints)
+            ? ImportAliasLines(ra, quick.Restraints, usedCommands, ref duplicates)
             : 0;
 
         // Also the landing spot for an older export's flat "## ALIASES" section, which mixed single- and
         // multi-action entries together - those all land here unchanged, never split out retroactively
         // into a single category's list (tasks.md 2.5's backward-compatibility requirement).
         var bundlesAdded = sections.TryGetValue(BundlesHeader, out var b)
-            ? ImportAliasLines(b, config.QuickCommands.Aliases)
+            ? ImportAliasLines(b, quick.Aliases, usedCommands, ref duplicates)
             : 0;
 
         if (titleAdded + wardrobeAdded + gestureAdded + moodlesAdded + restraintsAdded + bundlesAdded > 0)
             config.Save();
 
-        return new CatalogImportResult(titleAdded, wardrobeAdded, gestureAdded, moodlesAdded, restraintsAdded, bundlesAdded, null);
+        return new CatalogImportResult(titleAdded, wardrobeAdded, gestureAdded, moodlesAdded, restraintsAdded, bundlesAdded, duplicates, null);
     }
 
     /// Splits on the ten known "## " headers; a line before the first recognized header, or under an
@@ -266,7 +299,12 @@ public sealed class CatalogSyncService
     /// an individual malformed line instead of aborting the whole category (task 2.3's "malformed line is
     /// skipped, not fatal" behavior - a deliberate improvement over the old clipboard importer's
     /// abort-on-first-bad-line, since a file can legitimately mix well-formed entries across categories).
-    private int ImportPlainNames(IEnumerable<string> lines, List<QuickCommand> target, Func<string, string> toCommand)
+    /// `usedCommands` is the shared, whole-import command set (collar/catalog-sync's cross-category
+    /// duplicate check); `targetSelector`, when non-null, normalizes the scanned name into the same
+    /// identity space a same-category alias's exported `Target` uses (e.g. markup-stripped for Moodles),
+    /// enabling the same-target check - passing null (Restraints) opts a category out of that check
+    /// entirely, matching "Import skips commands that duplicate an existing quick command"'s exclusions.
+    private int ImportPlainNames(IEnumerable<string> lines, List<QuickCommand> target, Func<string, string> toCommand, HashSet<string> usedCommands, Func<string, string>? targetSelector, ref int duplicates)
     {
         var added = 0;
         foreach (var line in lines)
@@ -276,10 +314,16 @@ public sealed class CatalogSyncService
                 continue;
 
             var command = toCommand(line);
-            if (target.Any(existing => string.Equals(existing.Command, command, StringComparison.OrdinalIgnoreCase)))
+            var targetValue = targetSelector?.Invoke(line);
+            var isDuplicateTarget = targetValue is not null && target.Any(existing => existing.Target is not null && string.Equals(existing.Target, targetValue, StringComparison.OrdinalIgnoreCase));
+            if (isDuplicateTarget || usedCommands.Contains(command))
+            {
+                duplicates++;
                 continue;
+            }
 
-            target.Add(new QuickCommand { Label = line, Command = command, Source = ImportSource.Imported });
+            target.Add(new QuickCommand { Label = line, Command = command, Source = ImportSource.Imported, Target = targetValue });
+            usedCommands.Add(command);
             added++;
         }
 
@@ -295,7 +339,11 @@ public sealed class CatalogSyncService
     /// alias only ever resolves against the Sub's own dictionary by its bare word, regardless of which
     /// category list the Owner's copy of it lives in, so this same helper backs Title/Outfit/Gesture/
     /// Restraint/Moodle single-action aliases and the Custom Trigger Bundle list alike.
-    private static int ImportAliasLines(IEnumerable<string> lines, List<QuickCommand> target)
+    /// `entry.Target` is only ever non-null for a single-action Outfit/Gesture/Moodle alias (see
+    /// `TargetForSingleAction`/the per-category export calls in `BuildExport`) - for every other category
+    /// this always compiles to "no target to compare," so the same-target check below is inert there
+    /// without needing an explicit per-category opt-out.
+    private static int ImportAliasLines(IEnumerable<string> lines, List<QuickCommand> target, HashSet<string> usedCommands, ref int duplicates)
     {
         var added = 0;
         foreach (var line in lines)
@@ -303,10 +351,15 @@ public sealed class CatalogSyncService
             if (!TryParseAliasEntry(line, out var entry))
                 continue;
 
-            if (target.Any(existing => string.Equals(existing.Command, entry.Alias, StringComparison.OrdinalIgnoreCase)))
+            var isDuplicateTarget = entry.Target is not null && target.Any(existing => existing.Target is not null && string.Equals(existing.Target, entry.Target, StringComparison.OrdinalIgnoreCase));
+            if (isDuplicateTarget || usedCommands.Contains(entry.Alias))
+            {
+                duplicates++;
                 continue;
+            }
 
-            target.Add(new QuickCommand { Label = $"{entry.Alias} — {entry.Description}", Command = entry.Alias, Source = ImportSource.Imported });
+            target.Add(new QuickCommand { Label = $"{entry.Alias} — {entry.Description}", Command = entry.Alias, Source = ImportSource.Imported, Target = entry.Target });
+            usedCommands.Add(entry.Alias);
             added++;
         }
 
@@ -315,7 +368,7 @@ public sealed class CatalogSyncService
         return added;
     }
 
-    private static int ImportGestureLines(IEnumerable<string> lines, List<QuickCommand> target)
+    private static int ImportGestureLines(IEnumerable<string> lines, List<QuickCommand> target, HashSet<string> usedCommands, ref int duplicates)
     {
         var added = 0;
         foreach (var line in lines)
@@ -324,8 +377,12 @@ public sealed class CatalogSyncService
                 continue;
 
             var command = $"gesture {entry.Id}";
-            if (target.Any(x => x.Command.Equals(command, StringComparison.OrdinalIgnoreCase)))
+            var isDuplicateTarget = target.Any(existing => existing.Target is not null && string.Equals(existing.Target, entry.Id, StringComparison.OrdinalIgnoreCase));
+            if (isDuplicateTarget || usedCommands.Contains(command))
+            {
+                duplicates++;
                 continue;
+            }
 
             target.Add(new QuickCommand
             {
@@ -336,7 +393,9 @@ public sealed class CatalogSyncService
                 GestureGroupOrder = entry.GroupOrder,
                 GestureOptionOrder = entry.OptionOrder,
                 Source = ImportSource.Imported,
+                Target = entry.Id,
             });
+            usedCommands.Add(command);
             added++;
         }
 
