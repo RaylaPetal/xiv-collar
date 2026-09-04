@@ -61,7 +61,10 @@ jobs:
         $repo[0].DownloadLinkUpdate = $downloadUrl
         $repo[0].DownloadLinkTesting = $downloadUrl
         $repo[0].LastUpdate = [string]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
-        $repo | ConvertTo-Json -Depth 5 | Set-Content repo.json
+        # -AsArray is required here: piping a single-element collection through ConvertTo-Json otherwise
+        # unwraps it to a bare JSON object instead of a one-element array, which Dalamud's PluginMaster
+        # refuses to deserialize (it expects a JSON array at the top level).
+        $repo | ConvertTo-Json -Depth 5 -AsArray | Set-Content repo.json
 
     - name: Commit repo.json
       uses: stefanzweifel/git-auto-commit-action@v5
