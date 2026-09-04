@@ -114,11 +114,11 @@ public sealed class SlotLockManager : IDisposable
     /// customized) is snapshotted first and reapplied afterward so it ends up exactly where it was -
     /// design.md's "snapshot-revert-restore" decision, since Glamourer can only recompute automation for
     /// the whole actor at once.
-    public void Release(string owner)
+    public bool Release(string owner)
     {
         var releasedSlots = locks.Where(kv => kv.Value.Owner == owner).Select(kv => kv.Key).ToHashSet();
         if (releasedSlots.Count == 0)
-            return;
+            return true;
 
         isEnforcing = true;
         try
@@ -130,19 +130,30 @@ public sealed class SlotLockManager : IDisposable
                     snapshot[slot] = value;
             }
 
-            glamourer.RevertToAutomationEquipmentOnly();
+            var revertResult = glamourer.RevertToAutomationEquipmentOnly();
+            if (revertResult != GlamourerApiEc.Success)
+            {
+                Plugin.Log.Warning($"SlotLockManager: failed to release {owner}'s slots because Glamourer refused the equipment revert: {revertResult}.");
+                return false;
+            }
 
+            var restored = true;
             foreach (var (slot, value) in snapshot)
             {
                 if (releasedSlots.Contains(slot))
                     continue;
-                glamourer.SetItemOnce(slot, value.ItemId, new List<byte> { value.Stain, value.Stain2 });
+                var ec = glamourer.SetItemOnce(slot, value.ItemId, new List<byte> { value.Stain, value.Stain2 });
+                if (ec == GlamourerApiEc.Success)
+                    continue;
+                restored = false;
+                Plugin.Log.Warning($"SlotLockManager: released {owner}, but Glamourer failed to restore preserved slot {slot}: {ec}.");
             }
 
             foreach (var slot in releasedSlots)
                 locks.Remove(slot);
 
             Persist();
+            return restored;
         }
         finally
         {

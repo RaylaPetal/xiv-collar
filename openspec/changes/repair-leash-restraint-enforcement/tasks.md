@@ -12,7 +12,7 @@
 
 ## 3. Reliable Restraint Rules
 
-- [ ] 3.1 Extend the restriction-enforcer contract with readiness and failed-engagement results, and preflight every requested rule before slot/rule commit; verify an unavailable hook leaves no device, slot lock, rule, or temporary mod active.
+- [x] 3.1 Extend the restriction-enforcer contract with readiness and failed-engagement results, and preflight every requested rule before slot/rule commit; verify an unavailable hook leaves no device, slot lock, rule, or temporary mod active.
 - [ ] 3.2 Make forced-pose application verify pose entry and hold a full immobilization claim for its duration; verify all supported manual movement paths remain blocked until final release.
 - [ ] 3.3 Rework walk-only to save prior locomotion state, assert normal and automove walking every framework tick, and reject Sprint bypass; verify directional movement remains usable and prior state returns after final release.
 - [ ] 3.4 Integrate action-block readiness into restraint preflight and test the supported hotbar, menu, keybind, macro, and command invocation paths against the action detour.

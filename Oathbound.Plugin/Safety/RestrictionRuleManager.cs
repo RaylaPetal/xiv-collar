@@ -38,6 +38,13 @@ public sealed class RestrictionRuleManager
     {
         foreach (var rule in rules)
         {
+            // Arms/Legs Cuffed are animation-managed rules: RestraintCommand preflights their catalog
+            // identity and performs their transactional Penumbra activation. They deliberately have no
+            // IRestrictionEnforcer. Full Body Cuffed is different because it additionally owns an
+            // immobilization claim, so it must retain a registered, available enforcer.
+            if (rule.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed)
+                continue;
+
             if (!enforcers.TryGetValue(rule.Kind, out var enforcer) || !enforcer.IsAvailable)
             {
                 unavailable = rule.Kind;
