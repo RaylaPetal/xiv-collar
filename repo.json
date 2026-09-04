@@ -3,7 +3,7 @@
     "Author": "Rayla Petal",
     "Name": "Oathbound",
     "InternalName": "Oathbound.Plugin",
-    "AssemblyVersion": "0.0.0.1",
+    "AssemblyVersion": "0.0.0.2",
     "TestingAssemblyVersion": null,
     "Description": "A consent-based collar control plugin. An Owner sends outfit, title, gesture, and follow/leash commands as ordinary in-game tells - no server, no hosting; the Sub's own client watches for them and applies them locally via Glamourer, Honorific, and Penumbra, and existing sync tooling propagates the result to everyone paired with the Sub.",
     "Punchline": "Consent-based Owner/Sub control: outfit, title, gesture, and leash.",
@@ -19,9 +19,9 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/RaylaPetal/xiv-collar/releases/download/v0.0.0.1/latest.zip",
-    "DownloadLinkTesting": "https://github.com/RaylaPetal/xiv-collar/releases/download/v0.0.0.1/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/RaylaPetal/xiv-collar/releases/download/v0.0.0.1/latest.zip",
-    "LastUpdate": "1788478395"
+    "DownloadLinkInstall": "https://github.com/RaylaPetal/xiv-collar/releases/download/v0.0.0.2/latest.zip",
+    "DownloadLinkTesting": "https://github.com/RaylaPetal/xiv-collar/releases/download/v0.0.0.2/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/RaylaPetal/xiv-collar/releases/download/v0.0.0.2/latest.zip",
+    "LastUpdate": "1788546742"
   }
 ]
