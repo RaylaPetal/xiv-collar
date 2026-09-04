@@ -6,20 +6,20 @@ Lets a Sub scan every commandable catalog (Wardrobe, Gesture, Moodles, Restraint
 
 ## Requirements
 
-### Requirement: Scanning every catalog together
-The system SHALL let the Sub trigger a scan of Wardrobe, Gesture, Moodles, and Restraints catalogs from a single action. Each category's own scan scope (Wardrobe's folder allowlist, Gesture's selected-mod set, Restraints' own folder allowlist) SHALL remain independently configurable and SHALL apply exactly as it does for that category's individual scan. Restraints' scan scope SHALL be independent of Wardrobe's - a folder allowlisted for one SHALL NOT need to be allowlisted for the other.
+### Requirement: Scanning the scannable catalogs together
+The system SHALL let the Sub trigger a scan of Wardrobe, Gesture, and Moodles catalogs from a single action. Each category's own scan scope (Wardrobe's folder allowlist, Gesture's selected-mod set) SHALL remain independently configurable and SHALL apply exactly as it does for that category's individual scan. Restraints has no scan step and SHALL NOT be part of this unified scan action - a restraint device is captured individually (see `collar/restraints`), independent of scanning.
 
 #### Scenario: One action scans every scannable category
 - **WHEN** the Sub triggers the unified scan action
-- **THEN** Wardrobe, Gesture, Moodles, and Restraints are each rescanned using their own currently-configured scope, and the results are exactly what triggering each category's own scan individually would have produced
+- **THEN** Wardrobe, Gesture, and Moodles are each rescanned using their own currently-configured scope, and the results are exactly what triggering each category's own scan individually would have produced
 
 #### Scenario: A per-category scope still restricts that category's results
-- **WHEN** the Sub has configured a Wardrobe folder allowlist, a Restraints folder allowlist, or a Gesture mod selection before running the unified scan
+- **WHEN** the Sub has configured a Wardrobe folder allowlist or a Gesture mod selection before running the unified scan
 - **THEN** the scanned results for that category are restricted to the configured scope, the same as scanning that category alone
 
-#### Scenario: Wardrobe and Restraints scopes don't interfere
-- **WHEN** the Sub has configured different folder allowlists for Wardrobe and Restraints
-- **THEN** the unified scan action still produces the same independent per-category results as scanning each one alone
+#### Scenario: Restraints is not part of the unified scan
+- **WHEN** the Sub triggers the unified scan action
+- **THEN** no Restraints scan runs as part of it, and any already-captured restraint devices are left exactly as they were
 
 ### Requirement: Exporting every catalog to one file
 The system SHALL let the Sub export the current Wardrobe, Gesture, Moodles, and Restraints catalogs together as a single text file written to a location the Sub chooses, in a format that preserves each category's own identity guarantees (the same information that category's individual export already provides). A category with an empty catalog SHALL be included in the export as empty, not omitted in a way that would prevent re-import from recognizing that category.
@@ -33,7 +33,7 @@ The system SHALL let the Sub export the current Wardrobe, Gesture, Moodles, and 
 - **THEN** the exported file still identifies that category with zero entries, rather than omitting it entirely
 
 ### Requirement: Importing one file fills every category's quick commands
-The system SHALL let the Owner import a previously exported file in a single action, and SHALL populate each category's quick-command list from the corresponding section of that file, using the same per-category matching/deduplication behavior each category's own individual import already provides. An entry already present in a category's quick-command list SHALL NOT be duplicated by importing a file that contains it again.
+The system SHALL let the Owner import a previously exported file in a single action, and SHALL populate each category's quick-command list from the corresponding section of that file, using the same per-category matching/deduplication behavior each category's own individual import already provides. An entry already present in a category's quick-command list SHALL NOT be duplicated by importing a file that contains it again. Restraints entries SHALL import from the file's raw scanned design names (tagged or not) and SHALL be added to the Owner's quick-command list without restriction rules pre-assigned; the Owner assigns rules per entry after import (see `collar/restraints`).
 
 #### Scenario: Importing a file fills every category at once
 - **WHEN** the Owner imports a file previously exported by a paired Sub
@@ -46,3 +46,18 @@ The system SHALL let the Owner import a previously exported file in a single act
 #### Scenario: Importing a file with an empty category section changes nothing for that category
 - **WHEN** an imported file identifies a category with zero entries
 - **THEN** that category's existing quick-command list is left unchanged
+
+#### Scenario: Importing a file with scanned but untagged restraints
+- **WHEN** the Owner imports a file whose Restraints section lists designs the Sub scanned but never tagged as a device
+- **THEN** each of those designs is added to the Owner's Restraints quick-command list without any restriction rules assigned
+
+### Requirement: Owner can reset every import to a blank slate
+The system SHALL let the Owner clear every import-populated quick-command list (Wardrobe/Outfit, Gesture, Moodles, Restraints) back to empty in a single action, distinct from importing a file and distinct from each category's individual "Clear all" control.
+
+#### Scenario: Owner resets all imports
+- **WHEN** the Owner triggers the reset-imports action
+- **THEN** the Wardrobe/Outfit, Gesture, Moodles, and Restraints quick-command lists are all emptied, and categories not populated by import (Title, Follow, Aliases) are left unchanged
+
+#### Scenario: Reset control is placed next to import
+- **WHEN** the Owner views the import controls
+- **THEN** the reset-imports control is visible alongside the "Import commands" control

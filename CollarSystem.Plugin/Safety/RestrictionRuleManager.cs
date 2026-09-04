@@ -17,31 +17,48 @@ public interface IRestrictionEnforcer
 
 /// collar/restraints: generalizes SlotLockManager's per-owner claim tracking (collar/slot-locking) from
 /// equipment slots to restriction rule kinds. Deliberately diverges from SlotLockManager's strict
-/// one-owner-per-key model: ForcedPose is the only rule kind where two simultaneously active instances can
-/// actually disagree (different pose targets), so it alone is conflict-checked against its Param; the
-/// other three rule kinds (WalkOnly, ActionBlock, GagChat) are reference-counted - any number of devices
-/// may hold the same rule kind active at once, and the underlying enforcer only releases once the last
-/// holder releases. See design.md's "Decisions" section for why this diverges from SlotLockManager.
+/// one-owner-per-key model: some rule kinds carry per-instance configuration that two simultaneously
+/// active instances can actually disagree on (ForcedPose's pose target; ArmsCuffed/LegsCuffed/
+/// FullBodyCuffed's chosen animation), so those alone are conflict-checked against a string "config key"
+/// (see ConfigKey) - the other kinds (WalkOnly, ActionBlock, GagChat) are reference-counted with no
+/// config-key comparison: any number of devices may hold the same rule kind active at once, and the
+/// underlying enforcer only releases once the last holder releases. See design.md's "Decisions" section
+/// for why this diverges from SlotLockManager.
 public sealed class RestrictionRuleManager
 {
-    private readonly Dictionary<RestraintRuleKind, Dictionary<string, int>> activeByKind = new();
+    private readonly Dictionary<RestraintRuleKind, Dictionary<string, string>> activeByKind = new();
     private readonly Dictionary<RestraintRuleKind, IRestrictionEnforcer> enforcers = new();
 
     public void RegisterEnforcer(RestraintRuleKind kind, IRestrictionEnforcer enforcer) => enforcers[kind] = enforcer;
 
     public bool IsActive(RestraintRuleKind kind) => activeByKind.TryGetValue(kind, out var owners) && owners.Count > 0;
 
-    /// True if `rules` contains a ForcedPose assignment whose PoseModeId differs from an already-active
-    /// ForcedPose claim held by a different owner - the only case where two rule instances can conflict.
+    /// The per-instance configuration a rule kind conflict-checks on - ForcedPose's pose target,
+    /// ArmsCuffed/LegsCuffed/FullBodyCuffed's chosen animation id. Null for kinds with no such
+    /// configuration (WalkOnly/ActionBlock/GagChat are never conflict-checked).
+    private static string? ConfigKey(RestraintRuleAssignment rule) => rule.Kind switch
+    {
+        RestraintRuleKind.ForcedPose => rule.PoseModeId.ToString(),
+        RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed => rule.AnimationId,
+        _ => null,
+    };
+
+    /// True if `rules` contains a config-checked assignment (see ConfigKey) whose configuration differs
+    /// from an already-active claim of the same kind held by a different owner - the only case where two
+    /// rule instances can conflict.
     public bool WouldConflict(IEnumerable<RestraintRuleAssignment> rules, string owner)
     {
-        var pose = rules.FirstOrDefault(r => r.Kind == RestraintRuleKind.ForcedPose);
-        if (pose is null)
-            return false;
-        if (!activeByKind.TryGetValue(RestraintRuleKind.ForcedPose, out var owners) || owners.Count == 0)
-            return false;
-
-        return owners.Any(kv => kv.Key != owner && kv.Value != pose.PoseModeId);
+        foreach (var rule in rules)
+        {
+            var configKey = ConfigKey(rule);
+            if (configKey is null)
+                continue;
+            if (!activeByKind.TryGetValue(rule.Kind, out var owners) || owners.Count == 0)
+                continue;
+            if (owners.Any(kv => kv.Key != owner && kv.Value != configKey))
+                return true;
+        }
+        return false;
     }
 
     /// Activates every rule in `rules` for `owner`. Refuses (activating nothing) if WouldConflict is true -
@@ -53,15 +70,15 @@ public sealed class RestrictionRuleManager
             return false;
         if (WouldConflict(rules, owner))
         {
-            Plugin.Log.Warning($"RestrictionRuleManager: \"{owner}\" refused - a ForcedPose rule conflicts with a different pose already active.");
+            Plugin.Log.Warning($"RestrictionRuleManager: \"{owner}\" refused - a rule conflicts with a different configuration already active.");
             return false;
         }
 
         foreach (var rule in rules)
         {
-            var owners = activeByKind.TryGetValue(rule.Kind, out var existing) ? existing : activeByKind[rule.Kind] = new Dictionary<string, int>();
+            var owners = activeByKind.TryGetValue(rule.Kind, out var existing) ? existing : activeByKind[rule.Kind] = new Dictionary<string, string>();
             var wasEmpty = owners.Count == 0;
-            owners[owner] = rule.PoseModeId;
+            owners[owner] = ConfigKey(rule) ?? "";
             if (wasEmpty && enforcers.TryGetValue(rule.Kind, out var enforcer))
                 enforcer.Engage();
         }

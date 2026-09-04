@@ -31,10 +31,14 @@ public sealed class PairingCommand
 
     /// The sole consent action for a completed handshake (collar/pairing: "SHALL NOT auto-enable this
     /// setting"). Called once the Sub explicitly accepts a pending pairing request whose code matched.
-    public void AcceptPeer(string name, string world)
+    /// `triggerPhrase` (collar/chat-transport) is the peer's own declared trigger phrase, captured from
+    /// their handshake message if present - null for an older peer whose handshake didn't declare one, in
+    /// which case ChatComposer keeps falling back to this side's own configured trigger phrase.
+    public void AcceptPeer(string name, string world, string? triggerPhrase = null)
     {
         config.Pairing.PeerName = name;
         config.Pairing.PeerWorld = world;
+        config.Pairing.PeerTriggerPhrase = triggerPhrase;
         config.Pairing.Paired = true;
         config.Save();
     }

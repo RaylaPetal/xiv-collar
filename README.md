@@ -23,8 +23,8 @@ one-click Send button), see Automation risk below.
 Pairing (once, either order):
   Each side generates its own short code in Settings, shares it out of band
   (voice, DM, etc), and enters the other's code as "Their code."
-  Each side then sends a tell:  /tell TheirName@World  collarpair owner <my code>
-                                                  (or "collarpair sub <my code>")
+  Each side then sends a tell:  /tell TheirName@World  collarpair owner <my code> <my trigger phrase>
+                                                  (or "collarpair sub <my code> <my trigger phrase>")
                                                 |
                                                 v
                 [ FFXIV's own server delivers it - no infrastructure of ours involved ]
@@ -35,15 +35,16 @@ Pairing (once, either order):
         sender field, unforgeable) and what role they say they'll be - explicit
         Accept required, never auto-paired. Both sides set to the same role gets
         flagged, since nothing would ever trigger.
-     -> Accept captures that name+world as the trusted peer and locks pairing on.
+     -> Accept captures that name+world as the trusted peer, along with their
+        declared trigger phrase, and locks pairing on.
 
 Ongoing commands (after pairing):
-  Owner types (or pastes a plugin-composed):
-    /tell SubName@World  command strip
+  Owner types (or pastes a plugin-composed, using the Sub's captured trigger phrase):
+    /tell SubName@World  ray strip
                       |
                       v
   Sub's plugin: sender matches the captured, trusted peer?
-     -> "command" trigger phrase matched?
+     -> "ray" (the Sub's own configured trigger phrase) matched?
      -> "strip" found in the Sub's own locally-defined aliases?
      -> apply it locally (Glamourer / Penumbra / Honorific)
 ```
@@ -51,6 +52,14 @@ Ongoing commands (after pairing):
 Codes only ever gate the one-time handshake; once accepted, ongoing commands are matched purely by the
 server-verified sender identity that handshake captured - the same unforgeable check as before, just
 established by a manual two-way exchange instead of typing an exact name/world into Settings.
+
+> **Trigger phrase auto-sync**: each side's trigger phrase (Settings) used to be a purely local setting with
+> no way for the two sides to confirm they matched - if the Owner never separately set theirs to match the
+> Sub's, every command silently failed to be recognized, with no visible error. The handshake above now
+> carries each side's own trigger phrase, and composing to a paired peer uses *their* captured phrase
+> automatically - Settings shows which phrase is actually in effect. This only takes effect when **both**
+> sides are on this version or later; a pairing formed with an older peer falls back to the previous
+> manual-matching behavior (Settings will show "your own - peer hasn't sent theirs" in that case).
 
 ### Two ways to command: alias, or direct override
 
@@ -65,9 +74,10 @@ Alongside that, the same composer box also accepts a **direct override** for `ti
 separate menu needed. A tell like `command title create Good Girl` or `command outfit lock Casual Blue`
 bypasses the Sub's own alias dictionary entirely and applies immediately (matching an outfit/gesture/
 Moodle/restraint device by whatever name the Sub told the Owner - Settings' unified **Scan & Export**
-section scans every catalog at once and exports one file the Sub can hand to their Owner, who fills every
-category's Quick Commands from it in one action via the Owner tab's "Import commands" button, instead of
-reciting names one by one). Title and outfit also **lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
+section scans Wardrobe, Gesture, and Moodles at once (Restraints devices are captured individually in the
+Restraints tab, by picking a slot and an item, not scanned) and exports one file covering all four categories the Sub can hand to their
+Owner, who fills every category's Quick Commands from it in one action via the Owner tab's "Import
+commands" button, instead of reciting names one by one). Title and outfit also **lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
 `title clear` / `outfit unlock` override tell (or the Sub's own panic, which always works regardless)
 releases it. An outfit lock only ever covers the equipment slots the applied design itself changes - never
 Glamourer's own whole-character lock, and never any slot the design doesn't touch, so the rest of your
@@ -97,13 +107,24 @@ it clears those same four import-populated lists back to empty in one action, wi
 Alias commands built by hand - see Automation risk below for what the Send button on each Quick Command
 actually does.
 
-> **Restraints import now carries every scanned design, tagged or not** - the Sub no longer has to tag a
-> device with rules before an Owner can import it. Instead, each imported Restraints Quick Command needs the
-> Owner to configure its own restriction rules (forced pose, walk-only, action block, gag) via the
-> "Configure rules" control on that entry, the same rule set the Sub's own Restraints tab uses. Those
-> Owner-assigned rules travel with the `restraint lock` command and take effect on the Sub's side regardless
-> of whatever rules (if any) the Sub separately tagged for that same design - Send stays disabled on an
-> entry until rules are assigned.
+> **Restraints import carries every captured device name** - the Sub captures each device by picking a slot
+> and an item from a searchable picker (Restraints tab, no need to own or equip the item first), so every
+> imported entry is already a real device name. The Owner can also add a Restraints Quick Command manually
+> by typing a name, without importing first (mirroring Title's own "Add Command"). Either way, each
+> Restraints Quick Command needs the Owner to configure its own restriction rules (forced pose, walk-only,
+> action block, Gagged, Arms Cuffed, Legs Cuffed, Full Body Cuffed - the last three each with a chosen
+> animation from the Sub's Gesture catalog) via the "Configure rules" control on that entry, the same rule
+> set the Sub's own device-capture UI uses. Those Owner-assigned rules travel with the `restraint lock`
+> command and take effect on the Sub's side regardless of whatever rules (if any) the Sub separately
+> assigned to that same device - Send stays disabled on an entry until rules are assigned.
+>
+> **The Owner can also define a device's gear directly**, with no Sub-side name needed at all - a "define a
+> device's gear directly" control sits alongside the name-based "Add Command", letting the Owner pick a slot
+> and an item from the same picker, give it their own local label, and assign rules, then send it as one
+> self-contained `restraint wear` command. This means the Owner can put *any* equippable item on the Sub in
+> any lockable slot without the Sub ever having reviewed that specific item first - a deliberately broader
+> grant than every other Owner-forced action in this plugin, gated the same way (Restraints permission + the
+> automation-risk acknowledgement below) rather than by per-item review.
 
 ## Consent model
 
@@ -168,17 +189,28 @@ actually does.
   the hook signatures are version-specific reverse-engineering artifacts that can break on any game patch
   (see `MovementLockService.cs`) - if they fail to resolve on load, the movement lock stays disabled
   rather than silently doing nothing while claiming to work.
-- **Restraints** ties a Glamourer design to one or more restriction rules (Restraints tab): forced pose
-  (blocks movement, same mechanism as Follow/leash), walk-only (forces walking, blocks running, leaves
-  directional input untouched), action block (hooks `ActionManager`'s own action-use entry point to
-  suppress hotbar/skill execution), and gag chat mangling. **Gag chat mangling is a materially different
+- **Restraints** ties a single gear piece - one item in one chosen slot (a bracelet, a chest harness, a
+  specific pair of cuffs), picked from a searchable item-by-slot picker rather than a whole Glamourer design
+  - to one or more restriction rules (Restraints tab): forced pose (blocks movement, same mechanism as Follow/leash),
+  walk-only (forces walking, blocks running, leaves directional input untouched), action block (hooks
+  `ActionManager`'s own action-use entry point to suppress hotbar/skill execution), Gagged (chat mangling),
+  and Arms Cuffed / Legs Cuffed / Full Body Cuffed - each of the last three holds you in a chosen animation
+  from your own installed mods (the same picker Gesture uses) for as long as the device is applied, with
+  Full Body Cuffed additionally blocking movement like forced pose does. **Gagged is a materially different
   automation surface from everything else in this plugin**: it intercepts your own outgoing chat message
   after you press Enter but before it reaches the server, and replaces the actually-transmitted text with a
   muffled/nonsense variant - not just your own local display of it. Every other feature here either applies
   a cosmetic/state change to your own character or blocks an input; this one rewrites content you yourself
-  typed. It only ever runs while a gag-rule device is applied (an explicit, reversible opt-in you or your
+  typed. It only ever runs while a Gagged-rule device is applied (an explicit, reversible opt-in you or your
   Owner toggle the same way as any other device), never unconditionally, and it never touches slash
   commands. See `ChatGagService.cs`.
+
+  > **Breaking change:** restraint device capture switched from "equip the piece, then capture what's
+  > equipped" to picking a slot and an item directly from a searchable picker - the item no longer needs to
+  > be equipped or owned. Already-captured devices are unaffected; capturing a *new* device always goes
+  > through the picker now. The Owner can also now define a device's gear directly (slot + item + rules),
+  > without needing the Sub to have captured or named anything first - see the Restraints Quick Command
+  > section above.
 
 Gesture, Follow, and Restraints are gated behind their own permission toggle, and all three require the Sub
 to check an in-UI acknowledgement of this section (Settings) before any of the three toggles can be enabled
@@ -212,6 +244,15 @@ Moodles integration is easy to tell apart from a gating failure, without stale r
 **Hiding Test controls.** Settings has a "Hide local Test controls" checkbox (off by default) that removes
 every Test button from the Sub-facing interface without disabling local testing itself or affecting any
 other control - a one-click toggle for a cleaner UI once you've verified everything works.
+
+**Testing an Owner command's full text, not just its effect.** The per-action Test buttons above call an
+action's underlying method directly, bypassing the trigger-phrase/permission/reserved-word parsing a real
+incoming tell goes through entirely - they can't catch a bug in that parsing layer. Settings' **"Test an
+Owner command"** card is different: type the exact raw text an Owner would send (trigger phrase included,
+e.g. `ray outfit lock kagome`) and it runs through the *real* dispatch code (`ChatCommandListener.Resolve`),
+not a separate reimplementation - so a passing result is a genuine guarantee that text would work from a
+real paired Owner. Like the per-action buttons, it requires no pairing and sends or receives no chat message
+- the one difference is it can't verify sender identity, since there's no real sender in a local test.
 
 ## Project layout
 
@@ -264,8 +305,9 @@ build task, or building via the `.slnx` all land in the same place.
      wardrobe folder scope both mean **scan everything available**; folder/text search fields only filter
      the visible picker), then hit **Scan all** to rescan Wardrobe, Gesture, and Moodles together. Define
      aliases in the main window's Title/Wardrobe/Gesture/Restraints tabs, which stay available regardless
-     of Role. Once you've scanned (and tagged any Restraints devices you want), hit **Export...** to save a
-     single file covering every category - hand that file to your Owner however you like (Discord, a
+     of Role. Once you've scanned (and captured any Restraints devices you want, by picking a slot and an
+     item from the Restraints tab's picker), hit **Export...** to save a single file covering every category - hand that
+     file to your Owner however you like (Discord, a
      shared folder), and they fill every Quick Command list from it in one action via the Owner tab's
      **Import commands** button.
    * If you want a collar: equip the item you want in your Neck slot, then capture it from the main

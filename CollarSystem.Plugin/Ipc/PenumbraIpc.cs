@@ -27,8 +27,17 @@ public sealed class PenumbraIpc
     }
     public Guid? TryGetLocalPlayerCollectionId()
     {
-        try { var (valid, _, collection) = getCollectionForObject.Invoke(0); return valid ? collection.Id : null; }
-        catch { return null; }
+        try
+        {
+            var (valid, _, collection) = getCollectionForObject.Invoke(0);
+            if (!valid)
+            {
+                Plugin.Log.Warning("Penumbra: could not resolve the local player's effective collection (GetCollectionForObject reported invalid).");
+                return null;
+            }
+            return collection.Id;
+        }
+        catch (Exception ex) { Plugin.Log.Error(ex, "Failed to resolve the local player's Penumbra collection."); return null; }
     }
     public (bool Enabled, Dictionary<string, List<string>>? Selections) TryGetCurrentSettings(Guid collection, string directory)
     {
@@ -37,17 +46,35 @@ public sealed class PenumbraIpc
     }
     public bool TrySetTemporarySettings(Guid collection, string directory, IReadOnlyDictionary<string, IReadOnlyList<string>> selections)
     {
-        try { return setTemporaryModSettings.Invoke(collection, directory, false, true, 0, selections, Source) == PenumbraApiEc.Success; }
+        try
+        {
+            var ec = setTemporaryModSettings.Invoke(collection, directory, false, true, 0, selections, Source);
+            if (ec != PenumbraApiEc.Success)
+            {
+                Plugin.Log.Warning($"Penumbra: failed to apply temporary settings for mod \"{directory}\": {ec}.");
+                return false;
+            }
+            return true;
+        }
         catch (Exception ex) { Plugin.Log.Error(ex, "Failed to apply temporary gesture mod settings."); return false; }
     }
     public bool TryRemoveTemporarySettings(Guid collection, string directory)
     {
-        try { return removeTemporaryModSettings.Invoke(collection, directory) == PenumbraApiEc.Success; }
-        catch { return false; }
+        try
+        {
+            var ec = removeTemporaryModSettings.Invoke(collection, directory);
+            if (ec != PenumbraApiEc.Success)
+            {
+                Plugin.Log.Warning($"Penumbra: failed to remove temporary settings for mod \"{directory}\": {ec}.");
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex) { Plugin.Log.Error(ex, "Failed to remove temporary gesture mod settings."); return false; }
     }
     public bool TryRedrawLocalPlayer()
     {
         try { redrawObject.Invoke(0); return true; }
-        catch { return false; }
+        catch (Exception ex) { Plugin.Log.Error(ex, "Failed to redraw the local player after a temporary Penumbra activation."); return false; }
     }
 }

@@ -26,8 +26,8 @@ public class SettingsWindow : Window, IDisposable
     private string triggerPhraseInput = "";
     private string gestureModSearch = "";
     private string newWardrobeAllowlistFolder = "";
-    private string newRestraintAllowlistFolder = "";
     private string? scanAndExportResult;
+    private string testCommandInput = "";
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - see
     /// CollarWindow's matching field for the rest of the Test controls; Moodles' only lives here since it
@@ -65,16 +65,38 @@ public class SettingsWindow : Window, IDisposable
         DrawIdentityCard(config);
         ImGui.Spacing();
 
+        DrawTestCommandCard(config);
+        ImGui.Spacing();
+
         DrawScanAndExportCard(config);
         ImGui.Spacing();
         DrawTosCard(config);
+    }
+
+    /// collar/chat-transport "An Owner-style command can be tested entirely locally": type the exact raw
+    /// text an Owner would send (trigger phrase included) and run it through the real dispatch path
+    /// (ChatCommandListener.TestIncomingCommand) - no pairing, no peer, nothing sent or received. A
+    /// different, complementary tool to the per-action Test buttons elsewhere: those bypass command-text
+    /// parsing entirely (calling the underlying action directly), this exercises the parsing itself - the
+    /// trigger-phrase/permission/dispatch layer where every bug this card exists to catch was found.
+    private void DrawTestCommandCard(PluginConfig config)
+    {
+        using var card = Card.Begin("testCommandCard", new Vector2(0, 110));
+
+        IconGlyph.Text(FontAwesomeIcon.FlaskVial, "Test an Owner command");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Type the exact text an Owner would send after \"/tell you\" - trigger phrase included - and run it locally. No pairing or peer needed, and nothing is sent or received.");
+
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        ImGui.InputTextWithHint("##testCommandInput", "e.g. ray outfit lock kagome", ref testCommandInput, 128);
+        DrawTestButton("testOwnerCommand", "Run test", () => plugin.ChatCommandListener.TestIncomingCommand(testCommandInput));
     }
 
     private void DrawIdentityCard(PluginConfig config)
     {
         var pending = plugin.ChatCommandListener.Pending;
         var sameRoleWarning = pending is { } pendingCheck && pendingCheck.SenderRole == config.Role;
-        var height = 260 + (pending is not null ? (sameRoleWarning ? 80 : 50) : 0) + (config.Pairing.IsPaired ? 35 : 0);
+        var height = 260 + (pending is not null ? (sameRoleWarning ? 80 : 50) : 0) + (config.Pairing.IsPaired ? 55 : 0);
         using var card = Card.Begin("identityCard", new Vector2(0, height));
 
         IconGlyph.Text(FontAwesomeIcon.UserShield, "Identity & Pairing");
@@ -139,6 +161,10 @@ public class SettingsWindow : Window, IDisposable
         else if (config.Pairing.IsPaired)
         {
             IconGlyph.WrappedColored(Theme.Success, $"Paired with {config.Pairing.PeerName}@{config.Pairing.PeerWorld}.");
+            if (config.Pairing.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
+                ImGui.TextDisabled($"Trigger phrase in effect: \"{peerPhrase}\" (from your paired peer).");
+            else
+                ImGui.TextDisabled($"Trigger phrase in effect: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
             if (config.Role == PluginRole.Owner)
             {
                 if (ImGui.Button("Release pairing"))
@@ -179,14 +205,13 @@ public class SettingsWindow : Window, IDisposable
             plugin.OutfitCommand.Rescan();
             plugin.GestureCommand.Rescan();
             plugin.MoodlesCommand.Rescan();
-            plugin.RestraintCommand.Rescan();
             scanAndExportResult = null;
         }
-        IconGlyph.HelpMarker("Rescans Wardrobe, Gesture, Moodles, and Restraints together, each using its own currently-configured scope below - the same result as triggering each one's own Rescan individually.");
+        IconGlyph.HelpMarker("Rescans Wardrobe, Gesture, and Moodles together, each using its own currently-configured scope below - the same result as triggering each one's own Rescan individually. Restraints has no scan step - capture devices individually in the Restraints tab.");
 
         ImGui.SameLine();
         var hasAnythingToExport = plugin.OutfitCommand.LastScanTotalDesigns is not null || plugin.GestureCommand.LastScanTotalMods is not null ||
-            plugin.MoodlesCommand.LastScanTotalStatuses is not null || plugin.RestraintCommand.LastScanTotalDesigns is not null || config.RestraintMapping.Devices.Count > 0;
+            plugin.MoodlesCommand.LastScanTotalStatuses is not null || config.RestraintMapping.Devices.Count > 0;
         using (ImRaii.Disabled(!hasAnythingToExport))
         {
             if (ImGui.Button("Export..."))
@@ -215,8 +240,6 @@ public class SettingsWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.Separator();
         DrawWardrobeScanBody(config);
-        ImGui.Spacing();
-        DrawRestraintsScanBody(config);
         ImGui.Spacing();
         DrawGestureScanBody(config);
         ImGui.Spacing();
@@ -267,54 +290,6 @@ public class SettingsWindow : Window, IDisposable
 
         using var _ = ImRaii.Child("wardrobeCatalog", new Vector2(0, 80), true);
         foreach (var entry in wardrobe.LocalDesigns.Values)
-            ImGui.BulletText(entry.Name);
-    }
-
-    /// collar/restraints: scans and filters independently of Wardrobe - bondage/restriction-themed
-    /// designs and everyday outfits live in different Glamourer folders in practice, so this uses its own
-    /// allowlist (PluginConfig.RestraintFolderAllowlist) rather than sharing Wardrobe's.
-    private void DrawRestraintsScanBody(PluginConfig config)
-    {
-        IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints design allowlist & scan");
-        ImGui.Separator();
-        IconGlyph.WrappedDisabled("No folders = all saved designs. Add folders only when you want to restrict which designs are eligible to tag as restraint devices. Independent of the Wardrobe allowlist above - Restraints tab tags devices from here.");
-        IconGlyph.HelpMarker("With folders configured, only designs inside those Glamourer design-browser folder prefixes are scanned. Clear every folder to scan all saved designs.");
-
-        DrawAllowlistBody(config.RestraintFolderAllowlist, ref newRestraintAllowlistFolder, "restraints");
-
-        ImGui.Spacing();
-        if (ImGui.Button("Rescan restraints"))
-            plugin.RestraintCommand.Rescan();
-        IconGlyph.HelpMarker("Re-reads your saved Glamourer designs for Restraints. An empty folder list includes all designs; otherwise only matching folders are included.");
-
-        DrawRestraintsScanFeedback();
-    }
-
-    private void DrawRestraintsScanFeedback()
-    {
-        var restraints = plugin.Configuration.RestraintMapping;
-        var lastScanTotal = plugin.RestraintCommand.LastScanTotalDesigns;
-
-        if (lastScanTotal is null)
-        {
-            ImGui.TextDisabled("Not scanned yet this session.");
-            return;
-        }
-
-        var matched = restraints.ScannedDesigns.Count;
-        var color = matched > 0 ? Theme.Success : Theme.Warning;
-        var scope = plugin.Configuration.RestraintFolderAllowlist.Count == 0 ? "all-design mode" : "folder-filtered mode";
-        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved design(s); {matched} available ({scope}).");
-
-        if (matched == 0)
-            return;
-
-        if (ImGui.SmallButton("Copy names##restraints"))
-            ImGui.SetClipboardText(string.Join("\n", restraints.ScannedDesigns.Values.Select(d => d.Name)));
-        IconGlyph.HelpMarker("Copies the list below as plain text, one design per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with a direct override (\"restraint lock <name>\").");
-
-        using var _ = ImRaii.Child("restraintsCatalog", new Vector2(0, 80), true);
-        foreach (var entry in restraints.ScannedDesigns.Values)
             ImGui.BulletText(entry.Name);
     }
 

@@ -138,7 +138,10 @@ public sealed class GestureCommand
         return true;
     }
 
-    private static unsafe void Play(GestureTrigger trigger)
+    /// Internal rather than private: collar/restraints' Arms Cuffed/Legs Cuffed/Full Body Cuffed rules
+    /// reuse this exact one-shot trigger playback for their own chosen animation, distinct from Gesture's
+    /// own temporary-activation/idle-timeout bookkeeping which those rules deliberately don't share.
+    internal static unsafe void Play(GestureTrigger trigger)
     {
         if (trigger.Kind == GestureTriggerKind.SlashCommand)
         {

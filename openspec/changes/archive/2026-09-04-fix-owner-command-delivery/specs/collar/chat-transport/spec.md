@@ -1,10 +1,4 @@
-# collar/chat-transport Specification
-
-## Purpose
-
-Delivers Owner-issued commands to a paired Sub as in-game tell messages instead of over a hosted relay, eliminating hosting cost by riding infrastructure FFXIV's own server already provides, while keeping the automation-risk profile lower than the relay it replaces by requiring every outbound trigger message to be sent by the Owner's own direct action.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Trigger-phrase command delivery over tells
 The system SHALL deliver a command as an in-game tell consisting of a configurable trigger phrase followed by an alias identifying the command, and SHALL only process such messages received via the private tell channel - never a public chat channel (party, say, shout, or otherwise). When composing a trigger message to a paired peer, the system SHALL use that peer's trigger phrase captured during the pairing handshake (see `collar/pairing`) rather than the composing side's own independently-configured trigger phrase, so the composed message always matches what the receiving side's listener expects. The composing side's own configured trigger phrase SHALL be used only when no peer trigger phrase has been captured (no pairing yet, or a peer whose handshake didn't declare one).
@@ -25,23 +19,7 @@ The system SHALL deliver a command as an in-game tell consisting of a configurab
 - **WHEN** a user composes a trigger message with no captured peer trigger phrase (unpaired, or a peer whose handshake didn't declare one)
 - **THEN** the composed message is prefixed with the composing side's own configured trigger phrase, the same as before this change
 
-### Requirement: Alias resolution against a locally-defined dictionary
-The system SHALL resolve the alias following the trigger phrase against a dictionary the receiving Sub defines locally, and SHALL NOT require, accept, or transmit a definition of what an alias means over chat - only the alias's short name crosses the chat channel.
-
-#### Scenario: Known alias resolves
-- **WHEN** the alias following the trigger phrase matches an entry the Sub has locally defined
-- **THEN** the corresponding local action executes
-
-#### Scenario: Unknown alias is ignored
-- **WHEN** the alias following the trigger phrase does not match any locally-defined entry
-- **THEN** the Sub's client takes no game-state-changing action
-
-### Requirement: No automated sending
-The system SHALL NOT itself invoke any function that transmits a trigger message on a user's behalf. A trigger message SHALL only be sent by the sending player's own direct action. The system MAY compose trigger text or place it on the clipboard for convenience, but SHALL NOT call any chat-send API itself.
-
-#### Scenario: Composing a trigger message does not send it
-- **WHEN** an Owner's client builds trigger text for a command
-- **THEN** the text is made available to copy, and no chat-send function is invoked by the plugin
+## ADDED Requirements
 
 ### Requirement: The trigger phrase in effect is visible once paired
 The Settings UI SHALL show which trigger phrase is actually being used to compose outgoing commands to the current peer (the peer's captured phrase if known, otherwise the user's own), so a mismatch between an un-updated peer and this client is visible rather than silently producing commands the peer's listener will never recognize.

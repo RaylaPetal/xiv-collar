@@ -27,6 +27,13 @@ public class PairingState
     public string? PeerWorld { get; set; }
     public bool Paired { get; set; }
 
+    /// collar/chat-transport: the peer's own trigger phrase, captured from their handshake message (see
+    /// ChatCommandListener.TryHandlePairingMessage) so composing a command to them never needs to manually
+    /// match their independently-configured trigger phrase. Null for a pairing formed before this field
+    /// existed, or with a peer whose handshake didn't declare one (an older client) - ChatComposer falls
+    /// back to this side's own TriggerPhrase in that case.
+    public string? PeerTriggerPhrase { get; set; }
+
     public bool IsPaired => Paired && !string.IsNullOrWhiteSpace(PeerName) && !string.IsNullOrWhiteSpace(PeerWorld);
 }
 
@@ -130,39 +137,46 @@ public enum RestraintRuleKind
     WalkOnly,
     ActionBlock,
     GagChat,
+    ArmsCuffed,
+    LegsCuffed,
+    FullBodyCuffed,
 }
 
 /// One restriction rule assigned to a device. `PoseModeId` only matters for ForcedPose (1=GroundSit,
-/// 2=Sit, 3=Doze - the same EmoteModeId values GestureTrigger already uses) and is ignored by the other
-/// three rule kinds.
+/// 2=Sit, 3=Doze - the same EmoteModeId values GestureTrigger already uses). `AnimationId` only matters
+/// for ArmsCuffed/LegsCuffed/FullBodyCuffed - a `GestureCatalogEntry.Id` (collar/gesture) identifying the
+/// chosen animation to temporarily activate and hold for as long as the rule stays active. Both are
+/// ignored by every rule kind that doesn't use them.
 [Serializable]
 public class RestraintRuleAssignment
 {
     public RestraintRuleKind Kind { get; set; }
     public int PoseModeId { get; set; }
+    public string? AnimationId { get; set; }
 }
 
-/// A Glamourer design (from the existing wardrobe scan - collar/outfit) tagged as a restraint device and
-/// carrying one or more restriction rules (collar/restraints). Untagged designs never appear here - see
-/// RestraintCommand.Rescan.
+/// A single equipped gear piece (collar/restraints) captured directly from what the Sub currently has
+/// equipped in one slot - the same capture mechanism CollarState uses, generalized to any of the 10
+/// lockable slots - carrying one or more restriction rules. There is no separate scan/tag step: a device
+/// is captured and named in one action (see RestraintCommand.CaptureCurrentAsDevice).
 [Serializable]
 public class RestraintDeviceDefinition
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
-    public Guid DesignId { get; set; }
+    public ApiEquipSlot Slot { get; set; }
+    public ulong ItemId { get; set; }
+    public byte Stain { get; set; }
+    public byte Stain2 { get; set; }
     public string Name { get; set; } = "";
     public List<RestraintRuleAssignment> Rules { get; set; } = new();
 }
 
-/// Sub-side: the restraint device catalog. `ScannedDesigns` is Restraints' own scan result - independent
-/// of `WardrobeMapping.LocalDesigns` and its own folder allowlist (`PluginConfig.RestraintFolderAllowlist`),
-/// since bondage/restriction-themed designs and everyday outfits live in different Glamourer folders in
-/// practice and need different filters. `Devices` is the Sub's own subset of that scan tagged with rules,
-/// keyed by RestraintDeviceDefinition.Id.
+/// Sub-side: the restraint device catalog, keyed by RestraintDeviceDefinition.Id. No scan step or
+/// allowlist - each device is captured individually from whatever gear piece the Sub currently has
+/// equipped (collar/restraints), the same way CollarState captures the collar item.
 [Serializable]
 public class RestraintMapping
 {
-    public Dictionary<Guid, WardrobeDesignEntry> ScannedDesigns { get; set; } = new();
     public Dictionary<string, RestraintDeviceDefinition> Devices { get; set; } = new();
 }
 
@@ -229,11 +243,6 @@ public class PluginConfig : IPluginConfiguration
     /// Sub-side: optional Glamourer design-browser folders applied to `Glamourer.GetDesignListExtended`'s
     /// FullPath. Empty means every saved design; entries restrict the scan.
     public List<string> WardrobeFolderAllowlist { get; set; } = new();
-
-    /// collar/restraints: same "empty means all" folder-allowlist semantics as WardrobeFolderAllowlist,
-    /// but scanned and filtered independently - bondage/restriction-themed designs and everyday outfits
-    /// live in different Glamourer folders in practice, so Restraints needs its own scope, not Wardrobe's.
-    public List<string> RestraintFolderAllowlist { get; set; } = new();
 
     /// Gate per collar/gesture and collar/follow's ToS-disclosure requirement: the Sub must acknowledge
     /// the automation-risk caveat before either permission can be enabled.

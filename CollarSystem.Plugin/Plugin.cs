@@ -44,6 +44,7 @@ public sealed class Plugin : IDalamudPlugin
     private CollarWindow CollarWindow { get; }
     private SettingsWindow SettingsWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
+    public ItemPickerWindow ItemPickerWindow { get; }
 
     public SubRuntimeState RuntimeState { get; }
 
@@ -95,10 +96,11 @@ public sealed class Plugin : IDalamudPlugin
         ActionBlockService = new ActionBlockService();
         ChatGagService = new ChatGagService();
         RestrictionRuleManager = new RestrictionRuleManager();
-        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ForcedPose, new MovementLockEnforcer(MovementLockService));
+        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ForcedPose, new MovementLockEnforcer(MovementLockService, "Restraints"));
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.WalkOnly, WalkOnlyService);
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ActionBlock, ActionBlockService);
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.GagChat, ChatGagService);
+        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.FullBodyCuffed, new MovementLockEnforcer(MovementLockService, "RestraintsFullBody"));
 
         PairingCommand = new PairingCommand(Configuration);
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
@@ -107,21 +109,23 @@ public sealed class Plugin : IDalamudPlugin
         FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
         CollarCommand = new CollarCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
-        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, SlotLockManager, RestrictionRuleManager, RuntimeState);
+        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState);
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
         ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand);
         LocalTestCoordinator = new LocalTestCoordinator(Configuration, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
 
-        PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RuntimeState);
+        PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState);
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
         AnimationPickerWindow = new AnimationPickerWindow(this);
+        ItemPickerWindow = new ItemPickerWindow(this);
         WindowSystem.AddWindow(CollarWindow);
         WindowSystem.AddWindow(SettingsWindow);
         WindowSystem.AddWindow(AnimationPickerWindow);
+        WindowSystem.AddWindow(ItemPickerWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -160,6 +164,7 @@ public sealed class Plugin : IDalamudPlugin
         CollarWindow.Dispose();
         SettingsWindow.Dispose();
         AnimationPickerWindow.Dispose();
+        ItemPickerWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(PanicCommandName);

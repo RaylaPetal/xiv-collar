@@ -7,7 +7,7 @@ using Dalamud.Game.Text.SeStringHandling.Payloads;
 
 namespace CollarSystem.Plugin.Commands;
 
-public readonly record struct PendingPairingRequest(string Name, string World, PluginRole SenderRole);
+public readonly record struct PendingPairingRequest(string Name, string World, PluginRole SenderRole, string? TriggerPhrase = null);
 
 /// collar/chat-transport's listener, now split into two independent things it watches every incoming
 /// tell for:
@@ -65,7 +65,7 @@ public sealed class ChatCommandListener : IDisposable
         if (Pending is not { } request)
             return;
 
-        pairing.AcceptPeer(request.Name, request.World);
+        pairing.AcceptPeer(request.Name, request.World, request.TriggerPhrase);
 
         if (config.Permissions.Collar && config.Collar.IsConfigured)
             collar.ForceApply();
@@ -99,16 +99,25 @@ public sealed class ChatCommandListener : IDisposable
         if (senderName is null)
             return;
         if (!string.Equals(senderName, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase))
+        {
+            Plugin.Log.Information($"Trigger tell ignored: sender \"{senderName}\" does not match the configured peer \"{config.Pairing.PeerName}\".");
             return;
+        }
         if (senderWorld is not null && !string.Equals(senderWorld, config.Pairing.PeerWorld, StringComparison.OrdinalIgnoreCase))
+        {
+            Plugin.Log.Information($"Trigger tell ignored: sender world \"{senderWorld}\" does not match the configured peer world \"{config.Pairing.PeerWorld}\".");
             return;
+        }
 
         var trigger = config.TriggerPhrase.Trim();
         if (trigger.Length == 0)
             return;
 
         if (!text.StartsWith(trigger, StringComparison.OrdinalIgnoreCase))
+        {
+            Plugin.Log.Information($"Trigger tell ignored: message did not start with the configured trigger phrase \"{trigger}\".");
             return;
+        }
 
         var alias = text[trigger.Length..].Trim();
         if (alias.Length == 0)
@@ -116,7 +125,8 @@ public sealed class ChatCommandListener : IDisposable
 
         try
         {
-            Resolve(alias);
+            var outcome = Resolve(alias);
+            Plugin.Log.Information($"Trigger tell dispatch: {outcome.Message}");
         }
         catch (Exception ex)
         {
@@ -124,21 +134,54 @@ public sealed class ChatCommandListener : IDisposable
         }
     }
 
-    /// collar/pairing's manual handshake: a "collarpair <role> <code>" tell from either side, `role`
-    /// being the sender's own declared Role ("sub"/"owner") so the receiving side's Pending prompt can
-    /// show what the sender thinks this pairing will be, not just that a code matched - catches a
-    /// same-role misconfiguration (both sides set to Sub, say) before Accept locks it in, rather than
-    /// silently pairing into a dead end where nothing ever triggers. Consumes the message (returns true)
-    /// whenever it starts with the keyword, whether or not the code actually matches - a wrong/malformed/
-    /// unconfigured code is silently ignored, never falls through to alias parsing.
+    /// collar/chat-transport "An Owner-style command can be tested entirely locally": exercises the exact
+    /// same trigger-phrase check and `Resolve` dispatch a real incoming tell goes through, so this can never
+    /// drift from what a real tell would actually do - the only differences are the checks a local test
+    /// can't meaningfully perform (there is no real sender to verify, and no tell channel to require).
+    /// Never sends or receives any chat message, and never requires pairing.
+    public LocalTestResult TestIncomingCommand(string rawText)
+    {
+        var trigger = config.TriggerPhrase.Trim();
+        var trimmed = rawText.Trim();
+        if (trigger.Length == 0 || !trimmed.StartsWith(trigger, StringComparison.OrdinalIgnoreCase))
+            return LocalTestResult.Fail($"Doesn't start with your configured trigger phrase \"{trigger}\".");
+
+        var alias = trimmed[trigger.Length..].Trim();
+        if (alias.Length == 0)
+            return LocalTestResult.Fail("No command text after the trigger phrase.");
+
+        try
+        {
+            return Resolve(alias);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Error(ex, $"Local command test for \"{alias}\" threw an exception.");
+            return LocalTestResult.Fail($"Threw an exception: {ex.Message}");
+        }
+    }
+
+    /// collar/pairing's manual handshake: a "collarpair <role> <code> <triggerPhrase>" tell from either
+    /// side, `role` being the sender's own declared Role ("sub"/"owner") so the receiving side's Pending
+    /// prompt can show what the sender thinks this pairing will be, not just that a code matched - catches
+    /// a same-role misconfiguration (both sides set to Sub, say) before Accept locks it in, rather than
+    /// silently pairing into a dead end where nothing ever triggers. `triggerPhrase` (collar/chat-transport)
+    /// is the sender's own currently-configured trigger phrase, additive to the original "collarpair <role>
+    /// <code>" format - absent from an older client's handshake, in which case it's simply not captured
+    /// (see AcceptPending) and composing falls back to this side's own trigger phrase, same as before this
+    /// field existed. Consumes the message (returns true) whenever it starts with the keyword, whether or
+    /// not the code actually matches - a wrong/malformed/unconfigured code is silently ignored, never falls
+    /// through to alias parsing.
     private bool TryHandlePairingMessage(string text, SeString sender)
     {
         if (!text.StartsWith(PairingKeyword, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var (roleToken, receivedCode) = SplitFirstToken(text[PairingKeyword.Length..].Trim());
+        var (roleToken, rest) = SplitFirstToken(text[PairingKeyword.Length..].Trim());
         if (!TryParseRole(roleToken, out var senderRole))
             return true;
+
+        var (receivedCode, triggerPhrase) = SplitFirstToken(rest);
 
         var expectedCode = config.Pairing.PeerCode;
         if (receivedCode.Length == 0 || string.IsNullOrWhiteSpace(expectedCode))
@@ -150,7 +193,7 @@ public sealed class ChatCommandListener : IDisposable
         if (name is null || world is null)
             return true;
 
-        Pending = new PendingPairingRequest(name, world, senderRole);
+        Pending = new PendingPairingRequest(name, world, senderRole, triggerPhrase.Length > 0 ? triggerPhrase : null);
         PendingChanged?.Invoke();
         return true;
     }
@@ -173,9 +216,12 @@ public sealed class ChatCommandListener : IDisposable
 
     /// Dispatches to the Owner's direct "joker" override grammar when the command starts with a reserved
     /// category word, otherwise falls back to collar/chat-transport's normal "alias resolution against a
-    /// locally-defined dictionary." An alias that doesn't match anything the Sub has defined is silently
-    /// ignored, never an error visible to the Owner - same for an unrecognized joker sub-verb.
-    private void Resolve(string commandText)
+    /// locally-defined dictionary." Returns a `LocalTestResult` describing what happened - reused both for
+    /// this dispatch's own diagnostic log line (OnChatMessage) and for the local test tool
+    /// (TestIncomingCommand), so neither can drift from what a real tell actually does. An alias that
+    /// doesn't match anything the Sub has defined is still never an error visible to the Owner - the result
+    /// here is purely local (logged or shown to the Sub only).
+    private LocalTestResult Resolve(string commandText)
     {
         var (firstToken, rest) = SplitFirstToken(commandText);
         var permissions = config.Permissions;
@@ -183,40 +229,28 @@ public sealed class ChatCommandListener : IDisposable
         switch (firstToken.ToLowerInvariant())
         {
             case "title":
-                if (permissions.Title)
-                    HandleForceTitle(rest);
-                return;
+                return permissions.Title ? HandleForceTitle(rest) : LocalTestResult.Fail("Title permission is not enabled.");
             case "outfit":
-                if (permissions.Outfit)
-                    HandleForceOutfit(rest);
-                return;
+                return permissions.Outfit ? HandleForceOutfit(rest) : LocalTestResult.Fail("Outfit permission is not enabled.");
             case "gesture":
-                if (permissions.Gesture && config.TosAcknowledged)
-                    HandleForceGesture(rest);
-                return;
+                return permissions.Gesture && config.TosAcknowledged ? HandleForceGesture(rest) : LocalTestResult.Fail("Gesture permission or the automation-risk acknowledgement is not enabled.");
             case "collar":
-                if (permissions.Collar)
-                    HandleForceCollar(rest);
-                return;
+                return permissions.Collar ? HandleForceCollar(rest) : LocalTestResult.Fail("Collar permission is not enabled.");
             case "moodle":
-                if (permissions.Moodles)
-                    HandleForceMoodle(rest);
-                return;
+                return permissions.Moodles ? HandleForceMoodle(rest) : LocalTestResult.Fail("Moodles permission is not enabled.");
             case "restraint":
-                if (permissions.Restraints && config.TosAcknowledged)
-                    HandleForceRestraint(rest);
-                return;
+                return permissions.Restraints && config.TosAcknowledged ? HandleForceRestraint(rest) : LocalTestResult.Fail("Restraints permission or the automation-risk acknowledgement is not enabled.");
         }
 
-        ResolveAlias(commandText);
+        return ResolveAlias(commandText);
     }
 
-    private void HandleForceTitle(string rest)
+    private LocalTestResult HandleForceTitle(string rest)
     {
         if (rest.Equals("clear", StringComparison.OrdinalIgnoreCase))
         {
             title.ForceClear();
-            return;
+            return LocalTestResult.Ok("Title cleared.");
         }
 
         const string createPrefix = "create ";
@@ -224,19 +258,23 @@ public sealed class ChatCommandListener : IDisposable
         {
             var text = StripQuotes(rest[createPrefix.Length..].Trim());
             if (text.Length > 0)
+            {
                 title.ForceApply(text);
-            return;
+                return LocalTestResult.Ok($"Title \"{text}\" applied.");
+            }
+            return LocalTestResult.Fail("\"title create\" was given no text.");
         }
 
-        Plugin.Log.Information($"Unrecognized \"title\" override \"{rest}\" - expected \"create <text>\" or \"clear\".");
+        return LocalTestResult.Fail($"Unrecognized \"title\" override \"{rest}\" - expected \"create <text>\" or \"clear\".");
     }
 
-    private void HandleForceOutfit(string rest)
+    private LocalTestResult HandleForceOutfit(string rest)
     {
         if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
         {
-            outfit.ForceUnlock();
-            return;
+            return outfit.ForceUnlock()
+                ? LocalTestResult.Ok("Outfit unlocked.")
+                : LocalTestResult.Fail("Outfit unlock failed - nothing was locked.");
         }
 
         const string lockPrefix = "lock ";
@@ -244,46 +282,57 @@ public sealed class ChatCommandListener : IDisposable
         {
             var name = StripQuotes(rest[lockPrefix.Length..].Trim());
             if (name.Length > 0)
-                outfit.ForceApply(name);
-            return;
+            {
+                return outfit.ForceApply(name)
+                    ? LocalTestResult.Ok($"Outfit \"{name}\" applied and locked.")
+                    : LocalTestResult.Fail($"No wardrobe design named \"{name}\" (or the apply failed).");
+            }
+            return LocalTestResult.Fail("\"outfit lock\" was given no design name.");
         }
 
-        Plugin.Log.Information($"Unrecognized \"outfit\" override \"{rest}\" - expected \"lock <design name>\" or \"unlock\".");
+        return LocalTestResult.Fail($"Unrecognized \"outfit\" override \"{rest}\" - expected \"lock <design name>\" or \"unlock\".");
     }
 
-    private void HandleForceGesture(string rest)
+    private LocalTestResult HandleForceGesture(string rest)
     {
         var name = StripQuotes(rest.Trim());
-        if (name.Length > 0)
-            gesture.ForceApply(name);
+        if (name.Length == 0)
+            return LocalTestResult.Fail("\"gesture\" was given no name.");
+
+        return gesture.ForceApply(name)
+            ? LocalTestResult.Ok($"Gesture \"{name}\" played.")
+            : LocalTestResult.Fail($"No gesture matching \"{name}\" (or it failed to play).");
     }
 
     /// Only `collar unlock` exists - the collar only ever applies as a side effect of pairing acceptance
     /// (see AcceptPending), never through a chat command, so there is no `collar lock` counterpart to
     /// title/outfit's own force-apply grammar.
-    private void HandleForceCollar(string rest)
+    private LocalTestResult HandleForceCollar(string rest)
     {
         if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
         {
-            collar.ForceUnlock();
-            return;
+            return collar.ForceUnlock()
+                ? LocalTestResult.Ok("Collar unlocked.")
+                : LocalTestResult.Fail("Collar unlock failed - nothing was locked.");
         }
 
         if (rest.Equals("lock", StringComparison.OrdinalIgnoreCase))
         {
-            collar.ForceApply();
-            return;
+            return collar.ForceApply()
+                ? LocalTestResult.Ok("Collar applied and locked.")
+                : LocalTestResult.Fail("Collar apply failed - no collar item configured.");
         }
 
-        Plugin.Log.Information($"Unrecognized \"collar\" override \"{rest}\" - expected \"lock\" or \"unlock\".");
+        return LocalTestResult.Fail($"Unrecognized \"collar\" override \"{rest}\" - expected \"lock\" or \"unlock\".");
     }
 
-    private void HandleForceMoodle(string rest)
+    private LocalTestResult HandleForceMoodle(string rest)
     {
         if (rest.Equals("clear", StringComparison.OrdinalIgnoreCase))
         {
-            moodles.ForceClear();
-            return;
+            return moodles.ForceClear()
+                ? LocalTestResult.Ok("Moodle cleared.")
+                : LocalTestResult.Fail("Moodle clear failed - Moodles may be unavailable.");
         }
 
         const string applyPrefix = "apply ";
@@ -291,19 +340,24 @@ public sealed class ChatCommandListener : IDisposable
         {
             var name = StripQuotes(rest[applyPrefix.Length..].Trim());
             if (name.Length > 0)
-                moodles.ForceApply(name);
-            return;
+            {
+                return moodles.ForceApply(name)
+                    ? LocalTestResult.Ok($"Moodle \"{name}\" applied.")
+                    : LocalTestResult.Fail($"No Moodles status named \"{name}\" (or the apply failed).");
+            }
+            return LocalTestResult.Fail("\"moodle apply\" was given no status name.");
         }
 
-        Plugin.Log.Information($"Unrecognized \"moodle\" override \"{rest}\" - expected \"apply <status name>\" or \"clear\".");
+        return LocalTestResult.Fail($"Unrecognized \"moodle\" override \"{rest}\" - expected \"apply <status name>\" or \"clear\".");
     }
 
-    private void HandleForceRestraint(string rest)
+    private LocalTestResult HandleForceRestraint(string rest)
     {
         if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
         {
-            restraints.ForceUnlock();
-            return;
+            return restraints.ForceUnlock()
+                ? LocalTestResult.Ok("Restraints unlocked.")
+                : LocalTestResult.Fail("Restraint unlock failed - nothing was force-locked.");
         }
 
         const string lockPrefix = "lock ";
@@ -312,15 +366,28 @@ public sealed class ChatCommandListener : IDisposable
             var remainder = rest[lockPrefix.Length..];
             if (RestraintCommand.TryParseLockCommand(remainder, out var name, out var rules) && name.Length > 0)
             {
-                if (rules is { Count: > 0 })
-                    restraints.ForceApply(name, rules);
-                else
-                    restraints.ForceApply(name);
+                var applied = rules is { Count: > 0 } ? restraints.ForceApply(name, rules) : restraints.ForceApply(name);
+                return applied
+                    ? LocalTestResult.Ok($"Restraint device \"{name}\" applied.")
+                    : LocalTestResult.Fail($"No restraint device named \"{name}\" (or the apply failed).");
             }
-            return;
+            return LocalTestResult.Fail("\"restraint lock\" was given no device name.");
         }
 
-        Plugin.Log.Information($"Unrecognized \"restraint\" override \"{rest}\" - expected \"lock <device name>\" or \"unlock\".");
+        const string wearPrefix = "wear ";
+        if (rest.StartsWith(wearPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var remainder = rest[wearPrefix.Length..];
+            if (RestraintCommand.TryParseWearCommand(remainder, out var slot, out var itemId, out var label, out var rules))
+            {
+                return restraints.ForceApplyAdHoc(slot, itemId, label, rules)
+                    ? LocalTestResult.Ok($"Ad-hoc restraint device \"{label}\" applied.")
+                    : LocalTestResult.Fail($"Ad-hoc restraint device \"{label}\" failed to apply.");
+            }
+            return LocalTestResult.Fail("\"restraint wear\" was malformed - expected \"wear <slot> <itemId> \\\"<label>\\\" rules:...\".");
+        }
+
+        return LocalTestResult.Fail($"Unrecognized \"restraint\" override \"{rest}\" - expected \"lock <device name>\", \"wear <slot> <itemId> \\\"<label>\\\" rules:...\", or \"unlock\".");
     }
 
     private static (string First, string Remainder) SplitFirstToken(string text)
@@ -332,72 +399,84 @@ public sealed class ChatCommandListener : IDisposable
 
     private static string StripQuotes(string text) => text.Trim('"', '\'');
 
-    private void ResolveAlias(string alias)
+    private LocalTestResult ResolveAlias(string alias)
     {
         var aliases = config.Aliases;
         var permissions = config.Permissions;
 
         if (Matches(alias, aliases.ClearTitleAlias))
         {
-            if (permissions.Title)
-                title.Clear();
-            return;
+            if (!permissions.Title)
+                return LocalTestResult.Fail("Title permission is not enabled.");
+            title.Clear();
+            return LocalTestResult.Ok($"Alias \"{alias}\" matched clear-title.");
         }
 
         if (Matches(alias, aliases.UnlockOutfitAlias))
         {
-            if (permissions.Outfit)
-                outfit.Unlock();
-            return;
+            if (!permissions.Outfit)
+                return LocalTestResult.Fail("Outfit permission is not enabled.");
+            outfit.Unlock();
+            return LocalTestResult.Ok($"Alias \"{alias}\" matched unlock-outfit.");
         }
 
         if (Matches(alias, aliases.Follow.EngageAlias))
         {
-            if (permissions.Follow)
-                follow.Engage();
-            return;
+            if (!permissions.Follow)
+                return LocalTestResult.Fail("Follow permission is not enabled.");
+            return follow.Engage()
+                ? LocalTestResult.Ok($"Alias \"{alias}\" matched leash-engage.")
+                : LocalTestResult.Fail("Leash engage failed - movement lock is unavailable.");
         }
 
         if (Matches(alias, aliases.Follow.ReleaseAlias))
         {
-            if (permissions.Follow)
-                follow.Release();
-            return;
+            if (!permissions.Follow)
+                return LocalTestResult.Fail("Follow permission is not enabled.");
+            follow.Release();
+            return LocalTestResult.Ok($"Alias \"{alias}\" matched leash-release.");
         }
 
         var titleAlias = aliases.Titles.FirstOrDefault(a => Matches(alias, a.Alias));
         if (titleAlias is not null)
         {
-            if (permissions.Title)
-                title.Apply(titleAlias);
-            return;
+            if (!permissions.Title)
+                return LocalTestResult.Fail("Title permission is not enabled.");
+            title.Apply(titleAlias);
+            return LocalTestResult.Ok($"Alias \"{alias}\" matched a title.");
         }
 
         var outfitAlias = aliases.Outfits.FirstOrDefault(a => Matches(alias, a.Alias));
         if (outfitAlias is not null)
         {
-            if (permissions.Outfit)
-                outfit.Apply(outfitAlias);
-            return;
+            if (!permissions.Outfit)
+                return LocalTestResult.Fail("Outfit permission is not enabled.");
+            return outfit.Apply(outfitAlias)
+                ? LocalTestResult.Ok($"Alias \"{alias}\" matched an outfit.")
+                : LocalTestResult.Fail($"Alias \"{alias}\" matched an outfit, but it is currently force-locked.");
         }
 
         var gestureAlias = aliases.Gestures.FirstOrDefault(a => Matches(alias, a.Alias));
         if (gestureAlias is not null)
         {
-            if (permissions.Gesture && config.TosAcknowledged)
-                gesture.Apply(gestureAlias);
-            return;
+            if (!(permissions.Gesture && config.TosAcknowledged))
+                return LocalTestResult.Fail("Gesture permission or the automation-risk acknowledgement is not enabled.");
+            return gesture.Apply(gestureAlias)
+                ? LocalTestResult.Ok($"Alias \"{alias}\" matched a gesture.")
+                : LocalTestResult.Fail($"Alias \"{alias}\" matched a gesture, but it failed to play.");
         }
 
         var restraintAlias = aliases.Restraints.FirstOrDefault(a => Matches(alias, a.Alias));
         if (restraintAlias is not null)
         {
-            if (permissions.Restraints && config.TosAcknowledged)
-                restraints.Toggle(restraintAlias);
-            return;
+            if (!(permissions.Restraints && config.TosAcknowledged))
+                return LocalTestResult.Fail("Restraints permission or the automation-risk acknowledgement is not enabled.");
+            return restraints.Toggle(restraintAlias)
+                ? LocalTestResult.Ok($"Alias \"{alias}\" matched a restraint device (toggled).")
+                : LocalTestResult.Fail($"Alias \"{alias}\" matched a restraint device, but it is currently force-locked.");
         }
 
-        Plugin.Log.Information($"Received an unrecognized alias \"{alias}\" from the paired Owner - ignored.");
+        return LocalTestResult.Fail($"No matching alias or reserved-word command for \"{alias}\".");
     }
 
     private static bool Matches(string received, string configured) =>

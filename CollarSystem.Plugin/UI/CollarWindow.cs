@@ -4,10 +4,12 @@ using System.Linq;
 using System.Numerics;
 using CollarSystem.Plugin.Commands;
 using CollarSystem.Plugin.Config;
+using CollarSystem.Plugin.Ipc;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
+using Glamourer.Api.Enums;
 
 namespace CollarSystem.Plugin.UI;
 
@@ -40,21 +42,36 @@ public class CollarWindow : Window, IDisposable
     private GestureCatalogEntry? selectedAliasGesture;
 
     private string newDeviceName = "";
-    private int newDeviceDesignIndex;
+    private int newDeviceSlotIndex;
+    private ulong? newDeviceItemId;
     private bool newDeviceForcedPose;
     private int newDevicePoseIndex;
     private bool newDeviceWalkOnly;
     private bool newDeviceActionBlock;
     private bool newDeviceGagChat;
+    private bool newDeviceArmsCuffed;
+    private string? newDeviceArmsCuffedAnimationId;
+    private bool newDeviceLegsCuffed;
+    private string? newDeviceLegsCuffedAnimationId;
+    private bool newDeviceFullBodyCuffed;
+    private string? newDeviceFullBodyCuffedAnimationId;
 
     private string newRestraintAlias = "";
     private int newRestraintDeviceIndex;
+
+    /// Owner-side ad-hoc device draft (collar/restraints "Owner-authored ad-hoc restraint device") - a
+    /// slot+item picked directly, with no Sub-side captured device to reference by name.
+    private int newAdHocSlotIndex;
+    private ulong? newAdHocItemId;
+    private string newAdHocLabel = "";
+    private readonly RestraintRuleEditState newAdHocRuleEdit = new();
 
     private static readonly string[] PoseNames = ["Ground Sit", "Sit", "Doze"];
 
     private string commandInput = "";
     private string newTitleQuickText = "";
     private string newFollowQuickText = "";
+    private string newRestraintQuickText = "";
     private string? importResult;
     private string? resetImportsResult;
     private bool revealSafeword;
@@ -75,6 +92,12 @@ public class CollarWindow : Window, IDisposable
         public bool WalkOnly;
         public bool ActionBlock;
         public bool GagChat;
+        public bool ArmsCuffed;
+        public string? ArmsCuffedAnimationId;
+        public bool LegsCuffed;
+        public string? LegsCuffedAnimationId;
+        public bool FullBodyCuffed;
+        public string? FullBodyCuffedAnimationId;
     }
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - never saved,
@@ -260,7 +283,7 @@ public class CollarWindow : Window, IDisposable
 
             if (ImGuiCheckbox("Restraints", permissions.Restraints, out var newRestraints))
                 SavePermission(() => permissions.Restraints = newRestraints);
-            IconGlyph.HelpMarker("Lets a paired Owner apply or release a restraint device via a trigger tell. Restraint devices can suppress movement, force walking, block actions, or garble your outgoing chat while active - the gag chat rule rewrites content you actually typed, a heavier automation footprint than the other three - see the Restraints tab and the README's Automation risk section.");
+            IconGlyph.HelpMarker("Lets a paired Owner apply or release a restraint device via a trigger tell. Restraint devices can suppress movement, force walking, block actions, garble your outgoing chat (Gagged), or hold you in a chosen animation (Arms/Legs/Full Body Cuffed) while active - Gagged rewrites content you actually typed, a heavier automation footprint than the others - see the Restraints tab and the README's Automation risk section.");
         }
 
         ImGui.Spacing();
@@ -387,24 +410,22 @@ public class CollarWindow : Window, IDisposable
         }
     }
 
-    /// collar/restraints: tag designs from Restraints' own independent scan (Settings - separate folder
-    /// allowlist from collar/outfit's Wardrobe scan, since bondage/restriction-themed designs and everyday
-    /// outfits live in different Glamourer folders in practice) as restraint devices carrying restriction
-    /// rules, then create Sub-alias entries that toggle them (RestraintCommand.Toggle). Untagged designs
-    /// never appear here - only tagged devices and their aliases do, mirroring Outfit's design-then-alias
-    /// flow.
+    /// collar/restraints: captures a single equipped gear piece (Wrists, Body, etc. - any of the 10
+    /// lockable slots) directly from what's currently equipped, the same capture mechanism CollarState uses
+    /// for the collar item, as a named restraint device carrying restriction rules - no scan/design library
+    /// involved. Then create Sub-alias entries that toggle them (RestraintCommand.Toggle).
     private void DrawRestraintsModule()
     {
         var config = plugin.Configuration;
         IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Tag designs from Restraints' own scan (Settings gear icon - separate folder allowlist from Wardrobe) as restraint devices carrying restriction rules, then alias them below so an Owner - or your own alias - can apply/release them.");
+        IconGlyph.WrappedDisabled("Pick a slot and an item below to capture it as a named restraint device carrying restriction rules, then alias it so an Owner - or your own alias - can apply/release it. The item doesn't need to be equipped or owned.");
 
         var devices = config.RestraintMapping.Devices.Values.ToList();
         if (devices.Count > 0)
         {
             ImGui.Spacing();
-            ImGui.TextUnformatted("Tagged devices");
+            ImGui.TextUnformatted("Captured devices");
             foreach (var device in devices)
             {
                 ImGui.PushID($"device_{device.Id}");
@@ -414,14 +435,17 @@ public class CollarWindow : Window, IDisposable
                     RestraintRuleKind.ForcedPose => $"forced pose ({PoseName(r.PoseModeId)})",
                     RestraintRuleKind.WalkOnly => "walk-only",
                     RestraintRuleKind.ActionBlock => "action-block",
-                    RestraintRuleKind.GagChat => "gag chat",
+                    RestraintRuleKind.GagChat => "gagged",
+                    RestraintRuleKind.ArmsCuffed => "arms cuffed",
+                    RestraintRuleKind.LegsCuffed => "legs cuffed",
+                    RestraintRuleKind.FullBodyCuffed => "full body cuffed",
                     _ => r.Kind.ToString(),
                 }));
-                ImGui.BulletText($"{device.Name}{(active ? " (active)" : "")} - {ruleSummary}");
+                ImGui.BulletText($"{device.Name} ({device.Slot}){(active ? " (active)" : "")} - {ruleSummary}");
                 ImGui.SameLine();
-                if (ImGui.SmallButton("Untag"))
+                if (ImGui.SmallButton("Remove"))
                 {
-                    plugin.RestraintCommand.UntagDevice(device.Id);
+                    plugin.RestraintCommand.RemoveDevice(device.Id);
                     ImGui.PopID();
                     break;
                 }
@@ -430,38 +454,58 @@ public class CollarWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        var designs = plugin.RestraintCommand.ScannedDesigns();
-        if (designs.Count == 0)
+        ImGui.TextUnformatted("Capture a new device");
+        var slotNames = LockableEquipSlots.All.Select(s => s.ToString()).ToArray();
+        newDeviceSlotIndex = Math.Clamp(newDeviceSlotIndex, 0, slotNames.Length - 1);
+        ImGui.InputText("Device name##newDevice", ref newDeviceName, 32);
+        ImGui.Combo("Slot##newDevice", ref newDeviceSlotIndex, slotNames, slotNames.Length);
+        IconGlyph.HelpMarker("Which equipment slot this device occupies. Applying it locks only this one slot, the same way a locked Outfit alias locks only the slots its design touches.");
+
+        var newDeviceChosenLabel = newDeviceItemId is { } id ? GetItemName(id) : "(none chosen)";
+        ImGui.TextUnformatted($"Item: {newDeviceChosenLabel}");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Choose item...##newDevice"))
         {
-            ImGui.TextDisabled("No scanned designs yet - rescan Restraints in Settings (gear icon) first.");
+            var slot = LockableEquipSlots.All[newDeviceSlotIndex];
+            plugin.ItemPickerWindow.Open(slot, (chosenId, _) => newDeviceItemId = chosenId);
         }
-        else
+        IconGlyph.HelpMarker("Pick any item valid for the chosen slot - it does not need to be equipped or owned.");
+
+        ImGui.Checkbox("Forced pose##newDevice", ref newDeviceForcedPose);
+        IconGlyph.HelpMarker("Places you into the chosen pose and fully blocks movement input until released.");
+        if (newDeviceForcedPose)
+            ImGui.Combo("Pose##newDevice", ref newDevicePoseIndex, PoseNames, PoseNames.Length);
+
+        ImGui.Checkbox("Walk-only##newDevice", ref newDeviceWalkOnly);
+        IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
+
+        ImGui.Checkbox("Action block##newDevice", ref newDeviceActionBlock);
+        IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
+
+        ImGui.Checkbox("Gagged##newDevice", ref newDeviceGagChat);
+        IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
+
+        DrawBoundAnimationPicker("Arms Cuffed", ref newDeviceArmsCuffed, newDeviceArmsCuffedAnimationId, id => newDeviceArmsCuffedAnimationId = id, "newDeviceArms");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+
+        DrawBoundAnimationPicker("Legs Cuffed", ref newDeviceLegsCuffed, newDeviceLegsCuffedAnimationId, id => newDeviceLegsCuffedAnimationId = id, "newDeviceLegs");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+
+        DrawBoundAnimationPicker("Full Body Cuffed", ref newDeviceFullBodyCuffed, newDeviceFullBodyCuffedAnimationId, id => newDeviceFullBodyCuffedAnimationId = id, "newDeviceFullBody");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
+
+        var hasAnyRule = newDeviceForcedPose || newDeviceWalkOnly || newDeviceActionBlock || newDeviceGagChat || newDeviceArmsCuffed || newDeviceLegsCuffed || newDeviceFullBodyCuffed;
+        var boundAnimationsConfigured = (!newDeviceArmsCuffed || newDeviceArmsCuffedAnimationId is not null)
+            && (!newDeviceLegsCuffed || newDeviceLegsCuffedAnimationId is not null)
+            && (!newDeviceFullBodyCuffed || newDeviceFullBodyCuffedAnimationId is not null);
+        if (hasAnyRule && !boundAnimationsConfigured)
+            IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before capturing.");
+
+        using (ImRaii.Disabled(newDeviceName.Length == 0 || newDeviceItemId is null || !hasAnyRule || !boundAnimationsConfigured))
         {
-            ImGui.TextUnformatted("Tag a new device");
-            var designNames = designs.Select(d => d.Name).ToArray();
-            newDeviceDesignIndex = Math.Clamp(newDeviceDesignIndex, 0, designNames.Length - 1);
-            ImGui.InputText("Device name##newDevice", ref newDeviceName, 32);
-            ImGui.Combo("Design##newDevice", ref newDeviceDesignIndex, designNames, designNames.Length);
-            IconGlyph.HelpMarker("Which scanned Glamourer design this device applies when engaged - its equipment slots lock the same way a locked Outfit alias's do.");
-
-            ImGui.Checkbox("Forced pose##newDevice", ref newDeviceForcedPose);
-            IconGlyph.HelpMarker("Places you into the chosen pose and fully blocks movement input until released.");
-            if (newDeviceForcedPose)
-                ImGui.Combo("Pose##newDevice", ref newDevicePoseIndex, PoseNames, PoseNames.Length);
-
-            ImGui.Checkbox("Walk-only##newDevice", ref newDeviceWalkOnly);
-            IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
-
-            ImGui.Checkbox("Action block##newDevice", ref newDeviceActionBlock);
-            IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
-
-            ImGui.Checkbox("Gag chat##newDevice", ref newDeviceGagChat);
-            IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
-
-            var hasAnyRule = newDeviceForcedPose || newDeviceWalkOnly || newDeviceActionBlock || newDeviceGagChat;
-            if (ImGui.Button("Tag device") && newDeviceName.Length > 0 && hasAnyRule)
+            if (ImGui.Button("Capture device") && newDeviceItemId is { } chosenItemId)
             {
-                var design = designs[newDeviceDesignIndex];
+                var slot = LockableEquipSlots.All[newDeviceSlotIndex];
                 var rules = new List<RestraintRuleAssignment>();
                 if (newDeviceForcedPose)
                     rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = newDevicePoseIndex + 1 });
@@ -471,10 +515,21 @@ public class CollarWindow : Window, IDisposable
                     rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ActionBlock });
                 if (newDeviceGagChat)
                     rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
+                if (newDeviceArmsCuffed)
+                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = newDeviceArmsCuffedAnimationId });
+                if (newDeviceLegsCuffed)
+                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = newDeviceLegsCuffedAnimationId });
+                if (newDeviceFullBodyCuffed)
+                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = newDeviceFullBodyCuffedAnimationId });
 
-                plugin.RestraintCommand.TagDevice(null, design.DesignId, newDeviceName, rules);
-                newDeviceName = "";
-                newDeviceForcedPose = newDeviceWalkOnly = newDeviceActionBlock = newDeviceGagChat = false;
+                if (plugin.RestraintCommand.CaptureDeviceFromItem(slot, chosenItemId, newDeviceName, rules))
+                {
+                    newDeviceName = "";
+                    newDeviceItemId = null;
+                    newDeviceForcedPose = newDeviceWalkOnly = newDeviceActionBlock = newDeviceGagChat = false;
+                    newDeviceArmsCuffed = newDeviceLegsCuffed = newDeviceFullBodyCuffed = false;
+                    newDeviceArmsCuffedAnimationId = newDeviceLegsCuffedAnimationId = newDeviceFullBodyCuffedAnimationId = null;
+                }
             }
         }
 
@@ -518,6 +573,28 @@ public class CollarWindow : Window, IDisposable
     }
 
     private static string PoseName(int poseModeId) => poseModeId is >= 1 and <= 3 ? PoseNames[poseModeId - 1] : "unknown";
+
+    /// collar/restraints "Arms Cuffed and Legs Cuffed rules...": a checkbox plus the same searchable
+    /// animation picker `collar/gesture`'s "Add animation..." button already opens (AnimationPickerWindow),
+    /// reused here for the Sub's device-capture UI and the Owner's per-quick-command rule editor alike.
+    /// `onChosen` writes back to whatever field/property backs `currentAnimationId` - a plain delegate
+    /// rather than `ref string?`, since the picker's selection callback fires on a later frame and a ref
+    /// parameter can't be captured by that closure.
+    private void DrawBoundAnimationPicker(string label, ref bool enabled, string? currentAnimationId, Action<string> onChosen, string idSuffix)
+    {
+        ImGui.Checkbox($"{label}##{idSuffix}", ref enabled);
+        if (!enabled)
+            return;
+
+        ImGui.Indent();
+        var catalog = plugin.Configuration.GestureMapping.LocalCatalog;
+        var chosenLabel = currentAnimationId is { } id && catalog.TryGetValue(id, out var entry) ? entry.Label : "(none chosen)";
+        ImGui.TextUnformatted($"Animation: {chosenLabel}");
+        ImGui.SameLine();
+        if (ImGui.SmallButton($"Choose##{idSuffix}"))
+            plugin.AnimationPickerWindow.Open(chosen => onChosen(chosen.Id));
+        ImGui.Unindent();
+    }
 
     private void DrawGestureModule()
     {
@@ -878,11 +955,12 @@ public class CollarWindow : Window, IDisposable
     }
 
     /// collar/restraints: Owner-tab quick commands - no per-category import button here (collar/catalog-
-    /// sync's unified "Import commands" is the only way to populate this list; see DrawOwnerModule). Every
-    /// imported entry starts with no rules assigned (RestraintCommand.ExportNames now exports every
-    /// scanned design, tagged or not), so each row exposes a "Configure rules" editor - the same rule set
-    /// DrawRestraintsModule's "Tag a new device" section uses - and Send/Copy stay disabled until at least
-    /// one rule is assigned (collar/restraints "Owner quick command with no rules assigned yet").
+    /// sync's unified "Import commands" is the only way to populate this list, or the Owner can add one
+    /// manually below (collar/restraints "Owner can add a restraint quick command by name") by typing a
+    /// device name the Sub told them, the same freeform pattern DrawTitleQuickSection uses. Every entry
+    /// starts with no rules assigned, so each row exposes a "Configure rules" editor - the same rule set
+    /// DrawRestraintsModule's device-capture section uses - and Send/Copy stay disabled until at least one
+    /// rule is assigned (collar/restraints "Owner quick command with no rules assigned yet").
     private void DrawRestraintQuickSection(bool canSend)
     {
         var quick = plugin.Configuration.QuickCommands.Restraints;
@@ -891,6 +969,22 @@ public class CollarWindow : Window, IDisposable
             quick.Clear();
             plugin.Configuration.Save();
         });
+
+        ImGui.SetNextItemWidth(220);
+        ImGui.InputText("##newQuickRestraint", ref newRestraintQuickText, 32);
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Add Command##quickRestraint") && newRestraintQuickText.Trim().Length > 0)
+        {
+            var name = newRestraintQuickText.Trim();
+            quick.Add(new QuickCommand { Label = name, Command = $"restraint lock \"{name}\"" });
+            plugin.Configuration.Save();
+            newRestraintQuickText = "";
+        }
+        IconGlyph.HelpMarker("Adds a restraint quick command by name - type the exact device name your Sub told you. Configure its rules below before it can be sent.");
+
+        ImGui.Spacing();
+        DrawAdHocRestraintSection(canSend);
+        ImGui.Spacing();
 
         DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend);
         IconGlyph.HelpMarker("Force-releases every active restraint device and clears the force-lock, the same as your Sub's panic would for restraints specifically.");
@@ -904,6 +998,65 @@ public class CollarWindow : Window, IDisposable
         using var _ = ImRaii.Child("restraintsQuickList", new Vector2(0, 260), true);
         foreach (var cmd in quick.ToArray())
             DrawRestraintQuickRow(cmd, quick, canSend);
+    }
+
+    /// collar/restraints "Owner-authored ad-hoc restraint device": lets the Owner pick a slot and item
+    /// directly via `ItemPickerWindow` and assign rules, with no Sub-side captured device to reference by
+    /// name. Sends via the `restraint wear` grammar (RestraintCommand.BuildWearCommand) rather than being
+    /// added to the name-based `quick` list, since its full definition already travels in the command text.
+    private void DrawAdHocRestraintSection(bool canSend)
+    {
+        IconGlyph.WrappedDisabled("Or define a device's gear directly - no need to know what your Sub named anything.");
+
+        var slotNames = LockableEquipSlots.All.Select(s => s.ToString()).ToArray();
+        newAdHocSlotIndex = Math.Clamp(newAdHocSlotIndex, 0, slotNames.Length - 1);
+        ImGui.SetNextItemWidth(160);
+        ImGui.Combo("Slot##adHocRestraint", ref newAdHocSlotIndex, slotNames, slotNames.Length);
+
+        var chosenLabel = newAdHocItemId is { } id ? GetItemName(id) : "(none chosen)";
+        ImGui.TextUnformatted($"Item: {chosenLabel}");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Choose item...##adHocRestraint"))
+        {
+            var slot = LockableEquipSlots.All[newAdHocSlotIndex];
+            plugin.ItemPickerWindow.Open(slot, (chosenId, _) => newAdHocItemId = chosenId);
+        }
+
+        ImGui.SetNextItemWidth(220);
+        ImGui.InputText("Label##adHocRestraint", ref newAdHocLabel, 32);
+        IconGlyph.HelpMarker("Your own reference name for this device - never matched against anything on your Sub's side.");
+
+        ImGui.Checkbox("Forced pose##adHocRestraint", ref newAdHocRuleEdit.ForcedPose);
+        if (newAdHocRuleEdit.ForcedPose)
+            ImGui.Combo("Pose##adHocRestraint", ref newAdHocRuleEdit.PoseIndex, PoseNames, PoseNames.Length);
+        ImGui.Checkbox("Walk-only##adHocRestraint", ref newAdHocRuleEdit.WalkOnly);
+        ImGui.Checkbox("Action block##adHocRestraint", ref newAdHocRuleEdit.ActionBlock);
+        ImGui.Checkbox("Gagged##adHocRestraint", ref newAdHocRuleEdit.GagChat);
+        DrawBoundAnimationPicker("Arms Cuffed", ref newAdHocRuleEdit.ArmsCuffed, newAdHocRuleEdit.ArmsCuffedAnimationId, aid => newAdHocRuleEdit.ArmsCuffedAnimationId = aid, "adHocRestraintArms");
+        DrawBoundAnimationPicker("Legs Cuffed", ref newAdHocRuleEdit.LegsCuffed, newAdHocRuleEdit.LegsCuffedAnimationId, aid => newAdHocRuleEdit.LegsCuffedAnimationId = aid, "adHocRestraintLegs");
+        DrawBoundAnimationPicker("Full Body Cuffed", ref newAdHocRuleEdit.FullBodyCuffed, newAdHocRuleEdit.FullBodyCuffedAnimationId, aid => newAdHocRuleEdit.FullBodyCuffedAnimationId = aid, "adHocRestraintFullBody");
+
+        var hasAnyRule = newAdHocRuleEdit.ForcedPose || newAdHocRuleEdit.WalkOnly || newAdHocRuleEdit.ActionBlock || newAdHocRuleEdit.GagChat
+            || newAdHocRuleEdit.ArmsCuffed || newAdHocRuleEdit.LegsCuffed || newAdHocRuleEdit.FullBodyCuffed;
+        var boundAnimationsConfigured = (!newAdHocRuleEdit.ArmsCuffed || newAdHocRuleEdit.ArmsCuffedAnimationId is not null)
+            && (!newAdHocRuleEdit.LegsCuffed || newAdHocRuleEdit.LegsCuffedAnimationId is not null)
+            && (!newAdHocRuleEdit.FullBodyCuffed || newAdHocRuleEdit.FullBodyCuffedAnimationId is not null);
+        if (hasAnyRule && !boundAnimationsConfigured)
+            IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before sending.");
+
+        var ready = newAdHocItemId is not null && newAdHocLabel.Trim().Length > 0 && hasAnyRule && boundAnimationsConfigured;
+        if (ready && newAdHocItemId is { } readyItemId)
+        {
+            var slot = LockableEquipSlots.All[newAdHocSlotIndex];
+            var command = RestraintCommand.BuildWearCommand(slot, readyItemId, newAdHocLabel.Trim(), ToRules(newAdHocRuleEdit));
+            ImGui.TextUnformatted("Send this ad-hoc device:");
+            ContinueRowOrWrap(ButtonWidth("Send"));
+            DrawSendCopyButtons(command, canSend, "adHocRestraint");
+        }
+        else
+        {
+            IconGlyph.WrappedColored(Theme.Warning, "Choose a slot, an item, a label, and at least one rule before this can be sent.");
+        }
     }
 
     private void DrawRestraintQuickRow(QuickCommand cmd, List<QuickCommand> list, bool canSend)
@@ -955,10 +1108,19 @@ public class CollarWindow : Window, IDisposable
                 ImGui.Combo("Pose##restraintQuickRule", ref edit.PoseIndex, PoseNames, PoseNames.Length);
             ImGui.Checkbox("Walk-only##restraintQuickRule", ref edit.WalkOnly);
             ImGui.Checkbox("Action block##restraintQuickRule", ref edit.ActionBlock);
-            ImGui.Checkbox("Gag chat##restraintQuickRule", ref edit.GagChat);
+            ImGui.Checkbox("Gagged##restraintQuickRule", ref edit.GagChat);
+            DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"restraintQuickRuleArms_{cmd.Label}");
+            DrawBoundAnimationPicker("Legs Cuffed", ref edit.LegsCuffed, edit.LegsCuffedAnimationId, id => edit.LegsCuffedAnimationId = id, $"restraintQuickRuleLegs_{cmd.Label}");
+            DrawBoundAnimationPicker("Full Body Cuffed", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"restraintQuickRuleFullBody_{cmd.Label}");
 
-            var hasAnyRule = edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat;
-            using (ImRaii.Disabled(!hasAnyRule))
+            var hasAnyRule = edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed;
+            var boundAnimationsConfigured = (!edit.ArmsCuffed || edit.ArmsCuffedAnimationId is not null)
+                && (!edit.LegsCuffed || edit.LegsCuffedAnimationId is not null)
+                && (!edit.FullBodyCuffed || edit.FullBodyCuffedAnimationId is not null);
+            if (hasAnyRule && !boundAnimationsConfigured)
+                IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before saving.");
+
+            using (ImRaii.Disabled(!hasAnyRule || !boundAnimationsConfigured))
             {
                 if (ImGui.SmallButton("Save rules##restraintQuickRule"))
                 {
@@ -990,6 +1152,9 @@ public class CollarWindow : Window, IDisposable
                 case RestraintRuleKind.WalkOnly: edit.WalkOnly = true; break;
                 case RestraintRuleKind.ActionBlock: edit.ActionBlock = true; break;
                 case RestraintRuleKind.GagChat: edit.GagChat = true; break;
+                case RestraintRuleKind.ArmsCuffed: edit.ArmsCuffed = true; edit.ArmsCuffedAnimationId = rule.AnimationId; break;
+                case RestraintRuleKind.LegsCuffed: edit.LegsCuffed = true; edit.LegsCuffedAnimationId = rule.AnimationId; break;
+                case RestraintRuleKind.FullBodyCuffed: edit.FullBodyCuffed = true; edit.FullBodyCuffedAnimationId = rule.AnimationId; break;
             }
         }
         return edit;
@@ -1006,6 +1171,12 @@ public class CollarWindow : Window, IDisposable
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ActionBlock });
         if (edit.GagChat)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
+        if (edit.ArmsCuffed)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = edit.ArmsCuffedAnimationId });
+        if (edit.LegsCuffed)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = edit.LegsCuffedAnimationId });
+        if (edit.FullBodyCuffed)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = edit.FullBodyCuffedAnimationId });
         return rules;
     }
 

@@ -7,7 +7,7 @@ Establishes the consent boundary the whole collar system depends on: no command 
 ## Requirements
 
 ### Requirement: Configured-identity pairing consent
-The system SHALL NOT apply any Owner-issued command to a Sub's local state until the Sub has explicitly configured that Owner's exact character name and world, and enabled an explicit "Paired" setting. The system SHALL NOT auto-enable this setting under any configuration. Peer identity SHALL be established by matching the configured character name and world against the verified sender of an incoming chat message - a value FFXIV's own server guarantees cannot be forged - rather than by a shared code or free-text entry. When the accepting Sub has both a configured collar item and the "Collar" permission enabled (see `collar/collaring`), accepting a pairing request SHALL also apply and lock that collar item as part of the same action.
+The system SHALL NOT apply any Owner-issued command to a Sub's local state until the Sub has explicitly configured that Owner's exact character name and world, and enabled an explicit "Paired" setting. The system SHALL NOT auto-enable this setting under any configuration. Peer identity SHALL be established by matching the configured character name and world against the verified sender of an incoming chat message - a value FFXIV's own server guarantees cannot be forged - rather than by a shared code or free-text entry. The handshake message that establishes a pairing request SHALL also carry the sending side's own currently-configured trigger phrase, and accepting that request SHALL capture it as the peer's trigger phrase alongside their name and world, so the two sides never need to separately, manually agree on a matching trigger phrase. When the accepting Sub has both a configured collar item and the "Collar" permission enabled (see `collar/collaring`), accepting a pairing request SHALL also apply and lock that collar item as part of the same action.
 
 #### Scenario: Sub configures and enables pairing
 - **WHEN** a Sub enters an Owner's exact character name and world in Settings and explicitly enables the "Paired" setting
@@ -28,6 +28,14 @@ The system SHALL NOT apply any Owner-issued command to a Sub's local state until
 #### Scenario: Accepting a pairing request with no collar configured
 - **WHEN** a Sub accepts a pending pairing request, and the Sub has no collar item configured, or the "Collar" permission is disabled
 - **THEN** accepting completes exactly as it did before, with no equipment change
+
+#### Scenario: Accepting a pairing request captures the peer's trigger phrase
+- **WHEN** a Sub accepts a pending pairing request whose handshake message declared the sender's trigger phrase
+- **THEN** that trigger phrase is stored as the peer's trigger phrase, to be used when composing future outgoing commands to that peer
+
+#### Scenario: Handshake from an un-updated peer omits a trigger phrase
+- **WHEN** a pairing request's handshake message does not declare a trigger phrase (an older paired client)
+- **THEN** accepting the request completes exactly as it did before, with no peer trigger phrase captured
 
 ### Requirement: Scoped, revocable permissions
 The system SHALL let a paired Sub independently enable or disable each command category (title, outfit, gesture, follow) at any time. The system SHALL reject a command in a category the Sub has not enabled, even if the pairing itself remains active.

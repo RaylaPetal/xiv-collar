@@ -22,22 +22,29 @@ public sealed class ChatComposer
     /// idea which, since both are just text appended after the trigger phrase.
     public string Compose(string command) => Wrap(command);
 
-    /// collar/pairing's one-time handshake message: the keyword, this side's own declared Role, and this
-    /// side's own code - the role lets the receiving side's Pending prompt show what the sender thinks
-    /// this pairing will be. No `/tell` target - there's no captured peer identity yet to address it to,
-    /// so the Owner/Sub types the recipient themselves the same way they'd start any other tell.
+    /// collar/pairing's one-time handshake message: the keyword, this side's own declared Role, this
+    /// side's own code, and (collar/chat-transport) this side's own currently-configured trigger phrase -
+    /// the role lets the receiving side's Pending prompt show what the sender thinks this pairing will be,
+    /// and the trigger phrase lets the receiving side compose future commands using the phrase this side
+    /// actually expects, instead of needing to manually match it. No `/tell` target - there's no captured
+    /// peer identity yet to address it to, so the Owner/Sub types the recipient themselves the same way
+    /// they'd start any other tell.
     public string ComposePairing()
     {
         var roleToken = config.Role == PluginRole.Owner ? "owner" : "sub";
-        return $"collarpair {roleToken} {config.Pairing.MyCode}";
+        return $"collarpair {roleToken} {config.Pairing.MyCode} {config.TriggerPhrase.Trim()}";
     }
 
+    /// collar/chat-transport: uses the peer's trigger phrase captured during pairing (see
+    /// PairingState.PeerTriggerPhrase) when known, so an already-paired relationship can never silently
+    /// diverge again - falls back to this side's own configured TriggerPhrase only when no peer phrase has
+    /// been captured (no pairing yet, or a peer whose handshake didn't declare one).
     private string Wrap(string body)
     {
-        var trigger = config.TriggerPhrase.Trim();
+        var pairing = config.Pairing;
+        var trigger = (!string.IsNullOrWhiteSpace(pairing.PeerTriggerPhrase) ? pairing.PeerTriggerPhrase : config.TriggerPhrase).Trim();
         var full = $"{trigger} {body}".Trim();
 
-        var pairing = config.Pairing;
         if (string.IsNullOrWhiteSpace(pairing.PeerName) || string.IsNullOrWhiteSpace(pairing.PeerWorld))
             return full;
 

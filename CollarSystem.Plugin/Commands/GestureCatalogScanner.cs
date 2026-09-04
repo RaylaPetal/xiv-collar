@@ -155,7 +155,10 @@ internal static partial class GestureTriggerResolver
             }
             var baseGroundSit = path.EndsWith("/jmn.pap", StringComparison.OrdinalIgnoreCase);
             if (baseGroundSit) Add(new GestureTrigger { Kind = GestureTriggerKind.Pose, EmoteModeId = 1, CPoseState = 0 });
-            else if (path.EndsWith(".pap", StringComparison.OrdinalIgnoreCase) && Lookup(path[..^4]) is { } cmd)
+            // collar/gesture: `Length: > 0` (not just `is { }`) - some emotes resolve via Lookup with a
+            // valid row reference but blank TextCommand text (see BuildIndex), which would otherwise
+            // catalog an unplayable "/ motion"-style trigger that always fails when played.
+            else if (path.EndsWith(".pap", StringComparison.OrdinalIgnoreCase) && Lookup(path[..^4]) is { Length: > 0 } cmd)
                 Add(new GestureTrigger { Kind = GestureTriggerKind.SlashCommand, SlashCommand = cmd });
         }
         return result;
