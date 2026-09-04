@@ -48,8 +48,14 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
                 for (var optionOrder = 0; optionOrder < group.Options.Count; optionOrder++)
                 {
                     var option = group.Options[optionOrder];
-                    var selections = groups.Where(g => !g.Implicit).ToDictionary(g => g.Name,
-                        g => g == group ? SelectionFor(g, option.Name) : g.Selected.ToList());
+                    // Not `.ToDictionary(g => g.Name, ...)` - real mods can have two option groups that
+                    // share the same displayed name (an empty/missing name in a group's own JSON, or
+                    // just author choice), which would throw here exactly like the same-shaped bug in
+                    // GestureCommand.Rescan's own dictionary build. Last-one-wins on a name collision
+                    // instead of crashing the whole scan.
+                    var selections = new Dictionary<string, List<string>>();
+                    foreach (var g in groups.Where(g => !g.Implicit))
+                        selections[g.Name] = g == group ? SelectionFor(g, option.Name) : g.Selected.ToList();
                     var triggers = GestureTriggerResolver.Detect(group.Name, option.Name, option.Paths);
                     if (triggers.Count == 0) triggers.Add(null);
                     for (var triggerOrder = 0; triggerOrder < triggers.Count; triggerOrder++)

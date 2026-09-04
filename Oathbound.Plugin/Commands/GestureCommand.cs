@@ -78,7 +78,16 @@ public sealed class GestureCommand
         LastScanTotalMods = result.TotalMods;
         LastScanError = result.Error;
         if (result.Error != null) return;
-        config.GestureMapping.LocalCatalog = result.Entries.ToDictionary(e => e.Id);
+
+        // Not `.ToDictionary(e => e.Id)` - `StableId` hashes ModDirectory/GroupName/AnimationName/Trigger
+        // only, so two distinct groups/options that happen to share a name and produce no detected
+        // trigger (common - most options aren't emotes) can legitimately hash to the same id. ToDictionary
+        // throws on that; a plain indexer assignment keeps the last-scanned entry for a colliding id
+        // instead of crashing the whole rescan.
+        var catalog = new Dictionary<string, GestureCatalogEntry>();
+        foreach (var entry in result.Entries)
+            catalog[entry.Id] = entry;
+        config.GestureMapping.LocalCatalog = catalog;
         MigrateAliases();
         config.Save();
     }
