@@ -89,15 +89,18 @@ public sealed class GestureCommand
         return mods is null ? [] : mods.Select(x => (x.Key, x.Value, penumbra.TryGetModPath(x.Key, x.Value))).OrderBy(x => x.Value).ToList();
     }
 
+    /// collar/catalog-sync: serializes only `GestureExportEntry`'s slim shape, not the full
+    /// `GestureCatalogEntry` - see that type's own doc comment for why (the exported file's size scales
+    /// with entry count, not with how many option groups each entry's source mod happens to have).
     public string ExportCatalog() => string.Join("\n", config.GestureMapping.LocalCatalog.Values
         .Where(e => e.Trigger != null).OrderBy(e => e.Label)
-        .Select(e => ExportPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(e)))));
+        .Select(e => ExportPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(GestureExportEntry.From(e))))));
 
-    public static bool TryParseExport(string line, out GestureCatalogEntry? entry)
+    public static bool TryParseExport(string line, out GestureExportEntry? entry)
     {
         entry = null;
         if (!line.StartsWith(ExportPrefix, StringComparison.Ordinal)) return false;
-        try { entry = JsonSerializer.Deserialize<GestureCatalogEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[ExportPrefix.Length..]))); return entry?.Trigger != null; }
+        try { entry = JsonSerializer.Deserialize<GestureExportEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[ExportPrefix.Length..]))); return entry?.Trigger != null; }
         catch { return false; }
     }
 

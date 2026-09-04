@@ -61,6 +61,21 @@ public sealed class MoodlesCommand
 
     public bool ForceClear() => moodles.ClearStatus();
 
+    /// collar/moodles "Sub can self-apply or self-clear a Moodle via alias": looks up by `StatusId` first
+    /// (LocalCatalog is already keyed by it), falling back to a name match the same way `ForceApply` does,
+    /// so an alias created before a rescan renamed/removed its target status still has a chance to resolve.
+    /// Thin wrapper - the underlying apply logic is entirely `ForceApply`'s, never duplicated.
+    public bool Apply(MoodlesAliasDefinition alias)
+    {
+        if (!string.IsNullOrEmpty(alias.StatusId) && config.MoodlesMapping.LocalCatalog.TryGetValue(alias.StatusId, out var exact))
+            return Guid.TryParse(exact.StatusId, out var statusId) && moodles.ApplyStatus(statusId);
+
+        return ForceApply(alias.StatusName);
+    }
+
+    /// collar/moodles "Sub can self-apply or self-clear a Moodle via alias": thin wrapper over `ForceClear`.
+    public bool Clear() => ForceClear();
+
     /// collar/catalog-sync: every scanned status's display name, deduplicated - the same plain-name shape
     /// Settings' former "Copy names" button produced.
     public IReadOnlyList<string> ExportNames() =>

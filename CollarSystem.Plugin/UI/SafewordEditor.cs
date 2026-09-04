@@ -24,7 +24,7 @@ internal static class SafewordEditor
         if (ImGui.Button(reveal ? "Hide" : "Show", new Vector2(revealWidth, 0)))
             reveal = !reveal;
 
-        ImGui.TextColored(config.PanicSafeword is null ? Theme.TextMuted : Theme.Success,
+        IconGlyph.WrappedColored(config.PanicSafeword is null ? Theme.TextMuted : Theme.Success,
             config.PanicSafeword is null ? "No safeword set — plain /collarpanic remains available." : "Safeword configured for /collarpanic.");
         ImGui.PopID();
     }

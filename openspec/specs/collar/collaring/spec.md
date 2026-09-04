@@ -17,6 +17,21 @@ The system SHALL let a Sub designate a collar by picking an item from a searchab
 - **WHEN** a Sub has a configured collar item and no active collar lock, and picks a different item from the Neck-locked picker
 - **THEN** the newly picked item replaces the previous configuration
 
+### Requirement: Sub can optionally assign a Moodle to the collar
+The system SHALL let a Sub optionally assign one status from their own scanned Moodles catalog to their collar configuration, alongside the collar's Neck-slot item. This assignment SHALL be optional - a collar with no Moodle assigned SHALL behave exactly as before this capability existed. The system SHALL let the Sub clear or replace this assignment at any time while no collar lock from this system is currently active, the same restriction already placed on changing the collar's item.
+
+#### Scenario: Sub assigns a Moodle to their collar
+- **WHEN** a Sub picks a status from their own scanned Moodles catalog and saves it as their collar's assigned Moodle
+- **THEN** that status is saved as part of the Sub's collar configuration
+
+#### Scenario: A collar with no assigned Moodle is unaffected
+- **WHEN** a Sub's collar has no Moodle assigned
+- **THEN** locking or unlocking the collar applies or releases only the Neck-slot item, exactly as before this capability existed
+
+#### Scenario: Sub replaces the assigned Moodle while unlocked
+- **WHEN** a Sub has an assigned collar Moodle and no active collar lock, and picks a different status
+- **THEN** the newly picked status replaces the previous assignment
+
 ### Requirement: Collar permission gates auto-apply
 The system SHALL NOT apply or lock a Sub's configured collar unless the Sub has separately enabled a "Collar" permission, independent of Title/Outfit/Gesture/Follow. Configuring a collar item alone SHALL NOT be sufficient for it to ever be applied.
 
@@ -25,14 +40,18 @@ The system SHALL NOT apply or lock a Sub's configured collar unless the Sub has 
 - **THEN** accepting a pairing request does not apply or lock the collar
 
 ### Requirement: Collar applied and locked on pairing acceptance
-The system SHALL apply the Sub's configured collar item to the Sub's own Neck slot and lock that slot, as part of the Sub accepting a pairing request, when the Sub has both a configured collar item and the "Collar" permission enabled. The lock SHALL be enforced by this system's own per-slot lock tracking (see `collar/slot-locking`), not by Glamourer's own actor-wide lock, and SHALL cover only the Neck slot.
+The system SHALL apply the Sub's configured collar item to the Sub's own Neck slot and lock that slot, as part of the Sub accepting a pairing request, when the Sub has both a configured collar item and the "Collar" permission enabled. The lock SHALL be enforced by this system's own per-slot lock tracking (see `collar/slot-locking`), not by Glamourer's own actor-wide lock, and SHALL cover only the Neck slot. If the Sub's collar configuration also has a Moodle assigned, that status SHALL be applied to the Sub's own character at the same time the collar item locks.
 
 #### Scenario: Collar applied at acceptance
 - **WHEN** a Sub with a configured collar item and "Collar" permission enabled accepts a pending pairing request
 - **THEN** that item is applied to the Sub's Neck slot and the Neck slot is locked
 
+#### Scenario: Assigned Moodle applies alongside the collar at acceptance
+- **WHEN** a Sub with a configured collar item, an assigned collar Moodle, and "Collar" permission enabled accepts a pending pairing request
+- **THEN** the collar item locks and the assigned Moodle status is applied to the Sub's own character
+
 ### Requirement: Collar lock resists casual removal but never panic, and locks only the Neck slot
-The system SHALL refuse to remove or change a locked collar's Neck slot through the plugin's own alias/UI paths without the matching release action. The system SHALL NOT restrict any slot other than Neck while the collar is locked - every other slot remains exactly as free to edit as if the collar were not locked. The system SHALL always release the collar's Neck-slot lock when the Sub triggers the panic action, with no exception and regardless of any other state.
+The system SHALL refuse to remove or change a locked collar's Neck slot through the plugin's own alias/UI paths without the matching release action. The system SHALL NOT restrict any slot other than Neck while the collar is locked - every other slot remains exactly as free to edit as if the collar were not locked. The system SHALL always release the collar's Neck-slot lock when the Sub triggers the panic action, with no exception and regardless of any other state. When the collar has an assigned Moodle and the collar is locked, the system SHALL periodically re-apply that Moodle status to the Sub's own character for as long as the collar lock remains active, so that removing the status through means outside this plugin (e.g. Moodles' own UI) does not persist - the status SHALL return within a short, bounded interval. The system SHALL always clear the assigned Moodle when the Sub triggers the panic action, with no exception, the same as the collar's own Neck-slot lock.
 
 #### Scenario: Sub's own alias-triggered action cannot remove a locked collar
 - **WHEN** a locked collar is active
@@ -47,15 +66,27 @@ The system SHALL refuse to remove or change a locked collar's Neck slot through 
 - **WHEN** a Sub with a locked collar triggers the panic action
 - **THEN** the collar's Neck-slot lock is released as part of the panic sequence, unconditionally
 
+#### Scenario: Manually removing the assigned Moodle does not stick while the collar is locked
+- **WHEN** a Sub's locked collar has an assigned Moodle, and that status is removed from the Sub's character through a means outside this plugin
+- **THEN** the system re-applies that status to the Sub's character within a short, bounded interval, for as long as the collar remains locked
+
+#### Scenario: Panic always clears the assigned Moodle
+- **WHEN** a Sub with a locked collar carrying an assigned Moodle triggers the panic action
+- **THEN** the assigned Moodle status is cleared as part of the panic sequence, unconditionally, the same as the collar's Neck-slot lock
+
 ### Requirement: Owner can release the collar without panic
-The system SHALL let a paired Owner send a dedicated release command that releases the lock on a Sub's collar's Neck slot, without requiring the Sub to trigger panic. Releasing the lock SHALL revert the Neck slot to Glamourer's automation-managed state and SHALL NOT affect any other slot.
+The system SHALL let a paired Owner send a dedicated release command that releases the lock on a Sub's collar's Neck slot, without requiring the Sub to trigger panic. Releasing the lock SHALL revert the Neck slot to Glamourer's automation-managed state and SHALL NOT affect any other slot. If the collar has an assigned Moodle, releasing the lock this way SHALL also clear that Moodle status from the Sub's own character and stop its periodic re-assertion, the same as panic does.
 
 #### Scenario: Owner releases the collar
 - **WHEN** an Owner sends the collar release command to a Sub with an active collar lock
 - **THEN** the Sub's client releases the Neck-slot lock and the Neck slot reverts to Glamourer's automation-managed state, with every other slot unaffected
 
+#### Scenario: Owner's release also clears the assigned Moodle
+- **WHEN** an Owner sends the collar release command to a Sub with an active collar lock that carries an assigned Moodle
+- **THEN** the Sub's client releases the Neck-slot lock and clears the assigned Moodle status, and no longer re-asserts it
+
 ### Requirement: Owner can (re-)apply the collar directly
-The system SHALL let a paired Owner with the Sub's "Collar" permission enabled send a dedicated command that applies and locks the Sub's configured collar item, independent of pairing acceptance, when a collar item is configured. This command SHALL take no item argument - it applies whichever item the Sub has configured.
+The system SHALL let a paired Owner with the Sub's "Collar" permission enabled send a dedicated command that applies and locks the Sub's configured collar item, independent of pairing acceptance, when a collar item is configured. This command SHALL take no item argument - it applies whichever item the Sub has configured. If the Sub's collar configuration has a Moodle assigned, this command SHALL also (re-)apply that status and resume its periodic re-assertion, the same as pairing acceptance does.
 
 #### Scenario: Owner re-locks a previously released collar
 - **WHEN** an Owner sends the collar lock command to a Sub whose collar was previously released (via the Owner's release command) and who still has a collar item configured with "Collar" permission enabled
@@ -68,3 +99,7 @@ The system SHALL let a paired Owner with the Sub's "Collar" permission enabled s
 #### Scenario: Collar lock command without a configured item
 - **WHEN** an Owner sends the collar lock command to a Sub with no collar item configured
 - **THEN** the Sub's client takes no action
+
+#### Scenario: Owner's re-lock also resumes the assigned Moodle
+- **WHEN** an Owner sends the collar lock command to a Sub whose collar configuration has an assigned Moodle
+- **THEN** the Sub's client applies that Moodle status and resumes periodically re-asserting it, alongside re-locking the collar item

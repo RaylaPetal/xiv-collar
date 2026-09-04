@@ -63,21 +63,27 @@ established by a manual two-way exchange instead of typing an exact name/world i
 
 ### Two ways to command: alias, or direct override
 
-Every command still reduces to a short **alias** the Sub defines ahead of time (Title/Wardrobe/Gesture tabs
-in the one shared window - see UI below) - `strip` -> a specific Glamourer design, locked; `bow` -> a
-specific gesture mod's emote. Only the alias *name* crosses chat; what it actually does never leaves the
-Sub's own client. The Owner learns alias names the same way they'd learn anything else about a scene: the
-Sub tells them, out of band.
+Every command still reduces to a short **alias** the Sub defines ahead of time (Title/Wardrobe/Gesture/
+Moodles/Custom Triggers tabs in the one shared window - see UI below) - `strip` -> a specific Glamourer
+design, locked; `bow` -> a specific gesture mod's emote. During live commanding, only the alias *name*
+crosses chat - what it actually does is resolved entirely on the Sub's own client and never transmitted.
+The Owner learns alias names either the way they'd learn anything else about a scene (the Sub tells them,
+out of band), or via Scan & Export's Aliases section (below) - the export file additionally shows a
+human-readable summary of what each alias does (e.g. "test — Title: \"NameTitle\" (prefix)"), so an Owner
+who imports it can see what an entry actually does before sending it.
 
 Alongside that, the same composer box also accepts a **direct override** for `title`, `outfit`, `gesture`,
-`collar`, `moodle`, and `restraint` - six words reserved so a Sub alias can never be named one of them, no
-separate menu needed. A tell like `command title create Good Girl` or `command outfit lock Casual Blue`
+`collar`, `moodle`, `restraint`, and `customtrigger` - seven words reserved so a Sub alias can never be
+named one of them, no separate menu needed. A tell like `command title create Good Girl` or `command outfit lock Casual Blue`
 bypasses the Sub's own alias dictionary entirely and applies immediately (matching an outfit/gesture/
 Moodle/restraint device by whatever name the Sub told the Owner - Settings' unified **Scan & Export**
 section scans Wardrobe, Gesture, and Moodles at once (Restraints devices are captured individually in the
-Restraints tab, by picking a slot and an item, not scanned) and exports one file covering all four categories the Sub can hand to their
+Restraints tab, by picking a slot and an item, not scanned) and exports one file covering Wardrobe, Gesture,
+Moodles, Restraints, and the Sub's own Alias words (names only, never targets) that the Sub can hand to their
 Owner, who fills every category's Quick Commands from it in one action via the Owner tab's "Import
-commands" button, instead of reciting names one by one). Title and outfit also **lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
+commands" button, instead of reciting names one by one). `title create <text>` applies a plain title;
+`title style "<text>" ...` (built from the Owner's own color/prefix picker - see below) applies the same
+text with a chosen prefix/suffix and color. Title and outfit also **lock** when force-applied - the Sub's own alias-triggered clear/unlock is refused until the matching
 `title clear` / `outfit unlock` override tell (or the Sub's own panic, which always works regardless)
 releases it. An outfit lock only ever covers the equipment slots the applied design itself changes - never
 Glamourer's own whole-character lock, and never any slot the design doesn't touch, so the rest of your
@@ -98,13 +104,47 @@ with no confirmation queue - a Moodle is a visual status icon, not a real emote/
 > from preset names will no longer resolve - rescan Moodles on the Sub's side and re-import on the Owner's
 > side to rebuild them from status names.
 
+> **Moodles status names always display with their own markup stripped.** Moodles lets a status title carry
+> its own inline formatting - `[color=N]...[/color]`, `[glow=N]...[/glow]`, `[i]...[/i]` - and this plugin
+> never attempts to reproduce that styling; every place a status name is shown (the Sub's Moodles tab,
+> Custom Triggers, Owner Quick Commands, the collar's Moodle picker) strips those tags and shows the plain
+> text underneath instead of the literal brackets. The underlying stored/matched name (what an Owner's
+> `moodle apply <name>` or an export/import round-trip actually compares against) is untouched - only the
+> displayed text changes.
+
+### Custom Triggers: bundling several actions behind one command
+
+A **Custom Trigger** bundles any combination of Title, Outfit, Gesture, Moodle, Restraint, and Chat actions
+behind a single alias or a single ad-hoc command, so one trigger can, for example, change the Sub's title,
+lock in an outfit, and play a gesture all at once. Each bundled action still checks its own category's own
+permission (and, for Gesture/Restraints, the same automation-risk acknowledgement those already require;
+for Chat, its own dedicated permission and acknowledgement - see Automation risk below) independently right
+before it applies - a disabled or unacknowledged category is skipped, the rest of the bundle still applies,
+exactly like every individual command already silently no-ops when its own permission is off. There are two
+ways to build one:
+
+- **Sub-defined**, from the **Custom Triggers** tab: pick a kind, configure that action (an existing
+  Gesture/Moodle/Restraint/Outfit selection, or freely typed Title/Chat text), add it to the bundle, repeat
+  for as many actions as you want, then save it under an alias. The Owner never sees or needs to know a
+  Custom Trigger's contents - they just trigger the alias, same as any other.
+- **Owner ad-hoc**, from the Owner tab's **Custom Trigger (ad-hoc)** section: build the same kind of bundle
+  directly, by typing each action's name exactly as the Sub told you (no picker - the Owner's own install
+  has no access to the Sub's scanned catalogs), then Send or Copy it as one `customtrigger cast` command.
+  This mirrors Restraints' own "define a device's gear directly" ad-hoc pattern.
+
+The Chat action sends the Sub's own configured text via the same underlying call Gesture's own emote/pose
+playback already uses - but with no restriction on which command or channel it starts with. See Automation
+risk below for why this needs its own dedicated permission and acknowledgement, separate from Gesture's.
+
 The Owner's window builds these into one-click **Quick Commands** per category (Title/Outfit/Gesture/
-Follow/Moodles/Restraints, plus a general Alias/one-off box with its own "Add Command", and fixed
-"Collar unlock"/"Restraint unlock" rows). Outfit/Gesture/Moodles/Restraints are populated together by the
-centered **"Import commands"** button at the top of the Owner tab, which reads a file the Sub exported from
-Settings' unified Scan & Export section and fills all four in one action - a "Reset imports" button next to
-it clears those same four import-populated lists back to empty in one action, without touching Title/Leash/
-Alias commands built by hand - see Automation risk below for what the Send button on each Quick Command
+Follow/Moodles/Restraints, plus a general Alias/one-off box with its own "Add Command", a **Custom Trigger
+(ad-hoc)** builder with no saved list of its own (see above), and fixed "Collar unlock"/"Restraint unlock"
+rows). Outfit/Gesture/Moodles/Restraints/Alias are populated together by
+the centered **"Import commands"** button at the top of the Owner tab, which reads a file the Sub exported
+from Settings' unified Scan & Export section and fills all five in one action - a "Reset imports" button
+next to it clears those same five import-populated lists back to empty in one action (including any one-off
+Alias commands typed by hand, since imported alias words share that same list), without touching Title/
+Leash commands built by hand - see Automation risk below for what the Send button on each Quick Command
 actually does.
 
 > **Restraints import carries every captured device name** - the Sub captures each device by picking a slot
@@ -125,6 +165,23 @@ actually does.
 > any lockable slot without the Sub ever having reviewed that specific item first - a deliberately broader
 > grant than every other Owner-forced action in this plugin, gated the same way (Restraints permission + the
 > automation-risk acknowledgement below) rather than by per-item review.
+>
+> **Aliases import lets the Owner send a Sub's own alias words as one-off Quick Commands, labeled with what
+> they do.** Scan & Export's Aliases section lists every alias from the Title/Outfit/Gesture/Restraint/
+> Moodles/Custom Triggers tabs (deduplicated by alias word), each carrying a human-readable summary of what
+> it does (e.g. a Title alias exports as `test — Title: "NameTitle" (prefix)`, a Custom Trigger as its own
+> alias plus a summary of every bundled action) - a deliberate choice so an Owner who imports this file can
+> tell what an entry actually does, unlike the live wire tell during real commanding, which still only ever
+> carries the bare alias word. Importing adds each entry to the Owner's Alias/one-off list, labeled with
+> that summary, while what's actually sent when clicking Send/Copy is still just the bare alias word.
+> Follow's leash/unleash words and the Clear-title/Unlock-outfit/Clear-moodle aliases aren't included - they
+> already have dedicated fixed Quick Command rows.
+>
+> **Title Quick Commands can carry a prefix and color**, matching the Sub's own Title alias form exactly -
+> pick them when adding a Title Quick Command and it sends via a new `title style ...` command instead of
+> plain `title create <text>`. This needs a Sub on this same plugin version to recognize; an older Sub simply
+> reports it as an unrecognized command (no title change, no error state left behind) rather than applying a
+> garbled one - `title create` (no color) keeps working with any version.
 
 ## Consent model
 
@@ -133,11 +190,13 @@ actually does.
   a coincidental "collarpair ..." tell from someone who doesn't actually know your code never produces a
   pairing prompt. Only one side needs to actually send the handshake: whoever does, the other side gets a
   *Pending* request naming the verified sender, and accepting it is their one and only consent action. That
-  accept automatically sends one confirmation tell back to the sender - the one narrow, explicit exception
-  to this plugin's "no automated sending" rule (see Automation risk below) - which completes the sender's
-  own side with no further action from them; sending the original invite was their consent action. Once
-  paired, a Sub's Role, code, and trigger phrase all lock in Settings and pairing itself is **locked** -
-  there is no checkbox to uncheck. The only way to change any of it is `/collarpanic` below.
+  accept automatically sends one confirmation tell back to the sender - one of two narrow, explicit
+  exceptions to this plugin's "no automated sending" rule (see Automation risk below) - which completes the
+  sender's own side with no further action from them; sending the original invite was their consent action.
+  Once paired, a Sub's Role, code, and trigger phrase all lock in Settings and pairing itself is **locked**
+  - there is no checkbox to uncheck. The only way to change any of it is `/collarpanic` below, which also
+  sends the other of those two exceptions: a best-effort notification telling your former peer what
+  happened.
 - **Scoped, revocable permissions.** A Sub independently enables or disables each command category
   (title, outfit, gesture, follow, collar, moodles) at any time. A command in a disabled category is
   silently ignored, even while paired.
@@ -149,10 +208,25 @@ actually does.
   stays completely free to edit throughout, including while an outfit is separately locked at the same
   time - and `/collarpanic` always releases it, no exception - the Owner also has a `collar unlock` override
   for releasing it without the Sub needing to panic.
+- **The collar can also carry a persistent Moodle.** The Collar tab lets a Sub optionally assign one status
+  from their own scanned Moodles catalog to the collar, alongside its Neck-slot item - entirely optional,
+  and only editable while the collar is unlocked. When the collar locks (pairing acceptance, or the Owner's
+  `collar lock`), the assigned status applies at the same moment the item does, and this plugin then
+  re-applies it roughly every 10 seconds for as long as the collar stays locked - so removing it through
+  Moodles' own UI doesn't make it stick, it simply returns within that window. It clears only when the
+  collar's own lock releases: `/collarpanic`, or the Owner's `collar unlock` - the exact same lifecycle the
+  Neck-slot item already has, with no separate release path of its own. Because Moodles' own IPC has no
+  per-status removal, clearing it (on unlock or panic) clears the Sub's entire active Moodles status
+  manager, not just the one assigned status - the same blunt behavior the plain `moodle clear` command
+  already has.
 - **Panic is a typed safeword, not a button.** The main character header always exposes the safeword
   setting, whether paired or not, but there's no panic button anywhere in the UI on purpose -
   `/collarpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
-  state, clears any Honorific title, and releases any active movement lock, all from local state only. Set
+  state, clears any Honorific title, and releases any active movement lock, all from local state only.
+  Panic also attempts to send one best-effort notification tell to whoever you were paired with, so their
+  side finds out and can react (see Automation risk below) - but this is never guaranteed and never
+  required: every local effect above happens unconditionally and instantly whether or not that notification
+  can be delivered (offline, blocked, or simply no relay to check against - there isn't one). Set
   a safeword in the header and `/collarpanic` requires it as an argument (`/collarpanic red`);
   leave it blank and plain `/collarpanic` keeps working unconditionally - a forgotten safeword must never
   be the reason panic stops working. Safewords are masked by default and can be deliberately revealed.
@@ -179,17 +253,23 @@ actually does.
   called from a direct button click, and it refuses to send anything that isn't an addressed `/tell` - a
   command composed before pairing captures a peer identity has no `/tell` prefix and Send is disabled for
   it, so nothing can ever leak into local/say chat.
-- **One narrow, explicit exception: accepting a pairing request sends one confirmation tell automatically.**
-  This is the only place in the entire plugin where a chat message is sent without you personally clicking
-  a Send button in that exact moment. It exists so pairing completes for both sides from one invite instead
-  of requiring both people to separately send a handshake - see Consent model above. It fires at most once
-  per Accept click, is always addressed as a `/tell` back to the exact character whose invite you just
-  accepted, and carries nothing but your role, trigger phrase, and the code that was already matched to
-  show you that Pending request in the first place. It is still a direct, singular consequence of your own
-  explicit Accept click - not a background reaction to observed chat or game state - so it doesn't fit the
-  *autonomously reacting* pattern described above, but it is a deliberate, real exception to "every send is
-  a click on visible text," and it's called out here on its own rather than folded silently into the
-  paragraph above.
+- **Two narrow, explicit exceptions - and only these two - send a chat message without you personally
+  clicking a Send button in that exact moment.** Each is a direct, singular consequence of one specific
+  local action, never a background reaction to observed chat or game state, so neither fits the
+  *autonomously reacting* pattern described above - but both are deliberate, real exceptions to "every send
+  is a click on visible text," and are called out here on their own rather than folded silently into the
+  paragraph above:
+  - **Accepting a pairing request** sends one confirmation tell automatically, so pairing completes for
+    both sides from one invite instead of requiring both people to separately send a handshake - see
+    Consent model above. It fires at most once per Accept click, addressed back to the exact character
+    whose invite you just accepted, carrying your role, trigger phrase, and the code that was already
+    matched to show you that Pending request in the first place.
+  - **Triggering panic** sends one best-effort notification tell to whoever you were paired with, so their
+    side can find out and react instead of silently sending commands into the void - see Consent model
+    above. It fires at most once per panic trigger, addressed to the peer identity you had cached at that
+    moment, carrying only your role. It is never required for panic's own local effects to complete, and
+    delivery is never guaranteed or verified - an offline, blocked, or uninstalled peer simply never
+    receives it, exactly like any other `/tell`.
 - **Gesture** temporarily applies the selected animation's complete Penumbra option state, redraws the
   Sub, briefly waits for the redraw to visually settle, and then fires its tied emote or supported
   sit/ground-sit/doze pose after a valid trigger tell. The Sub's automation-risk acknowledgement and live
@@ -227,9 +307,24 @@ actually does.
   > without needing the Sub to have captured or named anything first - see the Restraints Quick Command
   > section above.
 
+- **Custom Triggers' Chat action is a materially bigger step than every other automated send in this
+  plugin, and is called out here on its own.** Gesture already sends a chat message unconditionally today,
+  but only ever one of a closed set of self-targeting commands (`/sit`, `/groundsit`, `/doze`, or one
+  specific slash-emote tied to the chosen animation) - never text the Sub didn't pick from that fixed list.
+  A Custom Trigger's Chat action removes that restriction entirely: it sends **whatever text the Sub typed
+  when configuring it, to whatever channel that text specifies**, completely unmodified, with no
+  content/length/rate filtering of any kind beyond the gate below - the same trust this plugin already
+  places in a Sub's own typed Title text, extended here to arbitrary chat. Because this is a real, deliberate
+  expansion of what a bundled command can make your own client do, it does **not** ride on the existing
+  Gesture/automation-risk acknowledgement below - it has its own separate **Custom chat messages**
+  permission and its own separate acknowledgement checkbox (Settings, right next to the general ToS card),
+  and a Chat action cannot fire until both are explicitly enabled. Revoking either one at any time silently
+  stops future Chat actions from firing, exactly like disabling any other permission.
+
 Gesture, Follow, and Restraints are gated behind their own permission toggle, and all three require the Sub
 to check an in-UI acknowledgement of this section (Settings) before any of the three toggles can be enabled
-at all. Make an informed choice before turning them on.
+at all. Custom Triggers' Chat action has its own separate permission and acknowledgement, described just
+above - make an informed choice before turning any of these on.
 
 ## Testing locally, before pairing
 
@@ -258,6 +353,23 @@ per-action buttons bypassed entirely by calling an action's method directly). If
 "Test Apply" or "Test Lock" button next to a specific alias, use this card instead: type your trigger phrase
 followed by that alias or override command.
 
+## Quick access: the "Collar" server-info-bar entry
+
+A small **"Collar"** entry sits in FFXIV's own server info bar (next to the clock/world/FPS indicators) via
+Dalamud's own supported `IDtrBar` API - the same mechanism plugins like Aetherphone use, not a modification
+of the game's native UI. It's visible regardless of your configured Role. Clicking it opens/closes a compact
+**Favorites** window.
+
+Any saved Owner quick command, in any category (Title/Outfit/Gesture/Follow/Moodles/Restraints/Alias), can
+be starred with the **"Favorite"** button next to it - the Favorites window lists every starred command
+across every category in one flat list, each with its own Send/Copy/Unfavorite, plus one button to jump
+straight to the full Owner tab for anything you haven't starred.
+
+The Favorites window is a small, ordinary toggleable window - clicking the DTR entry (or the window's own
+close control) opens/closes it, the same as every other window in this plugin. It's deliberately **not** a
+true native dropdown that dismisses itself when you click elsewhere; Dalamud's window system doesn't provide
+that, and building one from scratch off a server-info-bar click wasn't worth the added fragility for this.
+
 ## Project layout
 
 ```
@@ -265,7 +377,8 @@ CollarSystem.Plugin/     the Dalamud plugin (Owner and Sub share one codebase an
   Ipc/                   thin wrappers around Glamourer.Api, Penumbra.Api, Honorific's IPC, and Moodles' IPC
   Commands/              one file per command category, the chat listener, and the trigger composer/sender
   Config/                persisted plugin configuration, including the Sub's alias definitions
-  UI/                    CollarWindow (Title/Wardrobe/Gesture/Collar/Owner/Permissions tabs), SettingsWindow
+  UI/                    CollarWindow (Title/Wardrobe/Gesture/Moodles/Restraints/Custom Triggers/Collar/
+                         Owner/Permissions tabs), SettingsWindow
   Safety/                panic handler and in-memory "what's currently applied" state
 ```
 
@@ -308,8 +421,9 @@ build task, or building via the `.slnx` all land in the same place.
      Penumbra animation mods or wardrobe folders to restrict scanning (empty animation selection and empty
      wardrobe folder scope both mean **scan everything available**; folder/text search fields only filter
      the visible picker), then hit **Scan all** to rescan Wardrobe, Gesture, and Moodles together. Define
-     aliases in the main window's Title/Wardrobe/Gesture/Restraints tabs, which stay available regardless
-     of Role. Once you've scanned (and captured any Restraints devices you want, by picking a slot and an
+     aliases in the main window's Title/Wardrobe/Gesture/Moodles/Restraints tabs (and bundle several of them
+     together in the Custom Triggers tab), which stay available regardless of Role. Once you've scanned (and
+     captured any Restraints devices you want, by picking a slot and an
      item from the Restraints tab's picker), hit **Export...** to save a single file covering every category - hand that
      file to your Owner however you like (Discord, a
      shared folder), and they fill every Quick Command list from it in one action via the Owner tab's
@@ -330,7 +444,8 @@ build task, or building via the `.slnx` all land in the same place.
 4. `/collar` opens the one main window; `/collarpanic` (with your safeword as its argument, if you set
    one) always works from anywhere. The header shows your live character name, home world, optional Free
    Company tag, and an explicit Not paired/Owns/Owned by/pending relationship state.
-   Title/Wardrobe/Gesture/Permissions are where a Sub sets up what they'll accept. The **Collar** tab also
+   Title/Wardrobe/Gesture/Moodles/Restraints/Custom Triggers/Permissions are where a Sub sets up what
+   they'll accept. The **Collar** tab also
    owns the Sub's leash trigger words, defaulting to `leash` and `unleash`. The visually separated,
    far-right **Owner** tab groups each command category into an independent collapsible section where you
    build one-click Quick Commands or compose

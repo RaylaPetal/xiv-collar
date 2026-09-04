@@ -58,20 +58,43 @@ public class SettingsWindow : Window, IDisposable
         triggerPhraseInput = config.TriggerPhrase;
     }
 
+    /// Split into tabs (previously one long vertically-stacked flow) once Scan & Export's own growth made
+    /// the whole window too tall to comfortably navigate in one scroll region - each tab now scrolls
+    /// independently within the window's remaining space. Grouped by what they're for, not just by prior
+    /// visual order: Identity & Pairing is setup you do once; Scanning is catalog upkeep you repeat as your
+    /// designs/mods/statuses change; ToS bundles every risk acknowledgement together with the one local
+    /// testing tool, since testing a command is usually the next thing you do right after enabling a
+    /// permission those acknowledgements gate.
     public override void Draw()
     {
         var config = plugin.Configuration;
 
-        DrawIdentityCard(config);
-        ImGui.Spacing();
+        if (!ImGui.BeginTabBar("settingsTabs"))
+            return;
 
-        DrawTosCard(config);
-        ImGui.Spacing();
+        if (ImGui.BeginTabItem("Identity & Pairing"))
+        {
+            DrawIdentityCard(config);
+            ImGui.EndTabItem();
+        }
 
-        DrawTestCommandCard(config);
-        ImGui.Spacing();
+        if (ImGui.BeginTabItem("Scanning"))
+        {
+            DrawScanAndExportCard(config);
+            ImGui.EndTabItem();
+        }
 
-        DrawScanAndExportCard(config);
+        if (ImGui.BeginTabItem("ToS"))
+        {
+            DrawTosCard(config);
+            ImGui.Spacing();
+            DrawCustomChatCard(config);
+            ImGui.Spacing();
+            DrawTestCommandCard(config);
+            ImGui.EndTabItem();
+        }
+
+        ImGui.EndTabBar();
     }
 
     /// collar/chat-transport "An Owner-style command can be tested entirely locally": type the exact raw
@@ -180,9 +203,9 @@ public class SettingsWindow : Window, IDisposable
         {
             IconGlyph.WrappedColored(Theme.Success, $"Paired with {config.Pairing.PeerName}@{config.Pairing.PeerWorld}.");
             if (config.Pairing.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
-                ImGui.TextDisabled($"Trigger phrase in effect: \"{peerPhrase}\" (from your paired peer).");
+                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{peerPhrase}\" (from your paired peer).");
             else
-                ImGui.TextDisabled($"Trigger phrase in effect: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
+                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
             if (config.Role == PluginRole.Owner)
             {
                 if (ImGui.Button("Release pairing"))
@@ -191,7 +214,7 @@ public class SettingsWindow : Window, IDisposable
             }
             else
             {
-                ImGui.TextDisabled("Locked - only /collarpanic (your safeword, below) unpairs, not this screen.");
+                IconGlyph.WrappedDisabled("Locked - only /collarpanic (your safeword, below) unpairs, not this screen.");
             }
         }
         else
@@ -290,7 +313,7 @@ public class SettingsWindow : Window, IDisposable
 
         if (lastScanTotal is null)
         {
-            ImGui.TextDisabled("Not scanned yet this session.");
+            IconGlyph.WrappedDisabled("Not scanned yet this session.");
             return;
         }
 
@@ -339,7 +362,7 @@ public class SettingsWindow : Window, IDisposable
                     if (selected) config.SelectedGestureMods.Add(mod.Directory); else config.SelectedGestureMods.Remove(mod.Directory);
                     config.Save();
                 }
-                if (mod.SortPath != null) { ImGui.SameLine(); ImGui.TextDisabled(mod.SortPath); }
+                if (mod.SortPath != null) { ImGui.SameLine(); IconGlyph.WrappedDisabled(mod.SortPath); }
             }
         }
 
@@ -358,7 +381,7 @@ public class SettingsWindow : Window, IDisposable
 
         if (lastScanTotal is null)
         {
-            ImGui.TextDisabled("Not scanned yet this session.");
+            IconGlyph.WrappedDisabled("Not scanned yet this session.");
             return;
         }
 
@@ -420,13 +443,13 @@ public class SettingsWindow : Window, IDisposable
         {
             IconGlyph.WrappedColored(Theme.Danger, plugin.MoodlesCommand.LastScanError ?? "Moodles status scan failed.");
             if (moodlesMapping.LocalCatalog.Count > 0)
-                ImGui.TextDisabled($"Keeping {moodlesMapping.LocalCatalog.Count} status(es) from the last successful scan.");
+                IconGlyph.WrappedDisabled($"Keeping {moodlesMapping.LocalCatalog.Count} status(es) from the last successful scan.");
             return;
         }
 
         if (lastScanTotal is null)
         {
-            ImGui.TextDisabled("Not scanned yet this session.");
+            IconGlyph.WrappedDisabled("Not scanned yet this session.");
             return;
         }
 
@@ -512,9 +535,36 @@ public class SettingsWindow : Window, IDisposable
         IconGlyph.HelpMarker("Required once before the Gesture and Follow permission toggles (in the Sub window's Permissions tab) can be enabled at all - Title and Outfit don't need it.");
     }
 
+    /// collar/custom-triggers "Sending a chat message requires its own dedicated permission and
+    /// acknowledgement": deliberately its own card, visibly distinct from the general Automation risk
+    /// acknowledgement above - a Custom Trigger's chat action is a materially broader surface (arbitrary
+    /// text, any channel) than anything the general acknowledgement covers, so it gets its own explicit
+    /// disclosure rather than riding on that existing checkbox.
+    private void DrawCustomChatCard(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Comments, "Custom Trigger chat messages");
+        ImGui.Separator();
+        IconGlyph.WrappedColored(Theme.Danger, "A Custom Trigger's chat action can send ANY text to ANY channel (including public party/say/yell chat), as your own character, triggered remotely by your Owner - unlike Gesture, which only ever fires a closed set of self-targeting pose/emote commands. Required before the \"Custom chat messages\" permission (Permissions tab) can be enabled at all.");
+
+        if (ImGuiCheckbox("I understand a Custom Trigger's chat action can send arbitrary text to any channel, visible to other players, as my own character", config.CustomChatAcknowledged, out var newAck))
+        {
+            config.CustomChatAcknowledged = newAck;
+            config.Save();
+        }
+    }
+
+    /// A checkbox whose label can run long (the ToS/Custom-chat acknowledgement text) without getting cut
+    /// off in a narrower window - `ImGui.Checkbox` never wraps its own label, so the checkbox itself
+    /// carries no visible label (`##label` - id only) and the text is drawn separately, wrapped, right
+    /// next to it.
     private static bool ImGuiCheckbox(string label, bool value, out bool newValue)
     {
         newValue = value;
-        return ImGui.Checkbox(label, ref newValue);
+        var changed = ImGui.Checkbox($"##{label}", ref newValue);
+        ImGui.SameLine();
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextUnformatted(label);
+        ImGui.PopTextWrapPos();
+        return changed;
     }
 }

@@ -1,48 +1,31 @@
-# collar/moodles Specification
-
 ## Purpose
 
-Lets a paired Owner apply or clear a status-effect ("Moodle") on a Sub, chosen from the Sub's own registered Moodles statuses, without the Owner ever needing access to the Sub's Moodles configuration directly.
+Lets the Sub define their own short alias words that self-apply or self-clear a Moodles status from their own scanned catalog, the same trigger mechanism every other command category already provides.
 
 ## Requirements
 
-### Requirement: Local preset catalog from the Sub's own Moodles data
-The system SHALL build its Moodles catalog by reading every individual status (buff/debuff) registered in the Sub's locally installed Moodles plugin through Moodles' supported local status-list interface, without passing a character target and without reading collar-owned or bundled preset data. The scan UI SHALL distinguish an unavailable or failed Moodles integration from a successful scan containing zero statuses, and its name export SHALL contain the names from the latest successful local scan.
+### Requirement: Sub can self-apply or self-clear a Moodle via alias
+The system SHALL let the Sub define a short alias word mapped to one status from their own scanned Moodles catalog, and a separate dedicated alias that clears the Sub's currently active Moodle, the same trigger mechanism `collar/title`/`collar/outfit`/`collar/gesture`/`collar/restraints` already provide for their own categories. Triggering the apply alias SHALL apply that status to the Sub's own character; triggering the clear alias SHALL remove the Sub's currently active status. Both SHALL require the Sub's own "Moodles" permission to be enabled, the same as the Owner's override.
 
-#### Scenario: Sub's saved presets become available
-- **WHEN** the Sub has one or more statuses registered in their own Moodles plugin and triggers a rescan
-- **THEN** the catalog lists every returned status by its Moodles identifier and display name, available to reference by name
+#### Scenario: Sub applies their own Moodle via alias
+- **WHEN** a Sub has defined an alias mapped to one of their own scanned Moodles statuses, has the "Moodles" permission enabled, and triggers that alias
+- **THEN** the Sub's client applies that status to their own character
 
-#### Scenario: Sub has no saved presets
-- **WHEN** the local Moodles integration responds successfully with no registered statuses
-- **THEN** the scan reports a successful zero-status result and the local catalog is empty
+#### Scenario: Sub clears their own Moodle via alias
+- **WHEN** a Sub has defined a clear-Moodle alias, has the "Moodles" permission enabled, and triggers it
+- **THEN** the Sub's client removes their currently active Moodles status
 
-#### Scenario: Moodle integration fails
-- **WHEN** the local Moodles integration is unavailable or its status-list call fails
-- **THEN** the scan reports the failure visibly and does not present it as a successful zero-status result
-
-#### Scenario: Sub copies preset names
-- **WHEN** a successful scan contains one or more registered statuses and the Sub invokes "Copy names"
-- **THEN** the copied text contains each scanned status display name once and contains no preset or collar-owned names
-
-### Requirement: Moodles permission gates apply and clear
-The system SHALL NOT apply or clear any Moodle on a Sub's character unless the Sub has separately enabled a "Moodles" permission, independent of Title/Outfit/Gesture/Follow/Collar.
-
-#### Scenario: Moodle command without permission
-- **WHEN** an Owner sends a Moodles apply or clear command to a Sub who has not enabled the "Moodles" permission
-- **THEN** the Sub's client rejects the command and no status effect changes
-
-### Requirement: Owner applies or clears a Moodle by name
-The system SHALL let a paired Owner with the Sub's "Moodles" permission enabled apply an individual status by its name, matched against the Sub's own local catalog, or clear the Sub's active Moodles status. A Moodle command SHALL apply immediately, without a Sub-confirmation step.
-
-#### Scenario: Owner applies a known preset
-- **WHEN** an Owner sends an apply command naming a status that matches the Sub's local catalog
-- **THEN** the Sub's client applies that individual status to the Sub's own character immediately
-
-#### Scenario: Owner names an unrecognized preset
-- **WHEN** an Owner sends an apply command naming a status that does not match anything in the Sub's local catalog
+#### Scenario: Self-apply alias requires the Moodles permission
+- **WHEN** a Sub triggers a Moodles apply or clear alias while the "Moodles" permission is disabled
 - **THEN** the Sub's client takes no action
 
-#### Scenario: Owner clears the Sub's Moodles
-- **WHEN** an Owner sends a clear command to a Sub with an active Moodles status
-- **THEN** the Sub's client removes the applied status
+### Requirement: Moodles markup is stripped before display
+Moodles status names may carry Moodles' own inline markup tags (`[color=N]...[/color]`, `[glow=N]...[/glow]`, `[i]...[/i]`). The system SHALL strip these tags before displaying a status name anywhere in this plugin's UI, showing only the plain underlying text - it SHALL NOT attempt to reproduce the tags' color, glow, or italic styling, and SHALL NOT display the literal bracketed markup.
+
+#### Scenario: A status name carrying markup displays as plain text
+- **WHEN** the Sub's scanned Moodles catalog contains a status whose name includes markup such as `[color=2]Good Girl[/color]`
+- **THEN** every place this plugin displays that status name shows only `Good Girl`, with no bracketed markup visible
+
+#### Scenario: A status name with no markup is unaffected
+- **WHEN** a scanned status's name contains no markup tags
+- **THEN** the displayed name is identical to the name Moodles itself reports

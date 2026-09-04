@@ -2,16 +2,34 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using CollarSystem.Plugin.Config;
 
 namespace CollarSystem.Plugin.Commands;
 
+/// One entry in the Aliases export section: the bare alias word plus a human-readable summary of what it
+/// does - see AliasBook's doc comment for why the Owner is deliberately shown this, unlike the live wire
+/// tell (which only ever carries the bare alias word). A plain mutable class, matching GestureExportEntry's
+/// own shape, rather than a record - plays safest with System.Text.Json's default (de)serialization.
+public class AliasExportEntry
+{
+    public string Alias { get; set; } = "";
+    public string Description { get; set; } = "";
+
+    public AliasExportEntry() { }
+    public AliasExportEntry(string alias, string description)
+    {
+        Alias = alias;
+        Description = description;
+    }
+}
+
 /// The per-category added-command counts from a single ParseImport call, plus an overall error when the
 /// file wasn't recognizable as a Collar export at all (as opposed to a recognized-but-partially-empty one,
 /// which still returns zero-valued counts with Error null).
-public readonly record struct CatalogImportResult(int Wardrobe, int Gesture, int Moodles, int Restraints, string? Error)
+public readonly record struct CatalogImportResult(int Wardrobe, int Gesture, int Moodles, int Restraints, int Aliases, string? Error)
 {
-    public int TotalAdded => Wardrobe + Gesture + Moodles + Restraints;
+    public int TotalAdded => Wardrobe + Gesture + Moodles + Restraints + Aliases;
 }
 
 /// collar/catalog-sync: composes each category's existing export output into one sectioned text file, and
@@ -25,8 +43,10 @@ public sealed class CatalogSyncService
     private const string GestureHeader = "## GESTURE";
     private const string MoodlesHeader = "## MOODLES";
     private const string RestraintsHeader = "## RESTRAINTS";
+    private const string AliasesHeader = "## ALIASES";
+    private const string AliasExportPrefix = "COLLAR-ALIAS-V1|";
 
-    private static readonly string[] KnownHeaders = [WardrobeHeader, GestureHeader, MoodlesHeader, RestraintsHeader];
+    private static readonly string[] KnownHeaders = [WardrobeHeader, GestureHeader, MoodlesHeader, RestraintsHeader, AliasesHeader];
 
     private readonly PluginConfig config;
     private readonly OutfitCommand outfit;
@@ -54,6 +74,7 @@ public sealed class CatalogSyncService
         AppendSection(sb, GestureHeader, gesture.ExportCatalog().Split('\n', StringSplitOptions.RemoveEmptyEntries));
         AppendSection(sb, MoodlesHeader, moodles.ExportNames());
         AppendSection(sb, RestraintsHeader, restraints.ExportNames());
+        AppendSection(sb, AliasesHeader, ExportAliasEntries().Select(EncodeAliasEntry));
         return sb.ToString();
     }
 
@@ -64,19 +85,78 @@ public sealed class CatalogSyncService
             sb.Append(line).Append('\n');
     }
 
+    /// collar/catalog-sync "Exporting every catalog to one file": every per-item alias (Title/Outfit/
+    /// Gesture/Restraint/Moodles/Custom Trigger), deduplicated by alias word - each carries a
+    /// human-readable summary of what it does alongside the bare word, so an Owner importing this file
+    /// knows what they're actually sending (see AliasBook's doc comment for why this is a deliberate
+    /// choice, not an oversight - the live wire tell during real commanding still only ever carries the
+    /// bare alias word, unaffected by this). Follow's fixed engage/release words and the two singleton
+    /// Clear-title/Unlock-outfit/Clear-moodle aliases are deliberately excluded - the Owner already has
+    /// dedicated fixed quick-command rows for all of those, so exporting them here would be redundant.
+    /// Concatenated in the same order `ChatCommandListener.ResolveAlias` checks each category, so if the
+    /// same word were ever reused across categories (nothing currently prevents that), the description
+    /// shown here matches whichever one would actually fire.
+    private IReadOnlyList<AliasExportEntry> ExportAliasEntries() =>
+        config.Aliases.Titles.Select(a => new AliasExportEntry(a.Alias, DescribeTitleAlias(a)))
+            .Concat(config.Aliases.Outfits.Select(a => new AliasExportEntry(a.Alias, DescribeOutfitAlias(a))))
+            .Concat(config.Aliases.Gestures.Select(a => new AliasExportEntry(a.Alias, DescribeGestureAlias(a))))
+            .Concat(config.Aliases.Restraints.Select(a => new AliasExportEntry(a.Alias, DescribeRestraintAlias(a))))
+            .Concat(config.Aliases.Moodles.Select(a => new AliasExportEntry(a.Alias, DescribeMoodleAlias(a))))
+            .Concat(config.Aliases.CustomTriggers.Select(a => new AliasExportEntry(a.Alias, DescribeCustomTrigger(a))))
+            .Where(e => e.Alias.Length > 0)
+            .GroupBy(e => e.Alias, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(e => e.Alias, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static string DescribeTitleAlias(TitleAliasDefinition a) => $"Title: \"{a.Text}\" ({(a.IsPrefix ? "prefix" : "suffix")})";
+    private static string DescribeOutfitAlias(OutfitAliasDefinition a) => $"Outfit: {a.DesignName}{(a.Locked ? " (locks its slots)" : "")}";
+    private static string DescribeGestureAlias(GestureAliasDefinition a) => $"Gesture: {(a.AnimationName.Length > 0 ? a.AnimationName : a.EmoteName)}";
+    private static string DescribeRestraintAlias(RestraintAliasDefinition a) => $"Restraint: {a.DeviceName} (toggles)";
+    private static string DescribeMoodleAlias(MoodlesAliasDefinition a) => $"Moodle: {MoodlesTextFormat.StripMarkup(a.StatusName)}";
+    private static string DescribeCustomTrigger(CustomTriggerDefinition a) => $"Custom Trigger: {string.Join(", ", a.Actions.Select(CustomTriggerCommand.Summarize))}";
+
+    private static string EncodeAliasEntry(AliasExportEntry entry) =>
+        AliasExportPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(entry)));
+
+    /// Fails closed (returns false) on anything that isn't a well-formed encoded alias line - an older/
+    /// hand-edited export's bare-word Aliases lines (this format's predecessor) no longer parse, so they're
+    /// silently skipped rather than imported with a fabricated description, matching `ImportGestureLines`'s
+    /// own "unparseable line is skipped, not fatal" behavior.
+    private static bool TryParseAliasEntry(string line, out AliasExportEntry entry)
+    {
+        entry = new AliasExportEntry();
+        if (!line.StartsWith(AliasExportPrefix, StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            var decoded = JsonSerializer.Deserialize<AliasExportEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[AliasExportPrefix.Length..])));
+            if (decoded is null || decoded.Alias.Length == 0)
+                return false;
+
+            entry = decoded;
+            return true;
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException)
+        {
+            return false;
+        }
+    }
+
     /// Populates every category's quick-command list from its corresponding section. A section header
     /// present with zero body lines leaves that category's list untouched (nothing to add). A section
     /// entirely absent from the file (not a well-formed Collar export, or an older/hand-edited one) is
-    /// likewise skipped rather than erroring the whole import - only a file with none of the four
+    /// likewise skipped rather than erroring the whole import - only a file with none of the five
     /// recognized headers at all is rejected outright.
     public CatalogImportResult ParseImport(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return new CatalogImportResult(0, 0, 0, 0, "File is empty - nothing to import.");
+            return new CatalogImportResult(0, 0, 0, 0, 0, "File is empty - nothing to import.");
 
         var sections = SplitSections(text);
         if (sections.Count == 0)
-            return new CatalogImportResult(0, 0, 0, 0, "File doesn't look like a Collar export (no recognized sections) - nothing imported.");
+            return new CatalogImportResult(0, 0, 0, 0, 0, "File doesn't look like a Collar export (no recognized sections) - nothing imported.");
 
         var wardrobeAdded = sections.TryGetValue(WardrobeHeader, out var w)
             ? ImportPlainNames(w, config.QuickCommands.Outfits, name => $"outfit lock {name}")
@@ -90,14 +170,17 @@ public sealed class CatalogSyncService
         var restraintsAdded = sections.TryGetValue(RestraintsHeader, out var r)
             ? ImportPlainNames(r, config.QuickCommands.Restraints, name => $"restraint lock {name}")
             : 0;
+        var aliasesAdded = sections.TryGetValue(AliasesHeader, out var a)
+            ? ImportAliasLines(a, config.QuickCommands.Aliases)
+            : 0;
 
-        if (wardrobeAdded > 0 || gestureAdded > 0 || moodlesAdded > 0 || restraintsAdded > 0)
+        if (wardrobeAdded > 0 || gestureAdded > 0 || moodlesAdded > 0 || restraintsAdded > 0 || aliasesAdded > 0)
             config.Save();
 
-        return new CatalogImportResult(wardrobeAdded, gestureAdded, moodlesAdded, restraintsAdded, null);
+        return new CatalogImportResult(wardrobeAdded, gestureAdded, moodlesAdded, restraintsAdded, aliasesAdded, null);
     }
 
-    /// Splits on the four known "## " headers; a line before the first recognized header, or under an
+    /// Splits on the five known "## " headers; a line before the first recognized header, or under an
     /// unrecognized header, is ignored rather than treated as an error - tolerant of a hand-edited or
     /// future-versioned file that still carries the sections this version understands.
     private static Dictionary<string, List<string>> SplitSections(string text)
@@ -141,6 +224,30 @@ public sealed class CatalogSyncService
                 continue;
 
             target.Add(new QuickCommand { Label = line, Command = command });
+            added++;
+        }
+
+        if (added > 0)
+            target.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+        return added;
+    }
+
+    /// collar/catalog-sync: unlike the other categories' `ImportPlainNames`, `Label` and `Command` diverge
+    /// here - `Command` stays the bare alias word (what's actually sent, trigger-phrase-prefixed, in the
+    /// wire tell), while `Label` carries the alias word plus its description, so the Owner sees what
+    /// they're about to send without changing what actually gets sent.
+    private static int ImportAliasLines(IEnumerable<string> lines, List<QuickCommand> target)
+    {
+        var added = 0;
+        foreach (var line in lines)
+        {
+            if (!TryParseAliasEntry(line, out var entry))
+                continue;
+
+            if (target.Any(existing => string.Equals(existing.Command, entry.Alias, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            target.Add(new QuickCommand { Label = $"{entry.Alias} — {entry.Description}", Command = entry.Alias });
             added++;
         }
 

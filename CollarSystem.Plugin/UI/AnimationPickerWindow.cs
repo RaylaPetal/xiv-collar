@@ -38,7 +38,7 @@ public sealed class AnimationPickerWindow : Window, IDisposable
     {
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation Library");
         ImGui.SameLine();
-        ImGui.TextDisabled("Choose the exact named option and trigger for this alias.");
+        IconGlyph.WrappedDisabled("Choose the exact named option and trigger for this alias.");
         ImGui.Separator();
 
         const float buttonWidth = 82;
@@ -61,10 +61,10 @@ public sealed class AnimationPickerWindow : Window, IDisposable
             || e.AnimationName.Contains(filter, StringComparison.OrdinalIgnoreCase)
             || (e.Trigger?.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
 
-        ImGui.TextDisabled($"{visible.Count} shown / {all.Count} discovered");
+        IconGlyph.WrappedDisabled($"{visible.Count} shown / {all.Count} discovered");
         ImGui.Separator();
         using var child = ImRaii.Child("animationPickerResults", Vector2.Zero, false);
-        if (visible.Count == 0) { ImGui.TextDisabled("No animations match this search."); return; }
+        if (visible.Count == 0) { IconGlyph.WrappedDisabled("No animations match this search."); return; }
 
         foreach (var mod in visible.GroupBy(e => new { e.ModDirectory, e.ModName }).OrderBy(g => g.Key.ModName, StringComparer.OrdinalIgnoreCase))
         {
@@ -72,7 +72,7 @@ public sealed class AnimationPickerWindow : Window, IDisposable
             var flags = filter.Length > 0 ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
             if (!ImGui.CollapsingHeader($"{mod.Key.ModName}##pickerMod_{mod.Key.ModDirectory}", flags)) continue;
             ImGui.Indent();
-            ImGui.TextDisabled(first.ModEnabled ? "Enabled in Penumbra" : "Disabled in Penumbra — enabled temporarily when used");
+            IconGlyph.WrappedDisabled(first.ModEnabled ? "Enabled in Penumbra" : "Disabled in Penumbra — enabled temporarily when used");
 
             foreach (var group in mod.GroupBy(e => new { e.GroupName, e.GroupOrder }).OrderBy(g => g.Key.GroupOrder))
             {
@@ -89,11 +89,11 @@ public sealed class AnimationPickerWindow : Window, IDisposable
                         ImGui.Indent();
                         if (entry.Trigger is null)
                         {
-                            ImGui.TextDisabled("No playable gesture detected");
+                            IconGlyph.WrappedDisabled("No playable gesture detected");
                         }
                         else
                         {
-                            ImGui.TextColored(Theme.Accent, entry.Trigger.DisplayName);
+                            IconGlyph.WrappedColored(Theme.Accent, entry.Trigger.DisplayName);
                             ImGui.SameLine();
                             if (ImGui.SmallButton($"Choose##pickerChoose_{entry.Id}"))
                             {

@@ -9,6 +9,11 @@ namespace CollarSystem.Plugin.Commands;
 
 public readonly record struct PendingPairingRequest(string Name, string World, PluginRole SenderRole, string? TriggerPhrase = null);
 
+/// collar/pairing "Receiving a panic notification updates the header": the peer's declared role at the
+/// moment they panicked, so the header can say "your Sub" or "your Owner" - transient, in-memory, the same
+/// shape `PendingPairingRequest`/`Pending` already use.
+public readonly record struct PeerUnpairedNotice(PluginRole PeerRole);
+
 /// collar/chat-transport's listener, now split into two independent things it watches every incoming
 /// tell for:
 ///  - a one-time pairing handshake message (both roles listen - collar/pairing), which never applies
@@ -21,11 +26,12 @@ public sealed class ChatCommandListener : IDisposable
 {
     private const string PairingAckKeyword = "collarpairack";
     private const string PairingKeyword = "collarpair";
+    private const string UnpairNoticeKeyword = "collarunpair";
 
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
     /// lookup (see Resolve/HandleForce*). A Sub alias can never be named one of these - CollarWindow's
     /// alias-creation forms validate against this list so the two paths can never collide.
-    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint"];
+    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint", "customtrigger"];
 
     private readonly PluginConfig config;
     private readonly PairingCommand pairing;
@@ -38,11 +44,23 @@ public sealed class ChatCommandListener : IDisposable
     private readonly CollarCommand collar;
     private readonly MoodlesCommand moodles;
     private readonly RestraintCommand restraints;
+    private readonly CustomTriggerCommand customTriggers;
 
     public PendingPairingRequest? Pending { get; private set; }
     public event Action? PendingChanged;
 
-    public ChatCommandListener(PluginConfig config, PairingCommand pairing, ChatComposer composer, ChatSender sender, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints)
+    public PeerUnpairedNotice? PeerUnpairedNotice { get; private set; }
+    public event Action? PeerUnpairedNoticeChanged;
+
+    /// Called from the header once the notice has been shown and acted on (Owner clicks Release; Sub
+    /// dismisses the informational note) - clears it back to null.
+    public void DismissPeerUnpairedNotice()
+    {
+        PeerUnpairedNotice = null;
+        PeerUnpairedNoticeChanged?.Invoke();
+    }
+
+    public ChatCommandListener(PluginConfig config, PairingCommand pairing, ChatComposer composer, ChatSender sender, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, CustomTriggerCommand customTriggers)
     {
         this.config = config;
         this.pairing = pairing;
@@ -55,6 +73,7 @@ public sealed class ChatCommandListener : IDisposable
         this.collar = collar;
         this.moodles = moodles;
         this.restraints = restraints;
+        this.customTriggers = customTriggers;
 
         Plugin.ChatGui.ChatMessage += OnChatMessage;
     }
@@ -85,6 +104,11 @@ public sealed class ChatCommandListener : IDisposable
 
         Pending = null;
         PendingChanged?.Invoke();
+
+        // A freshly-completed pairing supersedes any stale "your peer panicked" notice left over from
+        // before - most relevant when re-pairing with the same person after they panicked.
+        if (PeerUnpairedNotice is not null)
+            DismissPeerUnpairedNotice();
     }
 
     public void DismissPending()
@@ -106,6 +130,8 @@ public sealed class ChatCommandListener : IDisposable
         if (TryHandlePairingAckMessage(text, message.Sender))
             return;
         if (TryHandlePairingMessage(text, message.Sender))
+            return;
+        if (TryHandleUnpairNoticeMessage(text, message.Sender))
             return;
 
         // Only the Sub role ever reacts to ongoing alias triggers - the Owner's plugin only composes (see
@@ -248,6 +274,34 @@ public sealed class ChatCommandListener : IDisposable
         return true;
     }
 
+    /// collar/pairing "Receiving a panic notification updates the header": a "collarunpair <role>" tell
+    /// sent automatically by PanicHandler. Verified by comparing the sender against this side's own
+    /// currently-configured peer name/world - no code involved, since ending an already-trusted
+    /// relationship doesn't need the same shared-secret gate establishing one does (see design.md). A
+    /// notice from anyone else is silently ignored, the same "fail closed" shape every other handshake
+    /// message here already uses.
+    private bool TryHandleUnpairNoticeMessage(string text, SeString sender)
+    {
+        if (!text.StartsWith(UnpairNoticeKeyword, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var (roleToken, _) = SplitFirstToken(text[UnpairNoticeKeyword.Length..].Trim());
+        if (!TryParseRole(roleToken, out var peerRole))
+            return true;
+
+        var (name, world) = ExtractNameAndWorld(sender);
+        if (name is null)
+            return true;
+        if (!string.Equals(name, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (world is not null && !string.Equals(world, config.Pairing.PeerWorld, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        PeerUnpairedNotice = new PeerUnpairedNotice(peerRole);
+        PeerUnpairedNoticeChanged?.Invoke();
+        return true;
+    }
+
     private static bool TryParseRole(string token, out PluginRole role)
     {
         switch (token.ToLowerInvariant())
@@ -290,6 +344,13 @@ public sealed class ChatCommandListener : IDisposable
                 return permissions.Moodles ? HandleForceMoodle(rest) : LocalTestResult.Fail("Moodles permission is not enabled.");
             case "restraint":
                 return permissions.Restraints && config.TosAcknowledged ? HandleForceRestraint(rest) : LocalTestResult.Fail("Restraints permission or the automation-risk acknowledgement is not enabled.");
+            case "customtrigger":
+                // Deliberately no outer permission gate here, unlike every other case above - a
+                // Custom Trigger bundle mixes categories with independent permissions, so
+                // CustomTriggerCommand.Apply checks each bundled action's own permission (and Chat's
+                // dedicated acknowledgement) individually as it dispatches (design.md's "orchestrator,
+                // not a reimplementation" decision - see also the ResolveAlias CustomTriggers branch).
+                return HandleForceCustomTrigger(rest);
         }
 
         return ResolveAlias(commandText);
@@ -315,7 +376,18 @@ public sealed class ChatCommandListener : IDisposable
             return LocalTestResult.Fail("\"title create\" was given no text.");
         }
 
-        return LocalTestResult.Fail($"Unrecognized \"title\" override \"{rest}\" - expected \"create <text>\" or \"clear\".");
+        const string stylePrefix = "style ";
+        if (rest.StartsWith(stylePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            if (TitleCommand.TryParseStyleCommand(rest[stylePrefix.Length..], out var text, out var isPrefix, out var color))
+            {
+                title.ForceApply(text, isPrefix, color);
+                return LocalTestResult.Ok($"Title \"{text}\" applied with style.");
+            }
+            return LocalTestResult.Fail("\"title style\" was malformed - expected \"style \\\"<text>\\\" prefix:<0|1> color:<r>,<g>,<b>\".");
+        }
+
+        return LocalTestResult.Fail($"Unrecognized \"title\" override \"{rest}\" - expected \"create <text>\", \"style \\\"<text>\\\" prefix:<0|1> color:<r>,<g>,<b>\", or \"clear\".");
     }
 
     private LocalTestResult HandleForceOutfit(string rest)
@@ -440,6 +512,25 @@ public sealed class ChatCommandListener : IDisposable
         return LocalTestResult.Fail($"Unrecognized \"restraint\" override \"{rest}\" - expected \"lock <device name>\", \"wear <slot> <itemId> \\\"<label>\\\" rules:...\", or \"unlock\".");
     }
 
+    private LocalTestResult HandleForceCustomTrigger(string rest)
+    {
+        const string castPrefix = "cast ";
+        if (rest.StartsWith(castPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var remainder = rest[castPrefix.Length..];
+            if (CustomTriggerCommand.TryParseCastCommand(remainder, out var label, out var actions))
+            {
+                var result = customTriggers.Apply(actions);
+                return result.Success
+                    ? LocalTestResult.Ok($"Custom trigger \"{label}\": {result.Message}")
+                    : LocalTestResult.Fail($"Custom trigger \"{label}\": {result.Message}");
+            }
+            return LocalTestResult.Fail("\"customtrigger cast\" was malformed - expected \"cast \\\"<label>\\\" title=...;outfit=...;gesture=...;moodle=...;restraint=...;chat=<rest of line>\" (chat, if present, must be last).");
+        }
+
+        return LocalTestResult.Fail($"Unrecognized \"customtrigger\" override \"{rest}\" - expected \"cast \\\"<label>\\\" ...\".");
+    }
+
     private static (string First, string Remainder) SplitFirstToken(string text)
     {
         var trimmed = text.Trim();
@@ -525,6 +616,33 @@ public sealed class ChatCommandListener : IDisposable
                 ? LocalTestResult.Ok($"Alias \"{alias}\" matched a restraint device (toggled).")
                 : LocalTestResult.Fail($"Alias \"{alias}\" matched a restraint device, but it is currently force-locked.");
         }
+
+        if (Matches(alias, aliases.ClearMoodleAlias))
+        {
+            if (!permissions.Moodles)
+                return LocalTestResult.Fail("Moodles permission is not enabled.");
+            return moodles.Clear()
+                ? LocalTestResult.Ok($"Alias \"{alias}\" matched clear-moodle.")
+                : LocalTestResult.Fail($"Alias \"{alias}\" matched clear-moodle, but Moodles may be unavailable.");
+        }
+
+        var moodleAlias = aliases.Moodles.FirstOrDefault(a => Matches(alias, a.Alias));
+        if (moodleAlias is not null)
+        {
+            if (!permissions.Moodles)
+                return LocalTestResult.Fail("Moodles permission is not enabled.");
+            return moodles.Apply(moodleAlias)
+                ? LocalTestResult.Ok($"Alias \"{alias}\" matched a Moodle.")
+                : LocalTestResult.Fail($"Alias \"{alias}\" matched a Moodle, but it failed to apply.");
+        }
+
+        // collar/custom-triggers "Sub defines a named Custom Trigger bundling multiple actions": no
+        // category permission gate here - each bundled action checks its own category's permission
+        // independently inside CustomTriggerCommand.Apply, so a disabled category is skipped rather than
+        // blocking the whole trigger the way every other branch above does.
+        var customTrigger = aliases.CustomTriggers.FirstOrDefault(t => Matches(alias, t.Alias));
+        if (customTrigger is not null)
+            return customTriggers.Apply(customTrigger.Actions);
 
         return LocalTestResult.Fail($"No matching alias or reserved-word command for \"{alias}\".");
     }

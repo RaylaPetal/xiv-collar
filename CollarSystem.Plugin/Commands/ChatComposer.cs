@@ -46,17 +46,34 @@ public sealed class ChatComposer
         return $"/tell {name}@{world} collarpairack {roleToken} {code} {triggerPhrase.Trim()}";
     }
 
+    /// collar/pairing "Panic notifies the peer, best-effort": the automatic notification tell sent from
+    /// PanicHandler as a direct consequence of the panic action itself. Like ComposePairingAck, the target
+    /// is already known (the peer identity cached at the moment panic ran), so this composes a full
+    /// `/tell` directly rather than going through Wrap. Carries no code - ending a trust relationship
+    /// doesn't need one, only establishing a new one does (see design.md).
+    public string ComposeUnpairNotice(string name, string world)
+    {
+        var roleToken = config.Role == PluginRole.Owner ? "owner" : "sub";
+        return $"/tell {name}@{world} collarunpair {roleToken}";
+    }
+
     /// collar/chat-transport: uses the peer's trigger phrase captured during pairing (see
     /// PairingState.PeerTriggerPhrase) when known, so an already-paired relationship can never silently
     /// diverge again - falls back to this side's own configured TriggerPhrase only when no peer phrase has
     /// been captured (no pairing yet, or a peer whose handshake didn't declare one).
+    ///
+    /// collar/chat-transport "Composing and sending require active pairing, not just a remembered peer":
+    /// addresses a `/tell` only while `IsPaired` is true, not merely whenever PeerName/PeerWorld happen to
+    /// be non-empty - PanicHandler.EndPairingLocally deliberately leaves those cached after panic clears
+    /// Paired, so checking presence alone would let a side that just panicked its own pairing away keep
+    /// composing (and, via CollarWindow's canSend, keep sending) to the peer it just unpaired from.
     private string Wrap(string body)
     {
         var pairing = config.Pairing;
         var trigger = (!string.IsNullOrWhiteSpace(pairing.PeerTriggerPhrase) ? pairing.PeerTriggerPhrase : config.TriggerPhrase).Trim();
         var full = $"{trigger} {body}".Trim();
 
-        if (string.IsNullOrWhiteSpace(pairing.PeerName) || string.IsNullOrWhiteSpace(pairing.PeerWorld))
+        if (!pairing.IsPaired)
             return full;
 
         return $"/tell {pairing.PeerName}@{pairing.PeerWorld} {full}";

@@ -90,7 +90,7 @@ public sealed class ItemPickerWindow : Window, IDisposable
     {
         IconGlyph.Text(FontAwesomeIcon.Tshirt, $"Item Library - {slot}");
         ImGui.SameLine();
-        ImGui.TextDisabled("Choose any item valid for this slot - it does not need to be equipped or owned.");
+        IconGlyph.WrappedDisabled("Choose any item valid for this slot - it does not need to be equipped or owned.");
         ImGui.Separator();
 
         ImGui.SetNextItemWidth(Math.Max(180, ImGui.GetContentRegionAvail().X));
@@ -101,10 +101,10 @@ public sealed class ItemPickerWindow : Window, IDisposable
             ? slotItems
             : slotItems.Where(i => i.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 
-        ImGui.TextDisabled($"{visible.Count} shown / {slotItems.Count} valid for {slot}");
+        IconGlyph.WrappedDisabled($"{visible.Count} shown / {slotItems.Count} valid for {slot}");
         ImGui.Separator();
         using var child = ImRaii.Child("itemPickerResults", Vector2.Zero, false);
-        if (visible.Count == 0) { ImGui.TextDisabled("No items match this search."); return; }
+        if (visible.Count == 0) { IconGlyph.WrappedDisabled("No items match this search."); return; }
 
         foreach (var (itemId, name) in visible)
         {

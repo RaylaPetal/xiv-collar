@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using Dalamud.Configuration;
 using Dalamud.Game.ClientState.Keys;
 using Glamourer.Api.Enums;
@@ -61,6 +62,19 @@ public class QuickCommand
     public string? GestureGroupName { get; set; }
     public int GestureGroupOrder { get; set; }
     public int GestureOptionOrder { get; set; }
+
+    /// collar/title only: the Owner-chosen prefix/color for this title quick command, kept in sync with the
+    /// encoded `title style ...` command (see CollarWindow's title quick-command editor) - `Command` remains
+    /// the actual source of truth sent over the wire; these exist purely so the UI can display/reconstruct
+    /// the chosen style without re-parsing it. Null color means a plain `title create <text>` command with
+    /// no style at all.
+    public bool TitleIsPrefix { get; set; }
+    public Vector3? TitleColor { get; set; }
+
+    /// collar/ui-organization "Owner can favorite quick commands for quick access": a plain flag, not a
+    /// separate list - removing/renaming this entry in its own category list already removes/renames it
+    /// everywhere it's referenced, so the favorites window just filters all seven lists by this field.
+    public bool IsFavorite { get; set; }
 }
 
 /// Owner-side only in practice. Outfits/Gestures are normally auto-populated by "Add from clipboard" (one
@@ -95,7 +109,14 @@ public class CollarState
     public byte Stain { get; set; }
     public byte Stain2 { get; set; }
 
+    /// collar/collaring "Sub can optionally assign a Moodle to the collar" - independent of the Neck-slot
+    /// item above, optional (both null when unassigned), applied/re-asserted/cleared alongside the collar's
+    /// own lock lifecycle (CollarCommand), never through the ordinary Moodles alias/override path.
+    public string? MoodleStatusId { get; set; }
+    public string? MoodleStatusName { get; set; }
+
     public bool IsConfigured => ItemId is not null;
+    public bool HasMoodleAssigned => MoodleStatusId is not null;
 }
 
 /// One category's (Collar/Outfit/future Restraints) claim on a single equipment slot (collar/slot-locking)
@@ -128,6 +149,13 @@ public class PermissionSet
     // collar/restraints: same independent opt-in pattern - gates both Sub self-apply and the Owner's
     // force-apply override, same as every other category's permission flag.
     public bool Restraints { get; set; }
+
+    /// collar/custom-triggers "Sending a chat message requires its own dedicated permission and
+    /// acknowledgement": deliberately independent of every category above (including Gesture, whose own
+    /// chat use is a closed set of self-targeting commands) - this permission alone lets a Custom Trigger's
+    /// chat action send arbitrary text to any channel, so it needs its own opt-in, never implied by any
+    /// other permission being on. See PluginConfig.CustomChatAcknowledged for the matching acknowledgement.
+    public bool CustomChatMessages { get; set; }
 }
 
 /// collar/restraints: the fixed set of restriction rule kinds a restraint device may carry.
@@ -246,6 +274,13 @@ public class PluginConfig : IPluginConfiguration
     /// Gate per collar/gesture and collar/follow's ToS-disclosure requirement: the Sub must acknowledge
     /// the automation-risk caveat before either permission can be enabled.
     public bool TosAcknowledged { get; set; }
+
+    /// collar/custom-triggers "Sending a chat message requires its own dedicated permission and
+    /// acknowledgement": deliberately separate from `TosAcknowledged` above - a Custom Trigger's chat
+    /// action is a materially broader automation surface (arbitrary text, any channel) than anything the
+    /// general acknowledgement was written to cover, so it gets its own explicit, dedicated checkbox rather
+    /// than silently riding on the existing one.
+    public bool CustomChatAcknowledged { get; set; }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

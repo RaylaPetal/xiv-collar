@@ -28,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
+    [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
 
     private const string CommandName = "/collar";
     private const string PanicCommandName = "/collarpanic";
@@ -45,6 +46,13 @@ public sealed class Plugin : IDalamudPlugin
     private SettingsWindow SettingsWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
     public ItemPickerWindow ItemPickerWindow { get; }
+    public FavoritesWindow FavoritesWindow { get; }
+
+    /// collar/ui-organization: the DTR bar ("server info bar") entry that toggles FavoritesWindow -
+    /// Dalamud's own officially-supported way to add a native-looking, clickable entry alongside the
+    /// clock/world/FPS indicators (confirmed against Aetherphone's own use of this same API - see
+    /// design.md), never a raw AtkResNode modification.
+    private Dalamud.Game.Gui.Dtr.IDtrBarEntry? dtrEntry;
 
     public SubRuntimeState RuntimeState { get; }
 
@@ -67,6 +75,7 @@ public sealed class Plugin : IDalamudPlugin
     public CollarCommand CollarCommand { get; }
     public MoodlesCommand MoodlesCommand { get; }
     public RestraintCommand RestraintCommand { get; }
+    public CustomTriggerCommand CustomTriggerCommand { get; }
     public CatalogSyncService CatalogSyncService { get; }
     public ChatComposer ChatComposer { get; }
     public ChatSender ChatSender { get; }
@@ -106,24 +115,33 @@ public sealed class Plugin : IDalamudPlugin
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
         FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
-        CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
+        CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
         RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState);
+        CustomTriggerCommand = new CustomTriggerCommand(Configuration, TitleCommand, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
-        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, ChatComposer, ChatSender, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand);
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, ChatComposer, ChatSender, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, CustomTriggerCommand);
 
-        PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState);
+        PanicHandler = new PanicHandler(PairingCommand, Configuration, ChatComposer, ChatSender, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState, CollarCommand);
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
         AnimationPickerWindow = new AnimationPickerWindow(this);
         ItemPickerWindow = new ItemPickerWindow(this);
+        FavoritesWindow = new FavoritesWindow(this);
         WindowSystem.AddWindow(CollarWindow);
         WindowSystem.AddWindow(SettingsWindow);
         WindowSystem.AddWindow(AnimationPickerWindow);
         WindowSystem.AddWindow(ItemPickerWindow);
+        WindowSystem.AddWindow(FavoritesWindow);
+
+        dtrEntry = DtrBar.Get("Collar");
+        dtrEntry.Text = "Collar";
+        dtrEntry.Tooltip = "Click to open your favorited Collar System commands.";
+        dtrEntry.OnClick = _ => FavoritesWindow.Toggle();
+        dtrEntry.Shown = true;
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -157,12 +175,15 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi -= SettingsWindow.Toggle;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
 
+        dtrEntry?.Remove();
+
         FileDialogManager.Reset();
         WindowSystem.RemoveAllWindows();
         CollarWindow.Dispose();
         SettingsWindow.Dispose();
         AnimationPickerWindow.Dispose();
         ItemPickerWindow.Dispose();
+        FavoritesWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(PanicCommandName);
@@ -202,6 +223,10 @@ public sealed class Plugin : IDalamudPlugin
 
     private void ToggleMainUi() => CollarWindow.Toggle();
 
+    /// collar/ui-organization: lets FavoritesWindow (or anything else outside CollarWindow) bring the main
+    /// window forward already on the Owner tab, without making CollarWindow itself public.
+    public void OpenOwnerCommands() => CollarWindow.OpenOwnerTab();
+
     private void OnFrameworkUpdate(IFramework framework)
     {
         // The panic hotkey is a plain edge-detected key check - deliberately simple so it keeps working
@@ -216,6 +241,7 @@ public sealed class Plugin : IDalamudPlugin
 
         GestureCommand.OnFrameworkUpdate();
         WalkOnlyService.OnFrameworkUpdate();
+        CollarCommand.OnFrameworkUpdate();
     }
 
     private void MigrateConfiguration()
