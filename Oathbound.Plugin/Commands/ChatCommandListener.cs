@@ -418,7 +418,7 @@ public sealed class ChatCommandListener : IDisposable
 
     private LocalTestResult HandleForceGesture(string rest)
     {
-        var name = StripQuotes(rest.Trim());
+        var name = rest.Trim();
         if (name.Length == 0)
             return LocalTestResult.Fail("\"gesture\" was given no name.");
 
@@ -461,7 +461,7 @@ public sealed class ChatCommandListener : IDisposable
         const string applyPrefix = "apply ";
         if (rest.StartsWith(applyPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            var name = StripQuotes(rest[applyPrefix.Length..].Trim());
+            var name = rest[applyPrefix.Length..].Trim();
             if (name.Length > 0)
             {
                 return moodles.ForceApply(name)

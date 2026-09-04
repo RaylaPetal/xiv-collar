@@ -11,6 +11,7 @@ namespace Oathbound.Plugin.Safety;
 /// transition but never assumes anything about prior state beyond that.
 public interface IRestrictionEnforcer
 {
+    bool IsAvailable { get; }
     void Engage();
     void Release();
 }
@@ -32,6 +33,20 @@ public sealed class RestrictionRuleManager
     public void RegisterEnforcer(RestraintRuleKind kind, IRestrictionEnforcer enforcer) => enforcers[kind] = enforcer;
 
     public bool IsActive(RestraintRuleKind kind) => activeByKind.TryGetValue(kind, out var owners) && owners.Count > 0;
+
+    public bool CanActivate(IEnumerable<RestraintRuleAssignment> rules, out RestraintRuleKind unavailable)
+    {
+        foreach (var rule in rules)
+        {
+            if (!enforcers.TryGetValue(rule.Kind, out var enforcer) || !enforcer.IsAvailable)
+            {
+                unavailable = rule.Kind;
+                return false;
+            }
+        }
+        unavailable = default;
+        return true;
+    }
 
     /// The per-instance configuration a rule kind conflict-checks on - ForcedPose's pose target,
     /// ArmsCuffed/LegsCuffed/FullBodyCuffed's chosen animation id. Null for kinds with no such
@@ -71,6 +86,11 @@ public sealed class RestrictionRuleManager
         if (WouldConflict(rules, owner))
         {
             Plugin.Log.Warning($"RestrictionRuleManager: \"{owner}\" refused - a rule conflicts with a different configuration already active.");
+            return false;
+        }
+        if (!CanActivate(rules, out var unavailable))
+        {
+            Plugin.Log.Warning($"RestrictionRuleManager: '{owner}' refused - {unavailable} enforcement is unavailable.");
             return false;
         }
 

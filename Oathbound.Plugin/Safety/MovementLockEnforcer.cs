@@ -20,6 +20,7 @@ public sealed class MovementLockEnforcer : IRestrictionEnforcer
         this.ownerToken = ownerToken;
     }
 
-    public void Engage() => movementLock.Engage(ownerToken);
-    public void Release() => movementLock.Release(ownerToken);
+    public bool IsAvailable => movementLock.IsImmobilizeAvailable;
+    public void Engage() => movementLock.EngageImmobilize(ownerToken);
+    public void Release() => movementLock.ReleaseImmobilize(ownerToken);
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
@@ -22,6 +23,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] internal static ITargetManager TargetManager { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
@@ -105,7 +107,8 @@ public sealed class Plugin : IDalamudPlugin
         MoodlesIpc = new MoodlesIpc();
         MovementLockService = new MovementLockService();
         WalkOnlyService = new WalkOnlyService();
-        ActionBlockService = new ActionBlockService();
+        ActionBlockService = new ActionBlockService(WalkOnlyService);
+        WalkOnlyService.SprintInterceptorAvailable = ActionBlockService.IsAvailable;
         ChatGagService = new ChatGagService();
         RestrictionRuleManager = new RestrictionRuleManager();
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ForcedPose, new MovementLockEnforcer(MovementLockService, "Restraints"));
@@ -118,7 +121,7 @@ public sealed class Plugin : IDalamudPlugin
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
-        FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
+        FollowCommand = new FollowCommand(Configuration, MovementLockService, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
         RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState);
@@ -260,6 +263,8 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         GestureCommand.OnFrameworkUpdate();
+        MovementLockService.OnFrameworkUpdate();
+        FollowCommand.OnFrameworkUpdate();
         WalkOnlyService.OnFrameworkUpdate();
         CollarCommand.OnFrameworkUpdate();
     }
@@ -267,13 +272,42 @@ public sealed class Plugin : IDalamudPlugin
     private void MigrateConfiguration()
     {
         var follow = Configuration.Aliases.Follow;
-        if (!string.Equals(follow.EngageAlias, "leash-on", StringComparison.Ordinal) ||
-            !string.Equals(follow.ReleaseAlias, "leash-off", StringComparison.Ordinal))
-            return;
+        var changed = false;
+        if (string.Equals(follow.EngageAlias, "leash-on", StringComparison.Ordinal) &&
+            string.Equals(follow.ReleaseAlias, "leash-off", StringComparison.Ordinal))
+        {
+            follow.EngageAlias = "leash";
+            follow.ReleaseAlias = "unleash";
+            changed = true;
+        }
 
-        follow.EngageAlias = "leash";
-        follow.ReleaseAlias = "unleash";
-        Configuration.Save();
+        foreach (var cmd in Configuration.QuickCommands.Gestures)
+        {
+            if (cmd.Target is null || !Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(cmd.Target, out var entry)) continue;
+            var readable = $"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, Configuration.GestureMapping.ImportedPeerCatalog.Values))}";
+            if (cmd.Command == readable) continue;
+            cmd.Command = readable;
+            changed = true;
+        }
+        foreach (var cmd in Configuration.QuickCommands.Moodles)
+        {
+            if (cmd.Target is null || !cmd.Command.StartsWith("moodle apply ", StringComparison.OrdinalIgnoreCase)) continue;
+            var readable = $"moodle apply {CommandSelector.Quote(MoodlesTextFormat.StripMarkup(cmd.Target))}";
+            if (cmd.Command == readable) continue;
+            cmd.Command = readable;
+            changed = true;
+        }
+        foreach (var cmd in Configuration.QuickCommands.Restraints.Where(c => c.RestraintRules is { Count: > 0 }))
+        {
+            foreach (var rule in cmd.RestraintRules!.Where(r => r.AnimationId is not null && r.AnimationLabel is null))
+                if (Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(rule.AnimationId!, out var entry))
+                    rule.AnimationLabel = CommandSelector.GestureSelector(entry, Configuration.GestureMapping.ImportedPeerCatalog.Values);
+            var readable = RestraintCommand.BuildLockCommand(cmd.Label, cmd.RestraintRules!);
+            if (cmd.Command == readable) continue;
+            cmd.Command = readable;
+            changed = true;
+        }
+        if (changed) Configuration.Save();
     }
 
     internal static void FireAndForget(Task task) =>

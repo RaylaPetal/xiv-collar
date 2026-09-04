@@ -168,7 +168,7 @@ public sealed class RestraintCommand
     /// (via RestrictionRuleManager - refused if a rule conflicts with an already-active one). Both checks
     /// run before anything is applied, and both must pass, so a refused apply never leaves a partial visual
     /// or rule change behind - same "refuse the whole action" guarantee OutfitCommand.ApplyDesign gives.
-    private bool ApplyDevice(string deviceId, RestraintDeviceDefinition device)
+    private unsafe bool ApplyDevice(string deviceId, RestraintDeviceDefinition device)
     {
         if (slotLocks.WouldOverlap([device.Slot], Owner))
         {
@@ -180,6 +180,22 @@ public sealed class RestraintCommand
             Plugin.Log.Warning($"Restraint apply refused for \"{device.Name}\": a restriction rule conflicts with a different device already active.");
             return false;
         }
+        if (!restrictionRules.CanActivate(device.Rules, out var unavailable))
+        {
+            Plugin.Log.Warning($"Restraint apply refused for '{device.Name}': {unavailable} enforcement is unavailable.");
+            return false;
+        }
+        if (device.Rules.Any(r => r.Kind == RestraintRuleKind.ForcedPose) && PlayerState.Instance() == null)
+        {
+            Plugin.Log.Warning($"Restraint apply refused for '{device.Name}': pose state is unavailable.");
+            return false;
+        }
+        var boundRules = device.Rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed).ToList();
+        if (boundRules.Any(r => ResolveAnimation(r.AnimationId) is null))
+        {
+            Plugin.Log.Warning($"Restraint apply refused for '{device.Name}': a bound animation is missing, stale, or ambiguous.");
+            return false;
+        }
 
         var value = new SlotLockValue(device.ItemId, device.Stain, device.Stain2);
         if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [device.Slot] = value }))
@@ -188,15 +204,25 @@ public sealed class RestraintCommand
             return false;
         }
 
-        if (device.Rules.Count > 0)
-            restrictionRules.TryActivate(deviceId, device.Rules);
+        if (device.Rules.Count > 0 && !restrictionRules.TryActivate(deviceId, device.Rules))
+        {
+            slotLocks.Release(Owner);
+            return false;
+        }
 
         var pose = device.Rules.FirstOrDefault(r => r.Kind == RestraintRuleKind.ForcedPose);
         if (pose is not null)
             ApplyPose(pose.PoseModeId);
 
-        foreach (var rule in device.Rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed))
-            EngageBoundAnimation(deviceId, rule);
+        foreach (var rule in boundRules)
+        {
+            if (EngageBoundAnimation(deviceId, rule)) continue;
+            ReleaseBoundAnimations(deviceId);
+            restrictionRules.Release(deviceId);
+            slotLocks.Release(Owner);
+            Plugin.Log.Warning($"Restraint apply rolled back for '{device.Name}': bound animation activation failed.");
+            return false;
+        }
 
         activeDeviceIds.Add(deviceId);
         return true;
@@ -230,28 +256,36 @@ public sealed class RestraintCommand
     /// idle-timeout revert, and reverted explicitly in ReleaseDevice/ReleaseAllBoundAnimationsForPanic
     /// instead. Silently does nothing if the animation is missing, stale, or Penumbra is unavailable - the
     /// device still applies its other rules/slot lock even if the bound animation can't engage.
-    private void EngageBoundAnimation(string deviceId, RestraintRuleAssignment rule)
+    private GestureCatalogEntry? ResolveAnimation(string? selector)
     {
-        if (rule.AnimationId is not { } animationId)
-            return;
-        if (!config.GestureMapping.LocalCatalog.TryGetValue(animationId, out var entry) || entry.Trigger is null)
+        if (string.IsNullOrWhiteSpace(selector)) return null;
+        return CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, selector);
+    }
+
+    private bool EngageBoundAnimation(string deviceId, RestraintRuleAssignment rule)
+    {
+        if (ResolveAnimation(rule.AnimationId) is not { } entry || entry.Trigger is null)
         {
-            Plugin.Log.Warning($"Restraint {rule.Kind} rule refused to engage: animation \"{animationId}\" is not in the local Gesture catalog.");
-            return;
+            Plugin.Log.Warning($"Restraint {rule.Kind} rule refused to engage: animation '{rule.AnimationId}' is unavailable.");
+            return false;
         }
 
         var collection = penumbra.TryGetLocalPlayerCollectionId();
         if (collection is null)
-            return;
+            return false;
 
         var selections = entry.GroupSelections.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
         if (!penumbra.TrySetTemporarySettings(collection.Value, entry.ModDirectory, selections))
-            return;
+            return false;
         if (!penumbra.TryRedrawLocalPlayer())
-            return;
+        {
+            penumbra.TryRemoveTemporarySettings(collection.Value, entry.ModDirectory);
+            return false;
+        }
 
         boundAnimations[(deviceId, rule.Kind)] = (collection.Value, entry.ModDirectory);
         GestureCommand.Play(entry.Trigger);
+        return true;
     }
 
     private void ReleaseBoundAnimations(string deviceId)
@@ -333,9 +367,9 @@ public sealed class RestraintCommand
             RestraintRuleKind.WalkOnly => "walkonly",
             RestraintRuleKind.ActionBlock => "actionblock",
             RestraintRuleKind.GagChat => "gag",
-            RestraintRuleKind.ArmsCuffed => $"armscuffed={r.AnimationId}",
-            RestraintRuleKind.LegsCuffed => $"legscuffed={r.AnimationId}",
-            RestraintRuleKind.FullBodyCuffed => $"fullbodycuffed={r.AnimationId}",
+            RestraintRuleKind.ArmsCuffed => $"armscuffed={ReadableAnimation(r)}",
+            RestraintRuleKind.LegsCuffed => $"legscuffed={ReadableAnimation(r)}",
+            RestraintRuleKind.FullBodyCuffed => $"fullbodycuffed={ReadableAnimation(r)}",
             _ => "",
         }).Where(t => t.Length > 0);
 
@@ -384,9 +418,9 @@ public sealed class RestraintCommand
             RestraintRuleKind.WalkOnly => "walkonly",
             RestraintRuleKind.ActionBlock => "actionblock",
             RestraintRuleKind.GagChat => "gag",
-            RestraintRuleKind.ArmsCuffed => $"armscuffed={r.AnimationId}",
-            RestraintRuleKind.LegsCuffed => $"legscuffed={r.AnimationId}",
-            RestraintRuleKind.FullBodyCuffed => $"fullbodycuffed={r.AnimationId}",
+            RestraintRuleKind.ArmsCuffed => $"armscuffed={ReadableAnimation(r)}",
+            RestraintRuleKind.LegsCuffed => $"legscuffed={ReadableAnimation(r)}",
+            RestraintRuleKind.FullBodyCuffed => $"fullbodycuffed={ReadableAnimation(r)}",
             _ => "",
         }).Where(t => t.Length > 0);
 
@@ -457,6 +491,9 @@ public sealed class RestraintCommand
         }
         return rules;
     }
+
+    private static string ReadableAnimation(RestraintRuleAssignment rule) =>
+        (string.IsNullOrWhiteSpace(rule.AnimationLabel) ? rule.AnimationId : rule.AnimationLabel)!.Replace(',', '·');
 
     /// collar/catalog-sync: every captured device's display name, deduplicated - same plain-name export
     /// shape OutfitCommand/MoodlesCommand provide, since a restraint device is identified by name alone

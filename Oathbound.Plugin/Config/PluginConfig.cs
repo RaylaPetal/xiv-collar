@@ -225,6 +225,7 @@ public class RestraintRuleAssignment
     public RestraintRuleKind Kind { get; set; }
     public int PoseModeId { get; set; }
     public string? AnimationId { get; set; }
+    public string? AnimationLabel { get; set; }
 }
 
 /// A single gear piece (collar/restraints) picked from a slot-and-item picker, generalized to any of the

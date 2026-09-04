@@ -51,8 +51,8 @@ public sealed class MoodlesCommand
     /// band, same pattern as OutfitCommand.ForceApply/GestureCommand.ForceApply.
     public bool ForceApply(string statusName)
     {
-        var entry = config.MoodlesMapping.LocalCatalog.Values
-            .FirstOrDefault(s => string.Equals(s.Name, statusName, StringComparison.OrdinalIgnoreCase));
+        if (CommandSelector.TryRead(statusName, out var selector, out var tail) && tail.Length == 0) statusName = selector;
+        var entry = CommandSelector.ResolveMoodle(config.MoodlesMapping.LocalCatalog.Values, statusName);
         if (entry is null || !Guid.TryParse(entry.StatusId, out var statusId))
             return false;
 

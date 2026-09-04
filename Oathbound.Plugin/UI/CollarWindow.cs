@@ -614,10 +614,16 @@ public class CollarWindow : Window, IDisposable
     private static bool HasAnyRule(RestraintRuleEditState edit) =>
         edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed;
 
-    private static bool BoundAnimationsConfigured(RestraintRuleEditState edit) =>
-        (!edit.ArmsCuffed || edit.ArmsCuffedAnimationId is not null)
-        && (!edit.LegsCuffed || edit.LegsCuffedAnimationId is not null)
-        && (!edit.FullBodyCuffed || edit.FullBodyCuffedAnimationId is not null);
+    private bool BoundAnimationsConfigured(RestraintRuleEditState edit)
+    {
+        bool Contains(string id) => plugin.Configuration.Role == PluginRole.Owner
+            ? plugin.Configuration.GestureMapping.ImportedPeerCatalog.ContainsKey(id)
+            : plugin.Configuration.GestureMapping.LocalCatalog.ContainsKey(id);
+        bool Valid(bool enabled, string? id) => !enabled || id is not null && Contains(id);
+        return Valid(edit.ArmsCuffed, edit.ArmsCuffedAnimationId)
+            && Valid(edit.LegsCuffed, edit.LegsCuffedAnimationId)
+            && Valid(edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId);
+    }
 
     /// collar/ui-organization "Restraint rule checkboxes are laid out two per row": shared by the Sub's
     /// device-capture editor, the Owner's per-quick-command editor, and the Owner's ad-hoc device editor -
@@ -672,12 +678,21 @@ public class CollarWindow : Window, IDisposable
             return;
 
         ImGui.Indent();
-        var catalog = plugin.Configuration.GestureMapping.LocalCatalog;
-        var chosenLabel = currentAnimationId is { } id && catalog.TryGetValue(id, out var entry) ? entry.Label : "(none chosen)";
+        var ownerMode = plugin.Configuration.Role == PluginRole.Owner;
+        var localCatalog = plugin.Configuration.GestureMapping.LocalCatalog;
+        var peerCatalog = plugin.Configuration.GestureMapping.ImportedPeerCatalog;
+        var chosenLabel = currentAnimationId is { } id
+            ? ownerMode && peerCatalog.TryGetValue(id, out var peer) ? peer.Label
+            : !ownerMode && localCatalog.TryGetValue(id, out var local) ? local.Label
+            : "(missing or stale)"
+            : "(none chosen)";
         ImGui.TextUnformatted($"Animation: {chosenLabel}");
         ImGui.SameLine();
         if (ImGui.SmallButton($"Choose##{idSuffix}"))
-            plugin.AnimationPickerWindow.Open(chosen => onChosen(chosen.Id));
+        {
+            if (ownerMode) plugin.AnimationPickerWindow.OpenImported(chosen => onChosen(chosen.Id));
+            else plugin.AnimationPickerWindow.Open(chosen => onChosen(chosen.Id));
+        }
         ImGui.Unindent();
     }
 
@@ -1643,8 +1658,16 @@ public class CollarWindow : Window, IDisposable
         return edit;
     }
 
-    private static List<RestraintRuleAssignment> ToRules(RestraintRuleEditState edit)
+    private List<RestraintRuleAssignment> ToRules(RestraintRuleEditState edit)
     {
+        string? LabelFor(string? id)
+        {
+            if (id is null) return null;
+            if (plugin.Configuration.Role == PluginRole.Owner && plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(id, out var peer))
+                return CommandSelector.GestureSelector(peer, plugin.Configuration.GestureMapping.ImportedPeerCatalog.Values);
+            return plugin.Configuration.GestureMapping.LocalCatalog.TryGetValue(id, out var local)
+                ? CommandSelector.GestureLabel(local.ModName, local.GroupName, local.AnimationName, local.Trigger) : null;
+        }
         var rules = new List<RestraintRuleAssignment>();
         if (edit.ForcedPose)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = edit.PoseIndex + 1 });
@@ -1655,11 +1678,11 @@ public class CollarWindow : Window, IDisposable
         if (edit.GagChat)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
         if (edit.ArmsCuffed)
-            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = edit.ArmsCuffedAnimationId });
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = edit.ArmsCuffedAnimationId, AnimationLabel = LabelFor(edit.ArmsCuffedAnimationId) });
         if (edit.LegsCuffed)
-            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = edit.LegsCuffedAnimationId });
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = edit.LegsCuffedAnimationId, AnimationLabel = LabelFor(edit.LegsCuffedAnimationId) });
         if (edit.FullBodyCuffed)
-            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = edit.FullBodyCuffedAnimationId });
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = edit.FullBodyCuffedAnimationId, AnimationLabel = LabelFor(edit.FullBodyCuffedAnimationId) });
         return rules;
     }
 
@@ -1925,16 +1948,18 @@ public class CollarWindow : Window, IDisposable
     private void DrawSendCopyButtons(string command, bool canSend, string idSuffix)
     {
         var composed = plugin.ChatComposer.Compose(command);
+        var fits = CommandSelector.Fits(composed);
 
-        using (ImRaii.Disabled(!canSend))
+        using (ImRaii.Disabled(!canSend || !fits))
         {
             if (ImGui.SmallButton($"Send##{idSuffix}"))
                 plugin.ChatSender.Send(composed);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
 
         ContinueRowOrWrap(ButtonWidth("Copy"));
+        using (ImRaii.Disabled(!fits))
         if (ImGui.SmallButton($"Copy##{idSuffix}"))
             ImGui.SetClipboardText(composed);
     }

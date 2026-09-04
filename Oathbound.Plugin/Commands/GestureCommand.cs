@@ -123,10 +123,9 @@ public sealed class GestureCommand
 
     public bool ForceApply(string idOrName)
     {
-        if (config.GestureMapping.LocalCatalog.TryGetValue(idOrName, out var byId)) return Execute(byId);
-        var matches = config.GestureMapping.LocalCatalog.Values.Where(e => e.Trigger != null &&
-            (e.AnimationName.Equals(idOrName, StringComparison.OrdinalIgnoreCase) || e.Label.Equals(idOrName, StringComparison.OrdinalIgnoreCase))).ToList();
-        return matches.Count == 1 && Execute(matches[0]);
+        if (CommandSelector.TryRead(idOrName, out var selector, out var tail) && tail.Length == 0) idOrName = selector;
+        var match = CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, idOrName);
+        return match is not null && Execute(match);
     }
 
     private bool Execute(GestureCatalogEntry entry)

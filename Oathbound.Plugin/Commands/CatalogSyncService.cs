@@ -235,15 +235,26 @@ public sealed class CatalogSyncService
             ? ImportAliasLines(wa, quick.Outfits, usedCommands, ref duplicates)
             : 0;
 
-        var gestureAdded = sections.TryGetValue(GestureHeader, out var g)
-            ? ImportGestureLines(g, quick.Gestures, usedCommands, ref duplicates)
+        var gestureCatalogRefreshed = sections.TryGetValue(GestureHeader, out var g);
+        if (gestureCatalogRefreshed)
+            config.GestureMapping.ImportedPeerCatalog.Clear();
+        var gestureAdded = gestureCatalogRefreshed
+            ? ImportGestureLines(g!, quick.Gestures, usedCommands, ref duplicates)
             : 0;
         gestureAdded += sections.TryGetValue(GestureAliasesHeader, out var ga)
             ? ImportAliasLines(ga, quick.Gestures, usedCommands, ref duplicates)
             : 0;
+        if (gestureCatalogRefreshed)
+        {
+            foreach (var cmd in quick.Gestures.Where(c => c.Target is not null && config.GestureMapping.ImportedPeerCatalog.ContainsKey(c.Target)))
+            {
+                var entry = config.GestureMapping.ImportedPeerCatalog[cmd.Target!];
+                cmd.Command = $"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, config.GestureMapping.ImportedPeerCatalog.Values))}";
+            }
+        }
 
         var moodlesAdded = sections.TryGetValue(MoodlesHeader, out var m)
-            ? ImportPlainNames(m, quick.Moodles, name => $"moodle apply {name}", usedCommands, MoodlesTextFormat.StripMarkup, ref duplicates)
+            ? ImportPlainNames(m, quick.Moodles, name => $"moodle apply {CommandSelector.Quote(CommandSelector.MoodleSelector(name, m))}", usedCommands, MoodlesTextFormat.StripMarkup, ref duplicates)
             : 0;
         moodlesAdded += sections.TryGetValue(MoodlesAliasesHeader, out var ma)
             ? ImportAliasLines(ma, quick.Moodles, usedCommands, ref duplicates)
@@ -263,7 +274,7 @@ public sealed class CatalogSyncService
             ? ImportAliasLines(b, quick.Aliases, usedCommands, ref duplicates)
             : 0;
 
-        if (titleAdded + wardrobeAdded + gestureAdded + moodlesAdded + restraintsAdded + bundlesAdded > 0)
+        if (titleAdded + wardrobeAdded + gestureAdded + moodlesAdded + restraintsAdded + bundlesAdded > 0 || gestureCatalogRefreshed)
             config.Save();
 
         return new CatalogImportResult(titleAdded, wardrobeAdded, gestureAdded, moodlesAdded, restraintsAdded, bundlesAdded, duplicates, null);
@@ -368,7 +379,7 @@ public sealed class CatalogSyncService
         return added;
     }
 
-    private static int ImportGestureLines(IEnumerable<string> lines, List<QuickCommand> target, HashSet<string> usedCommands, ref int duplicates)
+    private int ImportGestureLines(IEnumerable<string> lines, List<QuickCommand> target, HashSet<string> usedCommands, ref int duplicates)
     {
         var added = 0;
         foreach (var line in lines)
@@ -376,7 +387,9 @@ public sealed class CatalogSyncService
             if (!GestureCommand.TryParseExport(line, out var entry) || entry is null)
                 continue;
 
-            var command = $"gesture {entry.Id}";
+            config.GestureMapping.ImportedPeerCatalog[entry.Id] = entry;
+
+            var command = $"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, config.GestureMapping.ImportedPeerCatalog.Values))}";
             var isDuplicateTarget = target.Any(existing => existing.Target is not null && string.Equals(existing.Target, entry.Id, StringComparison.OrdinalIgnoreCase));
             if (isDuplicateTarget || usedCommands.Contains(command))
             {

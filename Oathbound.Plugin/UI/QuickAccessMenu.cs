@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using Oathbound.Plugin.Config;
+using Oathbound.Plugin.Commands;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Utility.Raii;
 
@@ -145,12 +146,13 @@ public static class QuickAccessMenu
     private static void DrawFavoriteMenuItem(Plugin plugin, QuickCommand cmd, bool canSend)
     {
         var composed = plugin.ChatComposer.Compose(cmd.Command);
-        using (ImRaii.Disabled(!canSend))
+        var fits = CommandSelector.Fits(composed);
+        using (ImRaii.Disabled(!canSend || !fits))
         {
             if (ImGui.MenuItem(cmd.Label))
                 plugin.ChatSender.Send(composed);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
     }
 }

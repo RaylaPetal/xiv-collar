@@ -14,10 +14,12 @@ namespace Oathbound.Plugin.Commands;
 public sealed class ActionBlockService : IRestrictionEnforcer, IDisposable
 {
     private readonly Hook<ActionManager.Delegates.UseAction>? useActionHook;
+    private readonly WalkOnlyService walkOnly;
     private bool active;
 
-    public unsafe ActionBlockService()
+    public unsafe ActionBlockService(WalkOnlyService walkOnly)
     {
+        this.walkOnly = walkOnly;
         try
         {
             useActionHook = ECommons.DalamudServices.Svc.Hook.HookFromAddress<ActionManager.Delegates.UseAction>(
@@ -46,7 +48,7 @@ public sealed class ActionBlockService : IRestrictionEnforcer, IDisposable
 
     private unsafe bool UseActionDetour(ActionManager* am, ActionType actionType, uint actionId, ulong targetId, uint extraParam, ActionManager.UseActionMode mode, uint comboRouteId, bool* outOptAreaTargeted)
     {
-        if (active)
+        if (active || walkOnly.IsActive && actionType == ActionType.GeneralAction && actionId == 4)
             return false;
 
         return useActionHook!.Original(am, actionType, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);

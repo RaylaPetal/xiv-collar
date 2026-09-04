@@ -12,9 +12,28 @@ namespace Oathbound.Plugin.Commands;
 public sealed class WalkOnlyService : IRestrictionEnforcer
 {
     private bool active;
+    private bool wasWalking;
 
-    public void Engage() => active = true;
-    public void Release() => active = false;
+    public bool IsAvailable => SprintInterceptorAvailable;
+    public bool SprintInterceptorAvailable { get; set; }
+    public bool IsActive => active;
+
+    public unsafe void Engage()
+    {
+        var control = Control.Instance();
+        wasWalking = control != null && control->IsWalking;
+        active = true;
+    }
+    public unsafe void Release()
+    {
+        active = false;
+        var control = Control.Instance();
+        if (control != null && !wasWalking)
+        {
+            control->IsWalking = false;
+            control->IsWalkingDuringAutorun = false;
+        }
+    }
 
     public unsafe void OnFrameworkUpdate()
     {

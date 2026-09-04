@@ -38,6 +38,7 @@ public class GestureCatalogEntry
 public class GestureMapping
 {
     public Dictionary<string, GestureCatalogEntry> LocalCatalog { get; set; } = new();
+    public Dictionary<string, GestureExportEntry> ImportedPeerCatalog { get; set; } = new();
 }
 
 /// collar/catalog-sync "Exporting every catalog to one file": the slim shape actually serialized into a
