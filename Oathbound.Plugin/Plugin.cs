@@ -263,6 +263,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         GestureCommand.OnFrameworkUpdate();
+        RestraintCommand.OnFrameworkUpdate();
         MovementLockService.OnFrameworkUpdate();
         FollowCommand.OnFrameworkUpdate();
         WalkOnlyService.OnFrameworkUpdate();

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Oathbound.Plugin.Safety;
@@ -30,6 +31,13 @@ public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
     private readonly Hook<ProcessChatInputDelegate>? processChatInputHook;
 
     private bool active;
+
+    private static readonly HashSet<string> ChatChannelCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "/say", "/s", "/yell", "/y", "/shout", "/sh",
+        "/party", "/p", "/alliance", "/a", "/freecompany", "/fc",
+        "/novicenetwork", "/n", "/reply", "/r",
+    };
 
     public ChatGagService()
     {
@@ -63,11 +71,13 @@ public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
         try
         {
             var original = message->ToString();
-            if (!string.IsNullOrWhiteSpace(original) && !original.StartsWith('/'))
+            if (!string.IsNullOrWhiteSpace(original))
             {
-                var garbled = Garble(original);
-                if (garbled.Length > 0 && garbled.Length <= 500)
-                    message->SetString(garbled);
+                var rewritten = RewriteOutgoingChat(original);
+                if (!string.Equals(rewritten, original, StringComparison.Ordinal)
+                    && rewritten.Length > 0
+                    && rewritten.Length <= 500)
+                    message->SetString(rewritten);
             }
         }
         catch (Exception ex)
@@ -82,6 +92,76 @@ public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
     /// from a small gag-speak set, punctuation/spacing is preserved so the message still reads as a real
     /// muffled utterance rather than a wall of one repeated token.
     private static readonly string[] Syllables = ["mm", "mph", "hmm", "mmf", "mrph"];
+
+    /// Rewrites speech in every selectable chat channel while retaining the slash command and, for
+    /// tells, its recipient. Non-chat slash commands must pass through unchanged: gagging `/sit`, an
+    /// emote, or an Oathbound command would change behavior rather than muffle speech.
+    internal static string RewriteOutgoingChat(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text[0] != '/')
+            return Garble(text);
+
+        var commandEnd = text.IndexOf(' ');
+        if (commandEnd < 0)
+            return text;
+
+        var command = text[..commandEnd];
+        int bodyStart;
+        if (command.Equals("/tell", StringComparison.OrdinalIgnoreCase)
+            || command.Equals("/t", StringComparison.OrdinalIgnoreCase))
+        {
+            // Player names contain a space. ChatComposer uses Name@World, so the first whitespace
+            // following the world suffix is the unambiguous start of the tell body.
+            var worldSeparator = text.IndexOf('@', commandEnd + 1);
+            if (worldSeparator < 0)
+                return text;
+
+            bodyStart = FindBodyStart(text, worldSeparator + 1);
+        }
+        else if (ChatChannelCommands.Contains(command) || IsNumberedChatChannel(command))
+        {
+            bodyStart = FindBodyStart(text, commandEnd);
+        }
+        else
+        {
+            return text;
+        }
+
+        if (bodyStart >= text.Length || IsInternalProtocolMessage(text.AsSpan(bodyStart)))
+            return text;
+
+        return text[..bodyStart] + Garble(text[bodyStart..]);
+    }
+
+    private static int FindBodyStart(string text, int searchFrom)
+    {
+        var separator = text.IndexOf(' ', searchFrom);
+        if (separator < 0)
+            return text.Length;
+
+        var bodyStart = separator + 1;
+        while (bodyStart < text.Length && text[bodyStart] == ' ')
+            bodyStart++;
+        return bodyStart;
+    }
+
+    private static bool IsNumberedChatChannel(string command)
+    {
+        foreach (var prefix in new[] { "/linkshell", "/l", "/cwlinkshell", "/cwl" })
+        {
+            if (command.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(command.AsSpan(prefix.Length), out var channel)
+                && channel is >= 1 and <= 8)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsInternalProtocolMessage(ReadOnlySpan<char> body)
+        => body.StartsWith("collarpair ", StringComparison.OrdinalIgnoreCase)
+           || body.StartsWith("collarpairack ", StringComparison.OrdinalIgnoreCase)
+           || body.StartsWith("collarunpair ", StringComparison.OrdinalIgnoreCase);
 
     internal static string Garble(string text)
     {

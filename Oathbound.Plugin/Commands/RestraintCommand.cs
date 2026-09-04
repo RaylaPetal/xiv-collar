@@ -19,6 +19,7 @@ namespace Oathbound.Plugin.Commands;
 public sealed class RestraintCommand
 {
     private const string Owner = "Restraints";
+    private const long PlayDelayMs = 500;
 
     private readonly PluginConfig config;
     private readonly GlamourerIpc glamourer;
@@ -48,6 +49,7 @@ public sealed class RestraintCommand
     /// separate from GestureCommand's own `activeTemporary` tracking - a restraint's held animation must
     /// never be subject to Gesture's 30-second idle-timeout revert, and vice versa.
     private readonly Dictionary<(string DeviceId, RestraintRuleKind Kind), (Guid Collection, string ModDirectory)> boundAnimations = new();
+    private readonly Dictionary<(string DeviceId, RestraintRuleKind Kind), (GestureTrigger Trigger, long ReadyAtTicks)> pendingBoundPlays = new();
 
     public bool IsActive(string deviceId) => activeDeviceIds.Contains(deviceId);
 
@@ -153,14 +155,29 @@ public sealed class RestraintCommand
     /// The only thing that can release every Owner-forced device besides panic.
     public bool ForceUnlock()
     {
-        if (!runtimeState.RestraintsForceLocked)
-            return false;
-
-        foreach (var deviceId in activeDeviceIds.ToList())
-            ReleaseDevice(deviceId);
-
+        // This is a safety teardown, not an ordinary per-device toggle. Slot locks survive reloads in
+        // config, while activeDeviceIds and restriction claims deliberately do not; relying only on the
+        // latter made an Owner unlock falsely report success while leaving persisted Glamourer gear in
+        // place. Release each layer independently and unconditionally so partial/stale state heals too.
+        restrictionRules.ReleaseAllForPanic();
+        ReleaseAllBoundAnimationsForPanic();
+        var gearReleased = slotLocks.Release(Owner);
         runtimeState.RestraintsForceLocked = false;
-        return true;
+        return gearReleased;
+    }
+
+    /// Advances delayed bound-animation triggers after Penumbra's redraw has settled. Playing the emote
+    /// immediately after requesting redraw races the character rebuild and commonly results in no visible
+    /// animation; GestureCommand uses the same framework-thread delay for this reason.
+    public void OnFrameworkUpdate()
+    {
+        var now = Environment.TickCount64;
+        foreach (var (key, pending) in pendingBoundPlays.Where(x => now >= x.Value.ReadyAtTicks).ToList())
+        {
+            pendingBoundPlays.Remove(key);
+            if (boundAnimations.ContainsKey(key))
+                GestureCommand.Play(pending.Trigger);
+        }
     }
 
     /// Applies a device's single captured gear piece (locking its one equipment slot, via SlotLockManager -
@@ -259,7 +276,17 @@ public sealed class RestraintCommand
     private GestureCatalogEntry? ResolveAnimation(string? selector)
     {
         if (string.IsNullOrWhiteSpace(selector)) return null;
-        return CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, selector);
+        var resolved = CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, selector);
+        if (resolved is not null)
+            return resolved;
+
+        // The current restraint wire format uses commas between rules, so BuildLockCommand escaped
+        // commas inside readable animation labels as a middle dot. Restore that presentation escape
+        // before local catalog resolution. Without this, real options such as
+        // "Get Cuffed (Gsit2,idle,walk)" arrive as "Gsit2·idle·walk" and always fail preflight.
+        return selector.Contains('·')
+            ? CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, selector.Replace('·', ','))
+            : null;
     }
 
     private bool EngageBoundAnimation(string deviceId, RestraintRuleAssignment rule)
@@ -284,7 +311,7 @@ public sealed class RestraintCommand
         }
 
         boundAnimations[(deviceId, rule.Kind)] = (collection.Value, entry.ModDirectory);
-        GestureCommand.Play(entry.Trigger);
+        pendingBoundPlays[(deviceId, rule.Kind)] = (entry.Trigger, Environment.TickCount64 + PlayDelayMs);
         return true;
     }
 
@@ -292,6 +319,7 @@ public sealed class RestraintCommand
     {
         foreach (var key in boundAnimations.Keys.Where(k => k.DeviceId == deviceId).ToList())
         {
+            pendingBoundPlays.Remove(key);
             var (collection, modDirectory) = boundAnimations[key];
             penumbra.TryRemoveTemporarySettings(collection, modDirectory);
             boundAnimations.Remove(key);
@@ -308,6 +336,7 @@ public sealed class RestraintCommand
         foreach (var (collection, modDirectory) in boundAnimations.Values)
             penumbra.TryRemoveTemporarySettings(collection, modDirectory);
         boundAnimations.Clear();
+        pendingBoundPlays.Clear();
         activeDeviceIds.Clear();
     }
 
