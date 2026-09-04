@@ -35,6 +35,17 @@ public sealed class ChatComposer
         return $"collarpair {roleToken} {config.Pairing.MyCode} {config.TriggerPhrase.Trim()}";
     }
 
+    /// collar/pairing's "One-way pairing handshake completes both sides": the automatic confirmation tell
+    /// sent back to the inviter as part of accepting a pending request. Unlike ComposePairing, the target
+    /// is already known (the verified sender of the request being accepted), so this composes a full
+    /// `/tell` directly rather than going through Wrap's already-paired-peer addressing. `code` echoes back
+    /// the code that was matched to accept, which the inviter checks against their own MyCode.
+    public string ComposePairingAck(string name, string world, string code, string triggerPhrase)
+    {
+        var roleToken = config.Role == PluginRole.Owner ? "owner" : "sub";
+        return $"/tell {name}@{world} collarpairack {roleToken} {code} {triggerPhrase.Trim()}";
+    }
+
     /// collar/chat-transport: uses the peer's trigger phrase captured during pairing (see
     /// PairingState.PeerTriggerPhrase) when known, so an already-paired relationship can never silently
     /// diverge again - falls back to this side's own configured TriggerPhrase only when no peer phrase has

@@ -65,12 +65,13 @@ public class SettingsWindow : Window, IDisposable
         DrawIdentityCard(config);
         ImGui.Spacing();
 
+        DrawTosCard(config);
+        ImGui.Spacing();
+
         DrawTestCommandCard(config);
         ImGui.Spacing();
 
         DrawScanAndExportCard(config);
-        ImGui.Spacing();
-        DrawTosCard(config);
     }
 
     /// collar/chat-transport "An Owner-style command can be tested entirely locally": type the exact raw
@@ -81,8 +82,6 @@ public class SettingsWindow : Window, IDisposable
     /// trigger-phrase/permission/dispatch layer where every bug this card exists to catch was found.
     private void DrawTestCommandCard(PluginConfig config)
     {
-        using var card = Card.Begin("testCommandCard", new Vector2(0, 110));
-
         IconGlyph.Text(FontAwesomeIcon.FlaskVial, "Test an Owner command");
         ImGui.Separator();
         IconGlyph.WrappedDisabled("Type the exact text an Owner would send after \"/tell you\" - trigger phrase included - and run it locally. No pairing or peer needed, and nothing is sent or received.");
@@ -92,24 +91,31 @@ public class SettingsWindow : Window, IDisposable
         DrawTestButton("testOwnerCommand", "Run test", () => plugin.ChatCommandListener.TestIncomingCommand(testCommandInput));
     }
 
+    /// collar/pairing "Sub's pairing identity configuration locks while paired": Role, both codes, and the
+    /// trigger phrase all become read-only for a paired Sub - enforced here in the rendering layer only
+    /// (ImRaii.Disabled), never in PluginConfig/PairingCommand, the same "UI-only lock" shape pairing's own
+    /// "Sub can't unpair except via panic" has always used (see PairingCommand.ReleasePeer's comment). The
+    /// Owner side is never locked, paired or not.
     private void DrawIdentityCard(PluginConfig config)
     {
         var pending = plugin.ChatCommandListener.Pending;
         var sameRoleWarning = pending is { } pendingCheck && pendingCheck.SenderRole == config.Role;
-        var height = 260 + (pending is not null ? (sameRoleWarning ? 80 : 50) : 0) + (config.Pairing.IsPaired ? 55 : 0);
-        using var card = Card.Begin("identityCard", new Vector2(0, height));
+        var subLocked = config.Role == PluginRole.Sub && config.Pairing.IsPaired;
 
         IconGlyph.Text(FontAwesomeIcon.UserShield, "Identity & Pairing");
         ImGui.Separator();
 
         ImGui.TextWrapped("Role determines which side of the pairing you are - it doesn't hide anything in the main window, so you can set up aliases or use the Owner tab regardless.");
-        var roleIndex = config.Role == PluginRole.Owner ? 1 : 0;
-        if (ImGui.Combo("Role", ref roleIndex, RoleNames, RoleNames.Length))
+        using (ImRaii.Disabled(subLocked))
         {
-            config.Role = roleIndex == 1 ? PluginRole.Owner : PluginRole.Sub;
-            config.Save();
+            var roleIndex = config.Role == PluginRole.Owner ? 1 : 0;
+            if (ImGui.Combo("Role", ref roleIndex, RoleNames, RoleNames.Length))
+            {
+                config.Role = roleIndex == 1 ? PluginRole.Owner : PluginRole.Sub;
+                config.Save();
+            }
         }
-        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only Sub actually gates anything. Owner is mostly informational (shown in the pairing handshake, and which pairing-release behavior applies). Both roles use the same code-handshake flow to pair.");
+        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only Sub actually gates anything. Owner is mostly informational (shown in the pairing handshake, and which pairing-release behavior applies). Either role can send the handshake first - whoever does, the other side just needs to Accept.");
 
         ImGui.Spacing();
         ImGui.TextWrapped("Your code - share it with your pair out of band (voice, DM, etc), then have them enter it below.");
@@ -118,30 +124,42 @@ public class SettingsWindow : Window, IDisposable
         if (ImGui.SmallButton("Copy##myCode"))
             ImGui.SetClipboardText(config.Pairing.MyCode);
         ImGui.SameLine();
-        if (ImGui.SmallButton("Regenerate##myCode"))
-            plugin.PairingCommand.RegenerateMyCode();
+        using (ImRaii.Disabled(subLocked))
+        {
+            if (ImGui.SmallButton("Regenerate##myCode"))
+                plugin.PairingCommand.RegenerateMyCode();
+        }
         IconGlyph.HelpMarker("Generated once per install. Only used to gate the one-time pairing handshake message below - never checked against ongoing command tells. Regenerating invalidates any handshake attempt still using the old code.");
 
         ImGui.Spacing();
         ImGui.TextWrapped("Their code - the code they shared with you.");
-        if (ImGui.InputText("Their code", ref peerCodeInput, 32))
-            plugin.PairingCommand.SetPeerCode(peerCodeInput);
+        using (ImRaii.Disabled(subLocked))
+        {
+            if (ImGui.InputText("Their code", ref peerCodeInput, 32))
+                plugin.PairingCommand.SetPeerCode(peerCodeInput);
+        }
         IconGlyph.HelpMarker("Required before a pairing handshake tell from them can produce a Pending request below - a wrong or missing code is silently ignored.");
 
         ImGui.Spacing();
-        ImGui.TextWrapped("Once both codes are entered on both sides, send this as a tell to them - it starts the handshake.");
+        ImGui.TextWrapped("Once both codes are entered, either of you sends this as a tell - only one of you needs to. They accept it, and you're both paired automatically.");
         ImGui.TextUnformatted(plugin.ChatComposer.ComposePairing());
         ImGui.SameLine();
         if (ImGui.SmallButton("Copy##pairingMsg"))
             ImGui.SetClipboardText(plugin.ChatComposer.ComposePairing());
-        IconGlyph.HelpMarker("Copies this handshake message to your clipboard only - it's never sent for you. Paste it after typing /tell TheirName@World yourself. Either side can send first.");
+        IconGlyph.HelpMarker("Copies this handshake message to your clipboard only - it's never sent for you. Paste it after typing /tell TheirName@World yourself. Whoever sends it becomes paired automatically once the other side clicks Accept - no need for both of you to send one.");
 
-        if (ImGui.InputText("Trigger phrase", ref triggerPhraseInput, 32))
+        using (ImRaii.Disabled(subLocked))
         {
-            config.TriggerPhrase = triggerPhraseInput;
-            config.Save();
+            if (ImGui.InputText("Trigger phrase", ref triggerPhraseInput, 32))
+            {
+                config.TriggerPhrase = triggerPhraseInput;
+                config.Save();
+            }
         }
         IconGlyph.HelpMarker("The word that must start every ongoing command tell, e.g. \"command strip\". Only used after pairing is locked - the handshake message above always starts with \"collarpair\" regardless of this setting.");
+
+        if (subLocked)
+            IconGlyph.WrappedColored(Theme.TextMuted, "Locked while paired - trigger /collarpanic to release pairing and change these again.");
 
         ImGui.Spacing();
         if (pending is { } request)
@@ -421,28 +439,20 @@ public class SettingsWindow : Window, IDisposable
             ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(s => s.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x)));
         IconGlyph.HelpMarker("Copies the list below as plain text, one status per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
 
-        ImGui.SameLine();
-        DrawTestButton("moodlesClear", "Test Clear", plugin.LocalTestCoordinator.TestMoodlesClear);
-        IconGlyph.HelpMarker("Locally clears your active Moodle right now, the same way an accepted Owner's \"moodle clear\" would - no pairing or chat involved.");
-
         using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);
         foreach (var entry in moodlesMapping.LocalCatalog.Values)
         {
             ImGui.PushID(entry.StatusId);
             ImGui.BulletText(entry.Name);
-            ImGui.SameLine();
-            DrawTestButton($"moodlesApply_{entry.StatusId}", "Test Apply", () => plugin.LocalTestCoordinator.TestMoodlesApply(entry));
             ImGui.PopID();
         }
     }
 
-    /// See CollarWindow's identically-named helper - Moodles' Test controls live here instead since
-    /// Moodles has no Sub-facing module of its own (its catalog lives entirely in this scan card).
+    /// Backs Settings' "Test an Owner command" control (`collar/chat-transport`'s "An Owner-style command
+    /// can be tested entirely locally") - the one remaining local-test surface, now that every per-action
+    /// Test button (collar/ui-organization) has been removed.
     private void DrawTestButton(string key, string label, Func<LocalTestResult> run)
     {
-        if (plugin.Configuration.HideTestControls)
-            return;
-
         if (ImGui.SmallButton($"{label}##{key}"))
             testResults[key] = (run(), Environment.TickCount64);
 
@@ -490,8 +500,6 @@ public class SettingsWindow : Window, IDisposable
 
     private void DrawTosCard(PluginConfig config)
     {
-        using var card = Card.Begin("tosCard");
-
         IconGlyph.Text(FontAwesomeIcon.ExclamationTriangle, "Automation risk acknowledgement");
         ImGui.Separator();
         ImGui.TextWrapped("Required before the Gesture/Follow permission toggles can be enabled - see the README.");
@@ -502,15 +510,6 @@ public class SettingsWindow : Window, IDisposable
             config.Save();
         }
         IconGlyph.HelpMarker("Required once before the Gesture and Follow permission toggles (in the Sub window's Permissions tab) can be enabled at all - Title and Outfit don't need it.");
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        if (ImGuiCheckbox("Hide local Test controls", config.HideTestControls, out var newHideTestControls))
-        {
-            config.HideTestControls = newHideTestControls;
-            config.Save();
-        }
-        IconGlyph.HelpMarker("Hides every local Test control from the Sub-facing interface. Doesn't disable local testing itself or any other control - just removes the buttons. Off by default.");
     }
 
     private static bool ImGuiCheckbox(string label, bool value, out bool newValue)

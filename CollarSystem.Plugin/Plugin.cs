@@ -71,7 +71,6 @@ public sealed class Plugin : IDalamudPlugin
     public ChatComposer ChatComposer { get; }
     public ChatSender ChatSender { get; }
     public ChatCommandListener ChatCommandListener { get; }
-    public LocalTestCoordinator LocalTestCoordinator { get; }
 
     public PanicHandler PanicHandler { get; }
 
@@ -107,14 +106,13 @@ public sealed class Plugin : IDalamudPlugin
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
         FollowCommand = new FollowCommand(MovementLockService, RuntimeState);
-        CollarCommand = new CollarCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
+        CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
         RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState);
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
-        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand);
-        LocalTestCoordinator = new LocalTestCoordinator(Configuration, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand);
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, ChatComposer, ChatSender, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand);
 
         PanicHandler = new PanicHandler(PairingCommand, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState);
 

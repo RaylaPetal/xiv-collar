@@ -85,8 +85,8 @@ public class OwnerQuickCommands
     public List<QuickCommand> Restraints { get; set; } = new();
 }
 
-/// The Sub's configured collar item (collar/collaring) - a single Neck-slot item, captured from whatever
-/// the Sub currently has equipped (see GlamourerIpc.GetCurrentNeckItem), never typed in as a raw item id.
+/// The Sub's configured collar item (collar/collaring) - a single Neck-slot item, picked from a
+/// Neck-locked ItemPickerWindow (see CollarCommand.ConfigureFromItem), never typed in as a raw item id.
 /// Whether it's currently locked lives in SlotLockManager (collar/slot-locking), not here.
 [Serializable]
 public class CollarState
@@ -155,10 +155,9 @@ public class RestraintRuleAssignment
     public string? AnimationId { get; set; }
 }
 
-/// A single equipped gear piece (collar/restraints) captured directly from what the Sub currently has
-/// equipped in one slot - the same capture mechanism CollarState uses, generalized to any of the 10
-/// lockable slots - carrying one or more restriction rules. There is no separate scan/tag step: a device
-/// is captured and named in one action (see RestraintCommand.CaptureCurrentAsDevice).
+/// A single gear piece (collar/restraints) picked from a slot-and-item picker, generalized to any of the
+/// 10 lockable slots - carrying one or more restriction rules. There is no separate scan/tag step: a
+/// device is captured and named in one action (see RestraintCommand.CaptureDeviceFromItem).
 [Serializable]
 public class RestraintDeviceDefinition
 {
@@ -247,11 +246,6 @@ public class PluginConfig : IPluginConfiguration
     /// Gate per collar/gesture and collar/follow's ToS-disclosure requirement: the Sub must acknowledge
     /// the automation-risk caveat before either permission can be enabled.
     public bool TosAcknowledged { get; set; }
-
-    /// collar/ui-organization: hides every local Test control from the Sub-facing interface without
-    /// disabling the underlying local-test capability. Off by default so existing behavior is unchanged
-    /// until a Sub opts in.
-    public bool HideTestControls { get; set; }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

@@ -155,9 +155,4 @@ public sealed class GlamourerIpc : IDisposable
         var stain2 = slotState["Stain2"]?.Value<byte>() ?? 0;
         return new GlamourerEquippedItem(itemId.Value, stain, stain2);
     }
-
-    /// Reads the Neck slot out of the local player's current Glamourer state (collar/collaring: "Sub
-    /// configures their own collar item") - lets a Sub capture whatever they're already wearing instead of
-    /// typing a raw item id.
-    public GlamourerEquippedItem? GetCurrentNeckItem() => GetEquipSlotValue(ApiEquipSlot.Neck);
 }

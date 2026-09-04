@@ -19,6 +19,7 @@ public readonly record struct PendingPairingRequest(string Name, string World, P
 ///    populated via chat instead of typed in Settings.
 public sealed class ChatCommandListener : IDisposable
 {
+    private const string PairingAckKeyword = "collarpairack";
     private const string PairingKeyword = "collarpair";
 
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
@@ -28,6 +29,8 @@ public sealed class ChatCommandListener : IDisposable
 
     private readonly PluginConfig config;
     private readonly PairingCommand pairing;
+    private readonly ChatComposer composer;
+    private readonly ChatSender sender;
     private readonly TitleCommand title;
     private readonly OutfitCommand outfit;
     private readonly GestureCommand gesture;
@@ -39,10 +42,12 @@ public sealed class ChatCommandListener : IDisposable
     public PendingPairingRequest? Pending { get; private set; }
     public event Action? PendingChanged;
 
-    public ChatCommandListener(PluginConfig config, PairingCommand pairing, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints)
+    public ChatCommandListener(PluginConfig config, PairingCommand pairing, ChatComposer composer, ChatSender sender, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints)
     {
         this.config = config;
         this.pairing = pairing;
+        this.composer = composer;
+        this.sender = sender;
         this.title = title;
         this.outfit = outfit;
         this.gesture = gesture;
@@ -67,6 +72,14 @@ public sealed class ChatCommandListener : IDisposable
 
         pairing.AcceptPeer(request.Name, request.World, request.TriggerPhrase);
 
+        // collar/pairing "One-way pairing handshake completes both sides": the one narrow, explicit
+        // exception to "no automated sending" (collar/chat-transport) - a single confirmation tell, sent
+        // as a direct consequence of this Accept click, so the inviter's own side completes without a
+        // second explicit action. Echoes back the code that was actually matched (this side's PeerCode,
+        // which is the inviter's own MyCode) so the inviter can verify it's a real response to their invite.
+        var ack = composer.ComposePairingAck(request.Name, request.World, config.Pairing.PeerCode ?? "", config.TriggerPhrase);
+        sender.Send(ack);
+
         if (config.Permissions.Collar && config.Collar.IsConfigured)
             collar.ForceApply();
 
@@ -87,6 +100,11 @@ public sealed class ChatCommandListener : IDisposable
 
         var text = message.Message.TextValue.Trim();
 
+        // Ack must be checked before the invite keyword - "collarpairack" itself starts with "collarpair",
+        // so checking invite first would swallow every ack as a malformed invite (unparseable role token)
+        // before it ever reached the ack handler.
+        if (TryHandlePairingAckMessage(text, message.Sender))
+            return;
         if (TryHandlePairingMessage(text, message.Sender))
             return;
 
@@ -159,6 +177,38 @@ public sealed class ChatCommandListener : IDisposable
             Plugin.Log.Error(ex, $"Local command test for \"{alias}\" threw an exception.");
             return LocalTestResult.Fail($"Threw an exception: {ex.Message}");
         }
+    }
+
+    /// collar/pairing "One-way pairing handshake completes both sides": a "collarpairack <role> <code>
+    /// <triggerPhrase>" tell sent automatically by AcceptPending. Completes pairing on the inviting side
+    /// immediately, with no Pending prompt - the code check here is the same one an invite's Pending
+    /// request already required, just verified against this side's own MyCode instead of a configured
+    /// PeerCode (see ChatComposer.ComposePairingAck), so a stray or forged ack that doesn't echo the exact
+    /// code this side sent out is silently ignored. Consumes the message (returns true) whenever it starts
+    /// with the keyword, matching TryHandlePairingMessage's own "fail closed, never fall through" shape.
+    private bool TryHandlePairingAckMessage(string text, SeString sender)
+    {
+        if (!text.StartsWith(PairingAckKeyword, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var (roleToken, rest) = SplitFirstToken(text[PairingAckKeyword.Length..].Trim());
+        if (!TryParseRole(roleToken, out _))
+            return true;
+
+        var (receivedCode, triggerPhrase) = SplitFirstToken(rest);
+
+        var expectedCode = config.Pairing.MyCode;
+        if (receivedCode.Length == 0 || string.IsNullOrWhiteSpace(expectedCode))
+            return true;
+        if (!string.Equals(receivedCode, expectedCode, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var (name, world) = ExtractNameAndWorld(sender);
+        if (name is null || world is null)
+            return true;
+
+        pairing.AcceptPeer(name, world, triggerPhrase.Length > 0 ? triggerPhrase : null);
+        return true;
     }
 
     /// collar/pairing's manual handshake: a "collarpair <role> <code> <triggerPhrase>" tell from either

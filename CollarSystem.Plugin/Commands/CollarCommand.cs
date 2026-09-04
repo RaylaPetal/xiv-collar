@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using CollarSystem.Plugin.Config;
-using CollarSystem.Plugin.Ipc;
 using CollarSystem.Plugin.Safety;
 using Glamourer.Api.Enums;
 
@@ -16,33 +15,28 @@ public sealed class CollarCommand
     private const string Owner = "Collar";
 
     private readonly PluginConfig config;
-    private readonly GlamourerIpc glamourer;
     private readonly SlotLockManager slotLocks;
     private readonly SubRuntimeState runtimeState;
 
-    public CollarCommand(PluginConfig config, GlamourerIpc glamourer, SlotLockManager slotLocks, SubRuntimeState runtimeState)
+    public CollarCommand(PluginConfig config, SlotLockManager slotLocks, SubRuntimeState runtimeState)
     {
         this.config = config;
-        this.glamourer = glamourer;
         this.slotLocks = slotLocks;
         this.runtimeState = runtimeState;
     }
 
-    /// Captures whatever the Sub currently has equipped in their Neck slot as their configured collar -
-    /// collar/collaring's "Sub configures their own collar item." Refuses while a collar lock is active,
-    /// so the configured item can't be swapped out from under an already-applied lock.
-    public bool CaptureCurrentAsCollar()
+    /// Saves an item picked from the Neck-locked `ItemPickerWindow` as the Sub's configured collar -
+    /// collar/collaring's "Sub configures their own collar item." Mirrors `RestraintCommand.
+    /// CaptureDeviceFromItem`'s shape - no Glamourer read, undyed (stain 0/0). Refuses while a collar lock
+    /// is active, so the configured item can't be swapped out from under an already-applied lock.
+    public bool ConfigureFromItem(ulong itemId)
     {
         if (slotLocks.HasLock(Owner))
             return false;
 
-        var current = glamourer.GetCurrentNeckItem();
-        if (current is null)
-            return false;
-
-        config.Collar.ItemId = current.Value.ItemId;
-        config.Collar.Stain = current.Value.Stain;
-        config.Collar.Stain2 = current.Value.Stain2;
+        config.Collar.ItemId = itemId;
+        config.Collar.Stain = 0;
+        config.Collar.Stain2 = 0;
         config.Save();
         return true;
     }

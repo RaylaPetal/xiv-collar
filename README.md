@@ -128,12 +128,16 @@ actually does.
 
 ## Consent model
 
-- **Two-way code handshake, then a locked identity.** Both sides generate their own code, share it out of
-  band, and enter the other's - a message with the wrong (or missing) code is silently ignored, so a
-  coincidental "collarpair ..." tell from someone who doesn't actually know your code never produces a
-  pairing prompt. A matching code only ever produces a *Pending* request naming the verified sender;
-  accepting it is the one and only consent action, and it is never auto-enabled. Once accepted, pairing is
-  **locked** - there is no checkbox to uncheck. The only way to unpair is `/collarpanic` below.
+- **One-way handshake, still code-gated, then a locked identity.** Both sides still generate their own code
+  and share it out of band beforehand - a message with the wrong (or missing) code is silently ignored, so
+  a coincidental "collarpair ..." tell from someone who doesn't actually know your code never produces a
+  pairing prompt. Only one side needs to actually send the handshake: whoever does, the other side gets a
+  *Pending* request naming the verified sender, and accepting it is their one and only consent action. That
+  accept automatically sends one confirmation tell back to the sender - the one narrow, explicit exception
+  to this plugin's "no automated sending" rule (see Automation risk below) - which completes the sender's
+  own side with no further action from them; sending the original invite was their consent action. Once
+  paired, a Sub's Role, code, and trigger phrase all lock in Settings and pairing itself is **locked** -
+  there is no checkbox to uncheck. The only way to change any of it is `/collarpanic` below.
 - **Scoped, revocable permissions.** A Sub independently enables or disables each command category
   (title, outfit, gesture, follow, collar, moodles) at any time. A command in a disabled category is
   silently ignored, even while paired.
@@ -175,6 +179,17 @@ actually does.
   called from a direct button click, and it refuses to send anything that isn't an addressed `/tell` - a
   command composed before pairing captures a peer identity has no `/tell` prefix and Send is disabled for
   it, so nothing can ever leak into local/say chat.
+- **One narrow, explicit exception: accepting a pairing request sends one confirmation tell automatically.**
+  This is the only place in the entire plugin where a chat message is sent without you personally clicking
+  a Send button in that exact moment. It exists so pairing completes for both sides from one invite instead
+  of requiring both people to separately send a handshake - see Consent model above. It fires at most once
+  per Accept click, is always addressed as a `/tell` back to the exact character whose invite you just
+  accepted, and carries nothing but your role, trigger phrase, and the code that was already matched to
+  show you that Pending request in the first place. It is still a direct, singular consequence of your own
+  explicit Accept click - not a background reaction to observed chat or game state - so it doesn't fit the
+  *autonomously reacting* pattern described above, but it is a deliberate, real exception to "every send is
+  a click on visible text," and it's called out here on its own rather than folded silently into the
+  paragraph above.
 - **Gesture** temporarily applies the selected animation's complete Penumbra option state, redraws the
   Sub, briefly waits for the redraw to visually settle, and then fires its tied emote or supported
   sit/ground-sit/doze pose after a valid trigger tell. The Sub's automation-risk acknowledgement and live
@@ -218,41 +233,30 @@ at all. Make an informed choice before turning them on.
 
 ## Testing locally, before pairing
 
-Every configurable Sub action has its own action-specific **Test** button (e.g. "Test Lock", "Test Unlock",
-"Test Apply", "Test Clear", "Test Play", "Test Engage", "Test Release" - the label alone identifies what it
-does, no tooltip needed), right next to where it's configured: title apply/clear (Title tab), outfit
-apply/unlock (Wardrobe tab), gesture playback (Gesture tab), collar lock/unlock and leash/unleash (Collar
-tab), and Moodles apply/clear (Settings' Scan & Export section). A Test button runs the action through the
-exact same local code path an accepted Owner's command would use - `LocalTestCoordinator` calls straight
-into the same `TitleCommand`/`OutfitCommand`/`GestureCommand`/`FollowCommand`/`CollarCommand`/
-`MoodlesCommand` methods `ChatCommandListener` calls for a real trigger tell - so a passing test is a real
-guarantee the configuration works, not a simulation.
+Settings' **"Test an Owner command"** card is the one local-test surface: type the exact raw text an Owner
+would send (trigger phrase included, e.g. `ray outfit lock kagome`) and it runs through the *real* dispatch
+code (`ChatCommandListener.Resolve`, `TestIncomingCommand`) - the same trigger-phrase/permission/
+reserved-word parsing a real incoming tell goes through, not a separate reimplementation or a bypass of it -
+so a passing result is a genuine guarantee that text would work from a real paired Owner. It requires no
+pairing and sends or receives no chat message - the one difference from a real tell is it can't verify
+sender identity, since there's no real sender in a local test.
 
-**Testing never touches pairing or chat.** No pairing (active or pending) is required to test, and no test
-ever composes or sends a `/tell` - `ChatComposer`/`ChatSender` are never involved. Testing only changes your
-own local game state (title, outfit, collar, animation, or movement lock), exactly like accepting the
-matching command would.
+**Testing never touches pairing or chat.** No pairing (active or pending) is required, and it never composes
+or sends a `/tell` - `ChatComposer`/`ChatSender` are never involved for this. Testing only changes your own
+local game state, exactly like accepting the matching command would.
 
-**The normal gates still apply.** A Test button still requires that action's category permission
-(Permissions tab) to be enabled, and Gesture/Leash tests additionally require the automation-risk
-acknowledgement (Settings) - a disabled permission or missing acknowledgement makes the test a no-op and
-shows why, right next to the button, instead of silently doing nothing. Every test shows a success or
-failure result next to its button naming the action that was attempted, which clears itself automatically a
-few seconds later instead of persisting until the next test overwrites it - so a failed Glamourer/Penumbra/
-Moodles integration is easy to tell apart from a gating failure, without stale results cluttering the UI.
+**The normal gates still apply.** A test still requires the tested category's permission (Permissions tab)
+to be enabled, and Gesture/Restraints additionally require the automation-risk acknowledgement (Settings) -
+a disabled permission or missing acknowledgement makes the test a no-op and reports why, instead of silently
+doing nothing. Every test shows a success or failure result naming what was attempted, which clears itself
+automatically a few seconds later.
 
-**Hiding Test controls.** Settings has a "Hide local Test controls" checkbox (off by default) that removes
-every Test button from the Sub-facing interface without disabling local testing itself or affecting any
-other control - a one-click toggle for a cleaner UI once you've verified everything works.
-
-**Testing an Owner command's full text, not just its effect.** The per-action Test buttons above call an
-action's underlying method directly, bypassing the trigger-phrase/permission/reserved-word parsing a real
-incoming tell goes through entirely - they can't catch a bug in that parsing layer. Settings' **"Test an
-Owner command"** card is different: type the exact raw text an Owner would send (trigger phrase included,
-e.g. `ray outfit lock kagome`) and it runs through the *real* dispatch code (`ChatCommandListener.Resolve`),
-not a separate reimplementation - so a passing result is a genuine guarantee that text would work from a
-real paired Owner. Like the per-action buttons, it requires no pairing and sends or receives no chat message
-- the one difference is it can't verify sender identity, since there's no real sender in a local test.
+There used to be a separate action-specific Test button next to every configured alias/setting across every
+tab. Those are gone - the single command-text control above exercises the exact same underlying actions with
+strictly more coverage (it also catches a bug in the trigger-phrase/permission parsing layer, which the old
+per-action buttons bypassed entirely by calling an action's method directly). If you're used to a dedicated
+"Test Apply" or "Test Lock" button next to a specific alias, use this card instead: type your trigger phrase
+followed by that alias or override command.
 
 ## Project layout
 
@@ -310,14 +314,17 @@ build task, or building via the `.slnx` all land in the same place.
      file to your Owner however you like (Discord, a
      shared folder), and they fill every Quick Command list from it in one action via the Owner tab's
      **Import commands** button.
-   * If you want a collar: equip the item you want in your Neck slot, then capture it from the main
-     window's **Collar** tab. Enable the **Collar** permission (Permissions tab) - configuring an item
-     alone does nothing without it. The collar applies and locks automatically the next time you accept a
-     pairing, not before.
-   * Once both sides have entered each other's code, either side copies the pairing message from Settings
-     and sends it as a `/tell` to the other. The receiving side gets a Pending request naming the verified
-     sender and their declared role - click **Accept**. Pairing is then locked for a Sub; an Owner can
-     Release it any time (both in the character header, or in Settings).
+   * If you want a collar: pick a Neck-slot item from the main window's **Collar** tab's item picker (it
+     doesn't need to be equipped or owned) and save it. Enable the **Collar** permission (Permissions tab) -
+     configuring an item alone does nothing without it. The collar applies and locks automatically the next
+     time you accept a pairing, not before.
+   * Once both sides have entered each other's code, only one of you needs to copy the pairing message from
+     Settings and send it as a `/tell` to the other. The receiving side gets a Pending request naming the
+     verified sender and their declared role - click **Accept**. That automatically completes pairing on
+     the sender's side too, with no further action from them. Pairing is then locked for a Sub (Role, code,
+     and trigger phrase all become read-only in Settings) - the only way to change any of it is
+     `/collarpanic`. An Owner's pairing is never locked and can be Released any time (both in the character
+     header, or in Settings).
    * Optionally set a **Safeword** in the always-visible main character header - if set,
      `/collarpanic` requires it as an argument; if left blank, plain `/collarpanic` keeps working.
 4. `/collar` opens the one main window; `/collarpanic` (with your safeword as its argument, if you set
@@ -330,7 +337,7 @@ build task, or building via the `.slnx` all land in the same place.
    a one-off - each has a Send button (fires immediately) and a Copy button (paste it yourself instead).
    Gesture entries show the mod's human-readable animation option and tied trigger; permitted commands
    temporarily activate that option and play it immediately.
-   Each configured action also has its own **Test** button so you can verify it works locally before you've
+   Settings' "Test an Owner command" card lets you verify any configured alias works locally before you've
    even paired - see Testing locally, before pairing below.
 
 All participation in this repository is governed by the [Dalamud Code of Conduct](https://dalamud.dev/code-of-conduct).

@@ -23,9 +23,6 @@ namespace CollarSystem.Plugin.UI;
 /// clicked, so it can't be hit by accident or spotted by someone watching over a shoulder.
 public class CollarWindow : Window, IDisposable
 {
-    /// How long a local Test control's result stays visible before auto-clearing (collar/ui-organization).
-    private const long TestResultDisplayMs = 4_000;
-
     private readonly Plugin plugin;
     private string activeModule = "title";
 
@@ -44,17 +41,7 @@ public class CollarWindow : Window, IDisposable
     private string newDeviceName = "";
     private int newDeviceSlotIndex;
     private ulong? newDeviceItemId;
-    private bool newDeviceForcedPose;
-    private int newDevicePoseIndex;
-    private bool newDeviceWalkOnly;
-    private bool newDeviceActionBlock;
-    private bool newDeviceGagChat;
-    private bool newDeviceArmsCuffed;
-    private string? newDeviceArmsCuffedAnimationId;
-    private bool newDeviceLegsCuffed;
-    private string? newDeviceLegsCuffedAnimationId;
-    private bool newDeviceFullBodyCuffed;
-    private string? newDeviceFullBodyCuffedAnimationId;
+    private readonly RestraintRuleEditState newDeviceRuleEdit = new();
 
     private string newRestraintAlias = "";
     private int newRestraintDeviceIndex;
@@ -99,11 +86,6 @@ public class CollarWindow : Window, IDisposable
         public bool FullBodyCuffed;
         public string? FullBodyCuffedAnimationId;
     }
-
-    /// Transient, session-only per-action local Test feedback (collar/ui-organization) - never saved,
-    /// keyed by a stable per-row id so each row's last result shows independently of the others. Each
-    /// entry auto-clears a short time after being shown (see DrawTestButton).
-    private readonly Dictionary<string, (LocalTestResult Result, long ShownAtTicks)> testResults = new();
 
     private static readonly (string Id, FontAwesomeIcon Icon, string Tooltip)[] NavItems =
     [
@@ -304,8 +286,6 @@ public class CollarWindow : Window, IDisposable
 
         DrawClearAliasField("Clear-title alias", () => config.Aliases.ClearTitleAlias, v => config.Aliases.ClearTitleAlias = v, config);
         IconGlyph.HelpMarker("The alias that removes your current Honorific title when triggered - separate from the named aliases below, which each apply a specific title.");
-        DrawTestButton("titleClear", "Test Clear", plugin.LocalTestCoordinator.TestTitleClear);
-        IconGlyph.HelpMarker("Locally clears your title right now, the same way an accepted Owner's clear-title alias would - no pairing or chat involved.");
 
         ImGui.Spacing();
         var titles = config.Aliases.Titles;
@@ -322,8 +302,6 @@ public class CollarWindow : Window, IDisposable
                 ImGui.PopID();
                 break;
             }
-            ImGui.SameLine();
-            DrawTestButton($"title_{t.Alias}", "Test Apply", () => plugin.LocalTestCoordinator.TestTitleApply(t));
             ImGui.PopID();
         }
 
@@ -355,8 +333,6 @@ public class CollarWindow : Window, IDisposable
 
         DrawClearAliasField("Unlock alias", () => config.Aliases.UnlockOutfitAlias, v => config.Aliases.UnlockOutfitAlias = v, config);
         IconGlyph.HelpMarker("The alias that unlocks your current Glamourer design, using whichever lock key that design was last applied with.");
-        DrawTestButton("outfitUnlock", "Test Unlock", plugin.LocalTestCoordinator.TestOutfitUnlock);
-        IconGlyph.HelpMarker("Locally unlocks your outfit right now, the same way an accepted Owner's unlock alias would - no pairing or chat involved.");
 
         ImGui.Spacing();
         var outfits = config.Aliases.Outfits;
@@ -373,8 +349,6 @@ public class CollarWindow : Window, IDisposable
                 ImGui.PopID();
                 break;
             }
-            ImGui.SameLine();
-            DrawTestButton($"outfit_{o.Alias}", "Test Apply", () => plugin.LocalTestCoordinator.TestOutfitApply(o));
             ImGui.PopID();
         }
 
@@ -471,33 +445,10 @@ public class CollarWindow : Window, IDisposable
         }
         IconGlyph.HelpMarker("Pick any item valid for the chosen slot - it does not need to be equipped or owned.");
 
-        ImGui.Checkbox("Forced pose##newDevice", ref newDeviceForcedPose);
-        IconGlyph.HelpMarker("Places you into the chosen pose and fully blocks movement input until released.");
-        if (newDeviceForcedPose)
-            ImGui.Combo("Pose##newDevice", ref newDevicePoseIndex, PoseNames, PoseNames.Length);
+        DrawRestraintRuleCheckboxes(newDeviceRuleEdit, "newDevice");
 
-        ImGui.Checkbox("Walk-only##newDevice", ref newDeviceWalkOnly);
-        IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
-
-        ImGui.Checkbox("Action block##newDevice", ref newDeviceActionBlock);
-        IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
-
-        ImGui.Checkbox("Gagged##newDevice", ref newDeviceGagChat);
-        IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
-
-        DrawBoundAnimationPicker("Arms Cuffed", ref newDeviceArmsCuffed, newDeviceArmsCuffedAnimationId, id => newDeviceArmsCuffedAnimationId = id, "newDeviceArms");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
-
-        DrawBoundAnimationPicker("Legs Cuffed", ref newDeviceLegsCuffed, newDeviceLegsCuffedAnimationId, id => newDeviceLegsCuffedAnimationId = id, "newDeviceLegs");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
-
-        DrawBoundAnimationPicker("Full Body Cuffed", ref newDeviceFullBodyCuffed, newDeviceFullBodyCuffedAnimationId, id => newDeviceFullBodyCuffedAnimationId = id, "newDeviceFullBody");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
-
-        var hasAnyRule = newDeviceForcedPose || newDeviceWalkOnly || newDeviceActionBlock || newDeviceGagChat || newDeviceArmsCuffed || newDeviceLegsCuffed || newDeviceFullBodyCuffed;
-        var boundAnimationsConfigured = (!newDeviceArmsCuffed || newDeviceArmsCuffedAnimationId is not null)
-            && (!newDeviceLegsCuffed || newDeviceLegsCuffedAnimationId is not null)
-            && (!newDeviceFullBodyCuffed || newDeviceFullBodyCuffedAnimationId is not null);
+        var hasAnyRule = HasAnyRule(newDeviceRuleEdit);
+        var boundAnimationsConfigured = BoundAnimationsConfigured(newDeviceRuleEdit);
         if (hasAnyRule && !boundAnimationsConfigured)
             IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before capturing.");
 
@@ -506,29 +457,15 @@ public class CollarWindow : Window, IDisposable
             if (ImGui.Button("Capture device") && newDeviceItemId is { } chosenItemId)
             {
                 var slot = LockableEquipSlots.All[newDeviceSlotIndex];
-                var rules = new List<RestraintRuleAssignment>();
-                if (newDeviceForcedPose)
-                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = newDevicePoseIndex + 1 });
-                if (newDeviceWalkOnly)
-                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.WalkOnly });
-                if (newDeviceActionBlock)
-                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ActionBlock });
-                if (newDeviceGagChat)
-                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
-                if (newDeviceArmsCuffed)
-                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = newDeviceArmsCuffedAnimationId });
-                if (newDeviceLegsCuffed)
-                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = newDeviceLegsCuffedAnimationId });
-                if (newDeviceFullBodyCuffed)
-                    rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = newDeviceFullBodyCuffedAnimationId });
+                var rules = ToRules(newDeviceRuleEdit);
 
                 if (plugin.RestraintCommand.CaptureDeviceFromItem(slot, chosenItemId, newDeviceName, rules))
                 {
                     newDeviceName = "";
                     newDeviceItemId = null;
-                    newDeviceForcedPose = newDeviceWalkOnly = newDeviceActionBlock = newDeviceGagChat = false;
-                    newDeviceArmsCuffed = newDeviceLegsCuffed = newDeviceFullBodyCuffed = false;
-                    newDeviceArmsCuffedAnimationId = newDeviceLegsCuffedAnimationId = newDeviceFullBodyCuffedAnimationId = null;
+                    newDeviceRuleEdit.ForcedPose = newDeviceRuleEdit.WalkOnly = newDeviceRuleEdit.ActionBlock = newDeviceRuleEdit.GagChat = false;
+                    newDeviceRuleEdit.ArmsCuffed = newDeviceRuleEdit.LegsCuffed = newDeviceRuleEdit.FullBodyCuffed = false;
+                    newDeviceRuleEdit.ArmsCuffedAnimationId = newDeviceRuleEdit.LegsCuffedAnimationId = newDeviceRuleEdit.FullBodyCuffedAnimationId = null;
                 }
             }
         }
@@ -574,6 +511,54 @@ public class CollarWindow : Window, IDisposable
 
     private static string PoseName(int poseModeId) => poseModeId is >= 1 and <= 3 ? PoseNames[poseModeId - 1] : "unknown";
 
+    private static bool HasAnyRule(RestraintRuleEditState edit) =>
+        edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed;
+
+    private static bool BoundAnimationsConfigured(RestraintRuleEditState edit) =>
+        (!edit.ArmsCuffed || edit.ArmsCuffedAnimationId is not null)
+        && (!edit.LegsCuffed || edit.LegsCuffedAnimationId is not null)
+        && (!edit.FullBodyCuffed || edit.FullBodyCuffedAnimationId is not null);
+
+    /// collar/ui-organization "Restraint rule checkboxes are laid out two per row": shared by the Sub's
+    /// device-capture editor, the Owner's per-quick-command editor, and the Owner's ad-hoc device editor -
+    /// one `ImGui.Columns(2)` block per row keeps each checkbox's own dependent controls (pose combo,
+    /// bound-animation picker) attached underneath it within its own column, regardless of how tall the
+    /// other column's content is.
+    private void DrawRestraintRuleCheckboxes(RestraintRuleEditState edit, string idSuffix)
+    {
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row1", false);
+        ImGui.Checkbox($"Forced pose##{idSuffix}", ref edit.ForcedPose);
+        IconGlyph.HelpMarker("Places you into the chosen pose and fully blocks movement input until released.");
+        if (edit.ForcedPose)
+            ImGui.Combo($"Pose##{idSuffix}", ref edit.PoseIndex, PoseNames, PoseNames.Length);
+        ImGui.NextColumn();
+        ImGui.Checkbox($"Walk-only##{idSuffix}", ref edit.WalkOnly);
+        IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
+        ImGui.Columns(1);
+
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row2", false);
+        ImGui.Checkbox($"Action block##{idSuffix}", ref edit.ActionBlock);
+        IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
+        ImGui.NextColumn();
+        ImGui.Checkbox($"Gagged##{idSuffix}", ref edit.GagChat);
+        IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
+        ImGui.Columns(1);
+
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row3", false);
+        DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"{idSuffix}Arms");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+        ImGui.NextColumn();
+        DrawBoundAnimationPicker("Legs Cuffed", ref edit.LegsCuffed, edit.LegsCuffedAnimationId, id => edit.LegsCuffedAnimationId = id, $"{idSuffix}Legs");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+        ImGui.Columns(1);
+
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row4", false);
+        DrawBoundAnimationPicker("Full Body Cuffed", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"{idSuffix}FullBody");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
+        ImGui.NextColumn();
+        ImGui.Columns(1);
+    }
+
     /// collar/restraints "Arms Cuffed and Legs Cuffed rules...": a checkbox plus the same searchable
     /// animation picker `collar/gesture`'s "Add animation..." button already opens (AnimationPickerWindow),
     /// reused here for the Sub's device-capture UI and the Owner's per-quick-command rule editor alike.
@@ -605,12 +590,11 @@ public class CollarWindow : Window, IDisposable
 
         var gestures = config.Aliases.Gestures;
         var removeGestureIndex = -1;
-        if (gestures.Count > 0 && ImGui.BeginTable("gestureAliases", 3,
+        if (gestures.Count > 0 && ImGui.BeginTable("gestureAliases", 2,
                 ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
         {
             ImGui.TableSetupColumn("Animation", ImGuiTableColumnFlags.WidthStretch);
             ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, 72);
-            ImGui.TableSetupColumn("Test", ImGuiTableColumnFlags.WidthFixed, 220);
             for (var i = 0; i < gestures.Count; i++)
             {
                 ImGui.PushID($"gesture_{i}");
@@ -623,10 +607,6 @@ public class CollarWindow : Window, IDisposable
 
                 ImGui.TableSetColumnIndex(1);
                 if (ImGui.SmallButton("Remove")) removeGestureIndex = i;
-
-                ImGui.TableSetColumnIndex(2);
-                using (ImRaii.Disabled(invalid))
-                    DrawTestButton($"gesture_{g.Alias}", "Test Play", () => plugin.LocalTestCoordinator.TestGesturePlay(g));
                 ImGui.PopID();
             }
             ImGui.EndTable();
@@ -709,14 +689,14 @@ public class CollarWindow : Window, IDisposable
             ImGui.TextColored(Theme.Danger, "Locked - applied at pairing. Only /collarpanic (your safeword) or your Owner's \"collar unlock\" releases it.");
         }
 
+        var collarChosenLabel = config.Collar.ItemId is { } collarItemId ? GetItemName(collarItemId) : "(none chosen)";
         using (ImRaii.Disabled(locked))
         {
-            if (ImGui.Button("Save Collar"))
-            {
-                if (!plugin.CollarCommand.CaptureCurrentAsCollar())
-                    Plugin.Log.Warning("Could not capture the current Neck item - is anything equipped there?");
-            }
-            IconGlyph.HelpMarker("Reads whatever's currently in your own Neck slot via Glamourer and saves it as your collar - never a manually typed item id.");
+            ImGui.TextUnformatted($"Item: {collarChosenLabel}");
+            ImGui.SameLine();
+            if (ImGui.Button("Choose item...##collar"))
+                plugin.ItemPickerWindow.Open(ApiEquipSlot.Neck, (chosenId, _) => plugin.CollarCommand.ConfigureFromItem(chosenId));
+            IconGlyph.HelpMarker("Pick any Neck-slot item to save as your collar - it does not need to be equipped or owned.");
 
             if (config.Collar.IsConfigured)
             {
@@ -725,13 +705,6 @@ public class CollarWindow : Window, IDisposable
                     plugin.CollarCommand.ClearConfiguredCollar();
             }
         }
-
-        ImGui.Spacing();
-        DrawTestButton("collarLock", "Test Lock", plugin.LocalTestCoordinator.TestCollarLock);
-        IconGlyph.HelpMarker("Locally applies and locks your configured collar right now, the same way an accepted Owner's \"collar lock\" would - no pairing or chat involved.");
-        ImGui.SameLine();
-        DrawTestButton("collarUnlock", "Test Unlock", plugin.LocalTestCoordinator.TestCollarUnlock);
-        IconGlyph.HelpMarker("Locally releases the collar lock, the same way an accepted Owner's \"collar unlock\" would.");
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -753,18 +726,11 @@ public class CollarWindow : Window, IDisposable
             config.Save();
         }
         IconGlyph.HelpMarker("Releases the movement lock and restores normal input.");
-
-        ImGui.Spacing();
-        DrawTestButton("leashEngage", "Test Engage", plugin.LocalTestCoordinator.TestLeashEngage);
-        IconGlyph.HelpMarker("Locally engages the movement lock right now, the same way an accepted Owner's leash trigger would - blocks your own WASD input until released. Requires Follow / Leash permission and the automation-risk acknowledgement (Settings).");
-        ImGui.SameLine();
-        DrawTestButton("leashRelease", "Test Release", plugin.LocalTestCoordinator.TestLeashRelease);
-        IconGlyph.HelpMarker("Locally releases the movement lock, the same way an accepted Owner's unleash trigger would.");
     }
 
     /// Best-effort display name for a raw Glamourer item id via Lumina's own Item sheet - falls back to
     /// the numeric id for sentinel/special values (e.g. "nothing equipped") that don't resolve to a real
-    /// row, same "don't crash, just show something" spirit as GlamourerIpc.GetCurrentNeckItem.
+    /// row, so a lookup miss never crashes the picker's chosen-item label.
     private static string GetItemName(ulong itemId)
     {
         var row = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRowOrDefault((uint)itemId);
@@ -1026,21 +992,10 @@ public class CollarWindow : Window, IDisposable
         ImGui.InputText("Label##adHocRestraint", ref newAdHocLabel, 32);
         IconGlyph.HelpMarker("Your own reference name for this device - never matched against anything on your Sub's side.");
 
-        ImGui.Checkbox("Forced pose##adHocRestraint", ref newAdHocRuleEdit.ForcedPose);
-        if (newAdHocRuleEdit.ForcedPose)
-            ImGui.Combo("Pose##adHocRestraint", ref newAdHocRuleEdit.PoseIndex, PoseNames, PoseNames.Length);
-        ImGui.Checkbox("Walk-only##adHocRestraint", ref newAdHocRuleEdit.WalkOnly);
-        ImGui.Checkbox("Action block##adHocRestraint", ref newAdHocRuleEdit.ActionBlock);
-        ImGui.Checkbox("Gagged##adHocRestraint", ref newAdHocRuleEdit.GagChat);
-        DrawBoundAnimationPicker("Arms Cuffed", ref newAdHocRuleEdit.ArmsCuffed, newAdHocRuleEdit.ArmsCuffedAnimationId, aid => newAdHocRuleEdit.ArmsCuffedAnimationId = aid, "adHocRestraintArms");
-        DrawBoundAnimationPicker("Legs Cuffed", ref newAdHocRuleEdit.LegsCuffed, newAdHocRuleEdit.LegsCuffedAnimationId, aid => newAdHocRuleEdit.LegsCuffedAnimationId = aid, "adHocRestraintLegs");
-        DrawBoundAnimationPicker("Full Body Cuffed", ref newAdHocRuleEdit.FullBodyCuffed, newAdHocRuleEdit.FullBodyCuffedAnimationId, aid => newAdHocRuleEdit.FullBodyCuffedAnimationId = aid, "adHocRestraintFullBody");
+        DrawRestraintRuleCheckboxes(newAdHocRuleEdit, "adHocRestraint");
 
-        var hasAnyRule = newAdHocRuleEdit.ForcedPose || newAdHocRuleEdit.WalkOnly || newAdHocRuleEdit.ActionBlock || newAdHocRuleEdit.GagChat
-            || newAdHocRuleEdit.ArmsCuffed || newAdHocRuleEdit.LegsCuffed || newAdHocRuleEdit.FullBodyCuffed;
-        var boundAnimationsConfigured = (!newAdHocRuleEdit.ArmsCuffed || newAdHocRuleEdit.ArmsCuffedAnimationId is not null)
-            && (!newAdHocRuleEdit.LegsCuffed || newAdHocRuleEdit.LegsCuffedAnimationId is not null)
-            && (!newAdHocRuleEdit.FullBodyCuffed || newAdHocRuleEdit.FullBodyCuffedAnimationId is not null);
+        var hasAnyRule = HasAnyRule(newAdHocRuleEdit);
+        var boundAnimationsConfigured = BoundAnimationsConfigured(newAdHocRuleEdit);
         if (hasAnyRule && !boundAnimationsConfigured)
             IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before sending.");
 
@@ -1103,20 +1058,10 @@ public class CollarWindow : Window, IDisposable
         if (expanded && restraintRuleEdits.TryGetValue(cmd.Label, out var edit))
         {
             ImGui.Indent();
-            ImGui.Checkbox("Forced pose##restraintQuickRule", ref edit.ForcedPose);
-            if (edit.ForcedPose)
-                ImGui.Combo("Pose##restraintQuickRule", ref edit.PoseIndex, PoseNames, PoseNames.Length);
-            ImGui.Checkbox("Walk-only##restraintQuickRule", ref edit.WalkOnly);
-            ImGui.Checkbox("Action block##restraintQuickRule", ref edit.ActionBlock);
-            ImGui.Checkbox("Gagged##restraintQuickRule", ref edit.GagChat);
-            DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"restraintQuickRuleArms_{cmd.Label}");
-            DrawBoundAnimationPicker("Legs Cuffed", ref edit.LegsCuffed, edit.LegsCuffedAnimationId, id => edit.LegsCuffedAnimationId = id, $"restraintQuickRuleLegs_{cmd.Label}");
-            DrawBoundAnimationPicker("Full Body Cuffed", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"restraintQuickRuleFullBody_{cmd.Label}");
+            DrawRestraintRuleCheckboxes(edit, $"restraintQuickRule_{cmd.Label}");
 
-            var hasAnyRule = edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed;
-            var boundAnimationsConfigured = (!edit.ArmsCuffed || edit.ArmsCuffedAnimationId is not null)
-                && (!edit.LegsCuffed || edit.LegsCuffedAnimationId is not null)
-                && (!edit.FullBodyCuffed || edit.FullBodyCuffedAnimationId is not null);
+            var hasAnyRule = HasAnyRule(edit);
+            var boundAnimationsConfigured = BoundAnimationsConfigured(edit);
             if (hasAnyRule && !boundAnimationsConfigured)
                 IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before saving.");
 
@@ -1440,33 +1385,6 @@ public class CollarWindow : Window, IDisposable
         {
             set(value);
             config.Save();
-        }
-    }
-
-    /// A local pre-pair Test control (collar/ui-organization) - action-specific label (e.g. "Test Lock")
-    /// so it can never be mistaken for an Owner-send control and its effect is clear without hovering a
-    /// tooltip, dispatches through LocalTestCoordinator (same local action path an accepted Owner command
-    /// would use, no pairing/chat involved), and shows only its own last result, which clears itself
-    /// automatically a few seconds after being shown. Hidden entirely when HideTestControls is enabled.
-    private void DrawTestButton(string key, string label, Func<LocalTestResult> run)
-    {
-        if (plugin.Configuration.HideTestControls)
-            return;
-
-        if (ImGui.SmallButton($"{label}##{key}"))
-            testResults[key] = (run(), Environment.TickCount64);
-
-        if (testResults.TryGetValue(key, out var last))
-        {
-            if (Environment.TickCount64 - last.ShownAtTicks >= TestResultDisplayMs)
-            {
-                testResults.Remove(key);
-            }
-            else
-            {
-                ImGui.SameLine();
-                IconGlyph.WrappedColored(last.Result.Success ? Theme.Success : Theme.Danger, last.Result.Message);
-            }
         }
     }
 
