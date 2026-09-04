@@ -16,10 +16,10 @@ jobs:
     runs-on: windows-2022
 
     steps:
-    - name: Checkout master
+    - name: Checkout tagged commit
       uses: actions/checkout@v5
       with:
-        ref: master
+        ref: ${{ github.ref }}
         fetch-depth: 0
 
     - name: Install .NET
@@ -49,6 +49,14 @@ jobs:
         tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
         files: Oathbound.Plugin/bin/x64/Release/Oathbound.Plugin/latest.zip
+
+    # Build/package must come from the immutable tag above. Switch back to master only for the mutable
+    # repository index update committed after a successful release.
+    - name: Checkout master for repository metadata
+      uses: actions/checkout@v5
+      with:
+        ref: master
+        fetch-depth: 0
 
     - name: Update repo.json
       shell: pwsh
