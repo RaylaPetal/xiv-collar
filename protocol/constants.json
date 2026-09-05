@@ -1,0 +1,74 @@
+{
+  "protocolVersion": 1,
+  "canonicalJson": {
+    "standard": "RFC 8785 (JSON Canonicalization Scheme, JCS)",
+    "appliesTo": "Every signed payload and every digest input (request bodies, envelopes embedded in other envelopes such as retry.revocation).",
+    "notes": "JCS is chosen over a bespoke canonicalizer specifically so unrelated, actively maintained JCS libraries exist for both .NET and JS/TS, removing whitespace/key-order/number-formatting disagreement as a source of cross-runtime signature mismatch."
+  },
+  "requestSigning": {
+    "description": "Every mutating relay request signs a newline-joined base string over the request itself, independent of any envelope-level signature.",
+    "baseString": "{METHOD}\\n{NORMALIZED_PATH}\\n{SHA256_HEX(JCS(BODY))}\\n{UNIX_TIMESTAMP_SECONDS}\\n{NONCE}",
+    "normalizedPath": "Absolute path only (no scheme/host/query), percent-encoding normalized to uppercase hex digits, no trailing slash except '/'.",
+    "signatureAlgorithm": "ECDSA-P256-SHA256, raw (r||s) format, 64 bytes, base64url-encoded without padding (86 characters).",
+    "timestampToleranceSeconds": 300,
+    "nonce": {
+      "sizeBits": 128,
+      "encoding": "base64url without padding (22 characters)",
+      "replayWindowSeconds": 600,
+      "scope": "Unique per (deviceKeyId, nonce) pair; the relay rejects a reused nonce within the replay window regardless of timestamp."
+    }
+  },
+  "capabilitySecrets": {
+    "sizeBits": 256,
+    "encoding": "base64url without padding (43 characters) when transmitted; server stores only SHA-256(secretBytes) as capabilityId's paired hash.",
+    "comparison": "Constant-time hash comparison; the relay never logs or echoes the raw secret."
+  },
+  "pairEpoch": {
+    "type": "non-negative integer, starts at 0 for a pair's first activation",
+    "rule": "Incremented every time a pairIdHash is re-activated after a prior revocation. Revocations, catalog requests/responses, and retries are valid only for the pair epoch they were issued under; anything from an older epoch is rejected."
+  },
+  "monotonicSequence": {
+    "revocationSequence": "Strictly increasing per pairIdHash across all epochs; the relay and both clients reject a revocation whose sequence is not greater than the highest one already accepted for that pair.",
+    "snapshotId": "Strictly increasing per pairIdHash within a pair epoch; the Owner rejects a catalog-response whose snapshotId is not greater than the last snapshot it successfully imported for that pair epoch."
+  },
+  "crypto": {
+    "signing": {
+      "curve": "P-256",
+      "hash": "SHA-256",
+      "signatureFormat": "raw r||s (not DER/ASN.1), 64 bytes"
+    },
+    "keyAgreement": {
+      "curve": "P-256 (ECDH)",
+      "ephemeralPerUse": true,
+      "note": "The Owner's ephemeral ECDH key travels in catalog-request; the Sub's ephemeral ECDH key travels in catalog-response. Neither is reused across requests."
+    },
+    "kdf": {
+      "algorithm": "HKDF-SHA256",
+      "salt": "SHA-256(ownerEphemeralPublicKeyRawUncompressed || subEphemeralPublicKeyRawUncompressed)",
+      "info": "\"oathbound-relay-catalog-v1\" || pairIdHash || requestId, UTF-8 concatenation",
+      "outputLengthBytes": 32
+    },
+    "aead": {
+      "algorithm": "AES-256-GCM",
+      "nonceLengthBytes": 12,
+      "nonceGeneration": "CSPRNG per encryption, never reused for the same derived key",
+      "tagLengthBytes": 16,
+      "additionalAuthenticatedData": "JCS(catalog-response envelope with ciphertextDigest/nonce/signature fields removed), binding ciphertext to its envelope metadata"
+    },
+    "compression": {
+      "algorithm": "gzip (RFC 1952)",
+      "order": "compress plaintext, then encrypt the compressed bytes; ciphertextDigest is SHA-256 of the final ciphertext (compressed+encrypted+tag)"
+    }
+  },
+  "sizeAndExpiryLimits": {
+    "invitationExpirySeconds": 900,
+    "catalogRequestExpirySeconds": 900,
+    "catalogObjectExpirySeconds": 900,
+    "revocationRetentionSecondsMax": 604800,
+    "catalogPlaintextMaxBytes": 2097152,
+    "catalogCiphertextMaxBytes": 786432,
+    "envelopeMaxBytes": 16384,
+    "catalogCooldownSeconds": 14400,
+    "revocationPollMinIntervalSeconds": 21600
+  }
+}

@@ -45,7 +45,8 @@ public sealed class OutfitCommand
         return ApplyDesign(alias.DesignId, alias.DesignName, alias.Locked);
     }
 
-    /// Releases whichever slots the currently-locked design claimed - see AliasBook.UnlockOutfitAlias.
+    /// Releases whichever slots the currently-locked design claimed. The receiver exposes this through
+    /// the fixed `unlock` vocabulary rather than a mutable alias.
     public bool Unlock()
     {
         if (runtimeState.OutfitForceLocked)

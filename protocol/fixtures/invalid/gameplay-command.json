@@ -1,0 +1,7 @@
+{
+  "type": "restraint-command",
+  "schemaVersion": 1,
+  "targetDeviceKeyId": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  "command": "restrain",
+  "note": "The relay contract has no envelope type for restraint/gesture/outfit/title/Moodle/follow/collar/custom-trigger commands. This payload must fail validation against every schema in schemas/, proving gameplay commands cannot be carried by this protocol."
+}

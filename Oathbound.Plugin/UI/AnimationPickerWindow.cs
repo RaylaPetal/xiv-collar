@@ -18,6 +18,7 @@ public sealed class AnimationPickerWindow : Window, IDisposable
     private Action<GestureCatalogEntry>? onSelected;
     private Action<GestureExportEntry>? onImportedSelected;
     private bool importedMode;
+    private bool includeTriggerless;
 
     public AnimationPickerWindow(Plugin plugin) : base("Add animation###CollarAnimationPicker")
     {
@@ -31,6 +32,7 @@ public sealed class AnimationPickerWindow : Window, IDisposable
     public void Open(Action<GestureCatalogEntry> selected)
     {
         importedMode = false;
+        includeTriggerless = false;
         onSelected = selected;
         onImportedSelected = null;
         IsOpen = true;
@@ -39,9 +41,22 @@ public sealed class AnimationPickerWindow : Window, IDisposable
     public void OpenImported(Action<GestureExportEntry> selected)
     {
         importedMode = true;
+        includeTriggerless = false;
         onImportedSelected = selected;
         onSelected = null;
         IsOpen = true;
+    }
+
+    public void OpenForRestraint(Action<GestureCatalogEntry> selected)
+    {
+        Open(selected);
+        includeTriggerless = true;
+    }
+
+    public void OpenImportedForRestraint(Action<GestureExportEntry> selected)
+    {
+        OpenImported(selected);
+        includeTriggerless = true;
     }
 
     public void Dispose() { }
@@ -107,7 +122,16 @@ public sealed class AnimationPickerWindow : Window, IDisposable
                         ImGui.Indent();
                         if (entry.Trigger is null)
                         {
-                            IconGlyph.WrappedDisabled("No playable gesture detected");
+                            IconGlyph.WrappedDisabled("Enable this Penumbra option only (idle/walk)");
+                            if (includeTriggerless)
+                            {
+                                ImGui.SameLine();
+                                if (ImGui.SmallButton($"Choose##pickerChoose_{entry.Id}"))
+                                {
+                                    onSelected?.Invoke(entry);
+                                    IsOpen = false;
+                                }
+                            }
                         }
                         else
                         {
@@ -137,9 +161,9 @@ public sealed class AnimationPickerWindow : Window, IDisposable
             return;
         }
         var filter = search.Trim();
-        var visible = all.Where(e => filter.Length == 0 || e.ModName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+        var visible = all.Where(e => (includeTriggerless || e.Trigger is not null) && (filter.Length == 0 || e.ModName.Contains(filter, StringComparison.OrdinalIgnoreCase)
             || e.GroupName.Contains(filter, StringComparison.OrdinalIgnoreCase) || e.AnimationName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || (e.Trigger?.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+            || (e.Trigger?.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false))).ToList();
         IconGlyph.WrappedDisabled($"{visible.Count} shown / {all.Count} imported from Sub");
         ImGui.Separator();
         using var child = ImRaii.Child("importedAnimationPickerResults", Vector2.Zero, false);
@@ -148,13 +172,17 @@ public sealed class AnimationPickerWindow : Window, IDisposable
             if (!ImGui.CollapsingHeader($"{mod.Key}##imported_{mod.Key}", filter.Length > 0 ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None)) continue;
             foreach (var entry in mod.OrderBy(e => e.GroupOrder).ThenBy(e => e.OptionOrder))
             {
-                ImGui.TextUnformatted(entry.Label);
-                ImGui.SameLine();
                 if (ImGui.SmallButton($"Choose##importedChoose_{entry.Id}"))
                 {
                     onImportedSelected?.Invoke(entry);
                     IsOpen = false;
                 }
+                ImGui.SameLine();
+                var mode = entry.Trigger is null ? "Enable option only" : entry.Trigger.DisplayName;
+                var optionName = entry.AnimationName.Length <= 64 ? entry.AnimationName : $"{entry.AnimationName[..61]}...";
+                ImGui.TextWrapped($"{optionName} · {mode}");
+                if (ImGui.IsItemHovered() && entry.AnimationName.Length > 64)
+                    ImGui.SetTooltip(entry.Label);
             }
         }
     }

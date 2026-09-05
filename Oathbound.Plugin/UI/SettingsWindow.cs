@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Ipc;
+using Oathbound.Plugin.Relay;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Utility.Raii;
@@ -22,12 +24,16 @@ namespace Oathbound.Plugin.UI;
 public class SettingsWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
-    private string peerCodeInput = "";
+    private string inviteTargetInput = "";
+    private bool sendingInvitation;
+    private bool acceptingInvitation;
+    private bool confirmingIdentityReset;
     private string triggerPhraseInput = "";
     private string gestureModSearch = "";
     private string newWardrobeAllowlistFolder = "";
     private string? scanAndExportResult;
     private string testCommandInput = "";
+    private int testCustomTriggerIndex;
 
     /// Transient, session-only per-action local Test feedback (collar/ui-organization) - see
     /// CollarWindow's matching field for the rest of the Test controls; Moodles' only lives here since it
@@ -54,7 +60,6 @@ public class SettingsWindow : Window, IDisposable
     public override void OnOpen()
     {
         var config = plugin.Configuration;
-        peerCodeInput = config.Pairing.PeerCode ?? "";
         triggerPhraseInput = config.TriggerPhrase;
     }
 
@@ -111,24 +116,77 @@ public class SettingsWindow : Window, IDisposable
         ImGui.Separator();
         IconGlyph.WrappedDisabled("Type the exact text an Owner would send after \"/tell you\" - trigger phrase included - and run it locally. No pairing or peer needed, and nothing is sent or received.");
 
+        var aliases = config.Aliases;
+        var savedTriggers = new List<(string Label, string Command)>
+        {
+            ($"Title · Clear", aliases.ClearTitleAlias),
+            ("Wardrobe · Unlock", "unlock"),
+            ($"Follow · Engage", aliases.Follow.EngageAlias),
+            ($"Follow · Release", aliases.Follow.ReleaseAlias),
+            ($"Moodle · Clear", aliases.ClearMoodleAlias),
+            ("Collar · Lock", "collar lock"),
+            ("Collar · Unlock", "collar unlock"),
+            ("Restraints · Unlock all", "restraint unlock"),
+        };
+        savedTriggers.AddRange(aliases.Titles.Select(a => ($"Title · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(aliases.Outfits.Select(a => ($"Wardrobe · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(aliases.Gestures.Select(a => ($"Gesture · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(aliases.Moodles.Select(a => ($"Moodle · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(aliases.Restraints.Select(a => ($"Restraint · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(aliases.CustomTriggers.Select(a => ($"Custom Trigger · {a.Alias}", a.Alias)));
+
+        ImGui.TextUnformatted("Choose one of your triggers");
+        testCustomTriggerIndex = Math.Clamp(testCustomTriggerIndex, 0, savedTriggers.Count - 1);
+        var triggerNames = savedTriggers.Select(t => t.Label).ToArray();
+        ImGui.SetNextItemWidth(Math.Max(180, ImGui.GetContentRegionAvail().X));
+        ImGui.Combo("##testSavedTrigger", ref testCustomTriggerIndex, triggerNames, triggerNames.Length);
+        var selectedCommand = $"{config.TriggerPhrase.Trim()} {savedTriggers[testCustomTriggerIndex].Command}".Trim();
+        if (ImGui.SmallButton("Put in test box"))
+            testCommandInput = selectedCommand;
+        ImGui.SameLine();
+        DrawTestButton("testSelectedTrigger", "Run selected trigger", () => plugin.ChatCommandListener.TestIncomingCommand(selectedCommand));
+        IconGlyph.WrappedDisabled($"What the Owner sends: {selectedCommand}");
+        ImGui.Spacing();
+
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
-        ImGui.InputTextWithHint("##testCommandInput", "e.g. ray outfit lock kagome", ref testCommandInput, 128);
+        ImGui.InputTextWithHint("##testCommandInput", "e.g. ray outfit lock kagome", ref testCommandInput, 500);
+        if (ImGui.SmallButton("Paste"))
+        {
+            var clipboard = ImGui.GetClipboardText() ?? "";
+            testCommandInput = clipboard[..Math.Min(clipboard.Length, 500)];
+        }
+        ImGui.SameLine();
+        using (ImRaii.Disabled(testCommandInput.Length == 0))
+        {
+            if (ImGui.SmallButton("Copy"))
+                ImGui.SetClipboardText(testCommandInput);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Clear"))
+                testCommandInput = "";
+        }
         DrawTestButton("testOwnerCommand", "Run test", () => plugin.ChatCommandListener.TestIncomingCommand(testCommandInput));
     }
 
-    /// collar/pairing "Sub's pairing identity configuration locks while paired": Role, both codes, and the
-    /// trigger phrase all become read-only for a paired Sub - enforced here in the rendering layer only
-    /// (ImRaii.Disabled), never in PluginConfig/PairingCommand, the same "UI-only lock" shape pairing's own
-    /// "Sub can't unpair except via panic" has always used (see PairingCommand.ReleasePeer's comment). The
-    /// Owner side is never locked, paired or not.
+    /// collar/pairing "Sub's pairing identity configuration locks while paired": Role and the trigger
+    /// phrase become read-only for a paired Sub - enforced here in the rendering layer only
+    /// (ImRaii.Disabled), never in PluginConfig/PairingService, the same "UI-only lock" shape pairing's own
+    /// "Sub can't unpair except via panic" has always used (see PairingService.ReleasePeer's comment). The
+    /// Owner side is never locked, paired or not. Pairing is relay-assisted only - there is no manual
+    /// fallback (collar/pairing "Pairing has no manual fallback and never silently weakens").
     private void DrawIdentityCard(PluginConfig config)
     {
-        var pending = plugin.ChatCommandListener.Pending;
+        var pairingService = plugin.PairingService;
+        var pending = pairingService.Pending;
         var sameRoleWarning = pending is { } pendingCheck && pendingCheck.SenderRole == config.Role;
         var subLocked = config.Role == PluginRole.Sub && config.Pairing.IsPaired;
 
         IconGlyph.Text(FontAwesomeIcon.UserShield, "Identity & Pairing");
         ImGui.Separator();
+
+        DrawDeviceIdentitySection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
 
         ImGui.TextWrapped("Role determines which side of the pairing you are - it doesn't hide anything in the main window, so you can set up aliases or use the Owner tab regardless.");
         using (ImRaii.Disabled(subLocked))
@@ -140,38 +198,30 @@ public class SettingsWindow : Window, IDisposable
                 config.Save();
             }
         }
-        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only Sub actually gates anything. Owner is mostly informational (shown in the pairing handshake, and which pairing-release behavior applies). Either role can send the handshake first - whoever does, the other side just needs to Accept.");
+        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only Sub actually gates anything. Owner is mostly informational. Either role can send the invitation first - whoever does, the other side just needs to Accept.");
 
         ImGui.Spacing();
-        ImGui.TextWrapped("Your code - share it with your pair out of band (voice, DM, etc), then have them enter it below.");
-        ImGui.TextUnformatted(config.Pairing.MyCode);
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Copy##myCode"))
-            ImGui.SetClipboardText(config.Pairing.MyCode);
-        ImGui.SameLine();
-        using (ImRaii.Disabled(subLocked))
+        IconGlyph.WrappedDisabled("Secure Oathbound relay enabled.");
+        IconGlyph.HelpMarker("Pairing and encrypted catalog synchronization use Oathbound's fixed Cloudflare relay. The endpoint cannot be changed by plugin configuration.");
+        if (plugin.RelayClient.LastReachable is { } reachable)
+            IconGlyph.WrappedColored(reachable ? Theme.Success : Theme.Warning,
+                reachable ? "Relay connection verified." : "Relay was unreachable on the last attempt; existing pairing and panic remain local-first.");
+        ImGui.Spacing();
+        ImGui.TextWrapped("Send an invitation: enter who to pair with, exactly as you'd address a tell, then click Send.");
+        using (ImRaii.Disabled(subLocked || sendingInvitation))
         {
-            if (ImGui.SmallButton("Regenerate##myCode"))
-                plugin.PairingCommand.RegenerateMyCode();
+            ImGui.InputTextWithHint("Pair with", "Name Surname@World", ref inviteTargetInput, 64);
+            using (ImRaii.Disabled(inviteTargetInput.Trim().Length == 0))
+            {
+                if (ImGui.Button(sendingInvitation ? "Sending..." : "Send Invitation"))
+                {
+                    sendingInvitation = true;
+                    var target = inviteTargetInput.Trim();
+                    Plugin.FireAndForget(SendInvitationAsync(target));
+                }
+            }
         }
-        IconGlyph.HelpMarker("Generated once per install. Only used to gate the one-time pairing handshake message below - never checked against ongoing command tells. Regenerating invalidates any handshake attempt still using the old code.");
-
-        ImGui.Spacing();
-        ImGui.TextWrapped("Their code - the code they shared with you.");
-        using (ImRaii.Disabled(subLocked))
-        {
-            if (ImGui.InputText("Their code", ref peerCodeInput, 32))
-                plugin.PairingCommand.SetPeerCode(peerCodeInput);
-        }
-        IconGlyph.HelpMarker("Required before a pairing handshake tell from them can produce a Pending request below - a wrong or missing code is silently ignored.");
-
-        ImGui.Spacing();
-        ImGui.TextWrapped("Once both codes are entered, either of you sends this as a tell - only one of you needs to. They accept it, and you're both paired automatically.");
-        ImGui.TextUnformatted(plugin.ChatComposer.ComposePairing());
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Copy##pairingMsg"))
-            ImGui.SetClipboardText(plugin.ChatComposer.ComposePairing());
-        IconGlyph.HelpMarker("Copies this handshake message to your clipboard only - it's never sent for you. Paste it after typing /tell TheirName@World yourself. Whoever sends it becomes paired automatically once the other side clicks Accept - no need for both of you to send one.");
+        IconGlyph.HelpMarker("Creates a single-use relay invitation (expires in 15 minutes) and sends its reference in one tell. They accept it, an acknowledgement tell comes back automatically, and you're both paired.");
 
         using (ImRaii.Disabled(subLocked))
         {
@@ -181,25 +231,49 @@ public class SettingsWindow : Window, IDisposable
                 config.Save();
             }
         }
-        IconGlyph.HelpMarker("The word that must start every ongoing command tell, e.g. \"command strip\". Only used after pairing is locked - the handshake message above always starts with \"collarpair\" regardless of this setting.");
+        IconGlyph.HelpMarker("The word that must start every ongoing command tell, e.g. \"command strip\".");
 
         if (subLocked)
             IconGlyph.WrappedColored(Theme.TextMuted, "Locked while paired - trigger /oathboundpanic to release pairing and change these again.");
+
+        if (pairingService.LastError is { Length: > 0 } lastError)
+            IconGlyph.WrappedColored(Theme.Danger, lastError);
+
+        IconGlyph.WrappedDisabled($"Pairing status: {pairingService.Phase}.");
+        if (pairingService.OutgoingInvitationExpiresAt is { } outgoingExpiry)
+        {
+            var remaining = TimeSpan.FromSeconds(Math.Max(0, outgoingExpiry - DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+            IconGlyph.WrappedDisabled($"Invitation sent to {pairingService.OutgoingInvitationTarget}; expires in {remaining.Minutes}m {remaining.Seconds}s.");
+        }
 
         ImGui.Spacing();
         if (pending is { } request)
         {
             var roleLabel = request.SenderRole == PluginRole.Owner ? "your Owner" : "your Sub";
-            IconGlyph.WrappedColored(Theme.Warning, $"Pairing request from {request.Name}@{request.World} (code matched) - they say they'll be {roleLabel}.");
+            var expiresIn = TimeSpan.FromSeconds(Math.Max(0, request.ExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+            var invitationExpired = request.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            IconGlyph.WrappedColored(Theme.Warning, $"Invitation from {request.Name}@{request.World} (verified sender, signature checked) - they say they'll be {roleLabel}. Expires in {expiresIn.Minutes}m {expiresIn.Seconds}s.");
             if (sameRoleWarning)
                 IconGlyph.WrappedColored(Theme.Danger, $"You're both set to {config.Role} - one of you should switch Role above, or nothing will ever trigger.");
 
-            if (ImGui.Button("Accept"))
-                plugin.ChatCommandListener.AcceptPending();
+            using (ImRaii.Disabled(acceptingInvitation || invitationExpired))
+            {
+                if (ImGui.Button(acceptingInvitation ? "Accepting..." : "Accept"))
+                {
+                    acceptingInvitation = true;
+                    Plugin.FireAndForget(AcceptInvitationAsync());
+                }
+            }
             IconGlyph.HelpMarker("Trusts this sender as your paired peer from now on and locks pairing on.");
+            if (invitationExpired)
+                IconGlyph.WrappedColored(Theme.Warning, "This invitation expired. Reject it and ask the sender to create another.");
             ImGui.SameLine();
             if (ImGui.Button("Reject"))
-                plugin.ChatCommandListener.DismissPending();
+                pairingService.DismissPending();
+        }
+        else if (pairingService.AwaitingActivation)
+        {
+            IconGlyph.WrappedColored(Theme.Warning, "Waiting for the other side to confirm...");
         }
         else if (config.Pairing.IsPaired)
         {
@@ -211,7 +285,7 @@ public class SettingsWindow : Window, IDisposable
             if (config.Role == PluginRole.Owner)
             {
                 if (ImGui.Button("Release pairing"))
-                    plugin.PairingCommand.ReleasePeer();
+                    pairingService.ReleasePeer();
                 IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your Sub's plugin at all. Fixes a stale/wrong pairing or frees them up to pair with someone else.");
             }
             else
@@ -221,7 +295,77 @@ public class SettingsWindow : Window, IDisposable
         }
         else
         {
-            IconGlyph.WrappedColored(Theme.TextMuted, "Not paired - no pending handshake.");
+            IconGlyph.WrappedColored(Theme.TextMuted, "Not paired - no pending invitation.");
+        }
+
+        if (config.Pairing.LastRevocationDeliveryStatus is { Length: > 0 } delivery)
+        {
+            var label = delivery switch
+            {
+                "delivered" => "Last unpair/panic relay notice was delivered.",
+                "pending" => "Local unpair/panic completed; relay notification is pending retry.",
+                "expired" => "Local unpair/panic completed; its relay notification expired before delivery.",
+                _ => "Local unpair/panic completed; its relay notification failed.",
+            };
+            IconGlyph.WrappedColored(delivery == "delivered" ? Theme.Success : Theme.Warning, label);
+        }
+    }
+
+    private async System.Threading.Tasks.Task SendInvitationAsync(string target)
+    {
+        try
+        {
+            await plugin.PairingService.CreateAndSendInvitationAsync(target, CancellationToken.None);
+        }
+        finally
+        {
+            sendingInvitation = false;
+        }
+    }
+
+    private async System.Threading.Tasks.Task AcceptInvitationAsync()
+    {
+        try
+        {
+            await plugin.PairingService.AcceptPendingAsync(CancellationToken.None);
+        }
+        finally
+        {
+            acceptingInvitation = false;
+        }
+    }
+
+    /// collar/pairing "Device-key lifecycle is recoverable and explicit". Fingerprint only - never the
+    /// public key coordinates or, obviously, the private key.
+    private void DrawDeviceIdentitySection()
+    {
+        var identity = plugin.DeviceIdentityService;
+        IconGlyph.Text(FontAwesomeIcon.Fingerprint, "Device Identity");
+        var fingerprint = identity.DeviceKeyId is { Length: >= 16 } id ? id[..16] : identity.DeviceKeyId ?? "(none)";
+        ImGui.TextUnformatted($"Fingerprint: {fingerprint}...");
+        IconGlyph.HelpMarker("Identifies this installation to the relay - never your character. Regenerated only on an explicit reset below.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            IconGlyph.WrappedColored(Theme.Warning, "Running under Wine: the private key is stored without a real OS-backed protection guarantee (Wine's DPAPI does not provide one). Treat a compromised machine as requiring a reset below.");
+        }
+
+        using (ImRaii.Disabled(confirmingIdentityReset))
+        {
+            if (ImGui.Button("Reset device identity"))
+                confirmingIdentityReset = true;
+        }
+        if (confirmingIdentityReset)
+        {
+            IconGlyph.WrappedColored(Theme.Danger, "This ends every relay-assisted pairing this device holds and cannot be undone. Are you sure?");
+            if (ImGui.Button("Confirm reset"))
+            {
+                Plugin.FireAndForget(plugin.PairingService.ResetDeviceIdentityAsync(CancellationToken.None));
+                confirmingIdentityReset = false;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel"))
+                confirmingIdentityReset = false;
         }
     }
 

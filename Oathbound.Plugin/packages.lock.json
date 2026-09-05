@@ -2,6 +2,12 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows7.0": {
+      "BouncyCastle.Cryptography": {
+        "type": "Direct",
+        "requested": "[2.6.2, )",
+        "resolved": "2.6.2",
+        "contentHash": "7oWOcvnntmMKNzDLsdxAYqApt+AjpRpP2CShjMfIa3umZ42UQMvH0tl1qAliYPNYO6vTdcGMqnRrCPmsfzTI1w=="
+      },
       "DalamudPackager": {
         "type": "Direct",
         "requested": "[15.0.0, )",
@@ -31,6 +37,12 @@
         "requested": "[5.15.1, )",
         "resolved": "5.15.1",
         "contentHash": "3ikk0zIOaLm2n3nZRQpW3xaRQ2cq/TOOEApNUjYXolqbyvCrZVGXhdQulcssNUbo0AMQ81l+cf7OfqRceeRBcg=="
+      },
+      "System.Security.Cryptography.ProtectedData": {
+        "type": "Direct",
+        "requested": "[9.0.0, )",
+        "resolved": "9.0.0",
+        "contentHash": "CJW+x/F6fmRQ7N6K8paasTw9PDZp4t7G76UjGNlSDgoHPF0h08vTzLYbLZpOLEJSg35d5wy2jCXGo84EN05DpQ=="
       }
     }
   }

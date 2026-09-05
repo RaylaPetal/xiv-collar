@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "schemaVersion": 1,
+  "code": "cooldown_active",
+  "retryAfterSeconds": 9600
+}

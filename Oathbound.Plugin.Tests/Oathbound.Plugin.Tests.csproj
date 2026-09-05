@@ -1,0 +1,20 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows7.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Not a real Dalamud plugin - a plain console harness (see Program.cs) that links against
+         Oathbound.Plugin for regression checks. The project-local DalamudPackager.targets intentionally
+         suppresses packaging for this executable. -->
+    <Name>Oathbound.Plugin.Tests</Name>
+    <Author>Rayla Petal</Author>
+    <Description>Internal regression-check harness - not a real plugin.</Description>
+    <Punchline>Internal regression-check harness.</Punchline>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Oathbound.Plugin/Oathbound.Plugin.csproj" />
+    <Reference Include="Dalamud" HintPath="$(DalamudLibPath)Dalamud.dll" Private="true" />
+  </ItemGroup>
+</Project>

@@ -13,6 +13,11 @@ namespace Oathbound.Plugin.Commands;
 
 public sealed class GestureCommand
 {
+    public enum ApplyStatus { Success, Missing, Ambiguous, Malformed, CollectionUnavailable, TemporarySettingsFailed, RedrawFailed }
+    public readonly record struct ApplyResult(ApplyStatus Status, string? DisplayName = null)
+    {
+        public bool Success => Status == ApplyStatus.Success;
+    }
     private const string ExportPrefix = "COLLAR-GESTURE-V1|";
 
     /// Gap between the Penumbra redraw and playing the tied trigger, so the animation reliably starts
@@ -54,7 +59,8 @@ public sealed class GestureCommand
         if (pendingPlay is { } pending && now >= pending.ReadyAtTicks)
         {
             pendingPlay = null;
-            Play(pending.Trigger);
+            if (!Play(pending.Trigger))
+                Plugin.Log.Warning($"Gesture playback failed after redraw for '{pending.Trigger.DisplayName}'.");
         }
 
         if (activeTemporary is { } active && now >= active.IdleUntilTicks)
@@ -102,14 +108,18 @@ public sealed class GestureCommand
     /// `GestureCatalogEntry` - see that type's own doc comment for why (the exported file's size scales
     /// with entry count, not with how many option groups each entry's source mod happens to have).
     public string ExportCatalog() => string.Join("\n", config.GestureMapping.LocalCatalog.Values
-        .Where(e => e.Trigger != null).OrderBy(e => e.Label)
+        .Where(e => !string.IsNullOrWhiteSpace(e.ModDirectory) && e.GroupSelections.Count > 0).OrderBy(e => e.Label)
         .Select(e => ExportPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(GestureExportEntry.From(e))))));
 
     public static bool TryParseExport(string line, out GestureExportEntry? entry)
     {
         entry = null;
         if (!line.StartsWith(ExportPrefix, StringComparison.Ordinal)) return false;
-        try { entry = JsonSerializer.Deserialize<GestureExportEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[ExportPrefix.Length..]))); return entry?.Trigger != null; }
+        try
+        {
+            entry = JsonSerializer.Deserialize<GestureExportEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[ExportPrefix.Length..])));
+            return entry is { Id.Length: > 0, ModName.Length: > 0, AnimationName.Length: > 0 };
+        }
         catch { return false; }
     }
 
@@ -122,17 +132,29 @@ public sealed class GestureCommand
     }
 
     public bool ForceApply(string idOrName)
+        => ForceApplyDetailed(idOrName).Success;
+
+    public ApplyResult ForceApplyDetailed(string input)
     {
-        if (CommandSelector.TryRead(idOrName, out var selector, out var tail) && tail.Length == 0) idOrName = selector;
-        var match = CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, idOrName);
-        return match is not null && Execute(match);
+        var resolution = CommandSelector.ResolveGestureDetailed(config.GestureMapping.LocalCatalog.Values, input);
+        if (resolution.Entry is null)
+            return new ApplyResult(resolution.Status switch
+            {
+                CommandSelector.ResolutionStatus.Ambiguous => ApplyStatus.Ambiguous,
+                CommandSelector.ResolutionStatus.Malformed => ApplyStatus.Malformed,
+                _ => ApplyStatus.Missing,
+            });
+        return ExecuteDetailed(resolution.Entry);
     }
 
     private bool Execute(GestureCatalogEntry entry)
+        => ExecuteDetailed(entry).Success;
+
+    private ApplyResult ExecuteDetailed(GestureCatalogEntry entry)
     {
-        if (entry.Trigger is null) return false;
+        if (entry.Trigger is null) return new ApplyResult(ApplyStatus.Missing, entry.AnimationName);
         var collection = penumbra.TryGetLocalPlayerCollectionId();
-        if (collection is null) return false;
+        if (collection is null) return new ApplyResult(ApplyStatus.CollectionUnavailable, entry.AnimationName);
 
         // Switching to a different mod's temporary activation must revert whatever was previously
         // active first, so its settings never linger once an unrelated gesture takes over.
@@ -140,27 +162,33 @@ public sealed class GestureCommand
             ResetActiveTemporary();
 
         var selections = entry.GroupSelections.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
-        if (!penumbra.TrySetTemporarySettings(collection.Value, entry.ModDirectory, selections)) return false;
-        if (!penumbra.TryRedrawLocalPlayer()) return false;
+        if (!penumbra.TrySetTemporarySettings(collection.Value, entry.ModDirectory, selections))
+            return new ApplyResult(ApplyStatus.TemporarySettingsFailed, entry.AnimationName);
+        if (!penumbra.TryRedrawLocalPlayer())
+        {
+            penumbra.TryRemoveTemporarySettings(collection.Value, entry.ModDirectory);
+            return new ApplyResult(ApplyStatus.RedrawFailed, entry.AnimationName);
+        }
 
         var now = Environment.TickCount64;
         activeTemporary = (collection.Value, entry.ModDirectory, now + IdleTimeoutMs);
         pendingPlay = (entry.Trigger, now + PlayDelayMs);
-        return true;
+        return new ApplyResult(ApplyStatus.Success, entry.AnimationName);
     }
 
     /// Internal rather than private: collar/restraints' Arms Cuffed/Legs Cuffed/Full Body Cuffed rules
     /// reuse this exact one-shot trigger playback for their own chosen animation, distinct from Gesture's
     /// own temporary-activation/idle-timeout bookkeeping which those rules deliberately don't share.
-    internal static unsafe void Play(GestureTrigger trigger)
+    internal static unsafe bool Play(GestureTrigger trigger)
     {
         if (trigger.Kind == GestureTriggerKind.SlashCommand)
         {
+            if (string.IsNullOrWhiteSpace(trigger.SlashCommand)) return false;
             Chat.SendMessage($"/{trigger.SlashCommand.TrimStart('/')} motion");
-            return;
+            return true;
         }
         var playerState = PlayerState.Instance();
-        if (playerState == null || trigger.EmoteModeId is < 1 or > 3) return;
+        if (playerState == null || trigger.EmoteModeId is < 1 or > 3) return false;
         var poseType = trigger.EmoteModeId switch
         {
             1 => EmoteController.PoseType.GroundSit,
@@ -170,6 +198,7 @@ public sealed class GestureCommand
         };
         playerState->SelectedPoses[(int)poseType] = trigger.CPoseState;
         Chat.SendMessage(trigger.EmoteModeId switch { 1 => "/groundsit", 2 => "/sit", 3 => "/doze", _ => "" });
+        return true;
     }
 
     private void MigrateAliases()

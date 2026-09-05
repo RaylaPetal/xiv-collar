@@ -1,0 +1,9 @@
+{
+  "type": "pair",
+  "schemaVersion": 1,
+  "pairIdHash": "65628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59f",
+  "pairEpoch": 1,
+  "ownerDeviceKeyId": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  "subDeviceKeyId": "f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5",
+  "createdAt": 1700000020
+}

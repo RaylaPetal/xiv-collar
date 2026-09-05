@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/catalog-response.schema.json",
+  "title": "CatalogResponse",
+  "description": "Authenticated envelope describing an uploaded encrypted catalog snapshot. The relay stores only this metadata plus the R2 ciphertext object; it never receives plaintext or the decryption key.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "pairIdHash", "pairEpoch", "requestId",
+    "snapshotId", "senderDeviceKeyId", "recipientDeviceKeyId",
+    "createdAt", "expiresAt", "algorithm", "ciphertextDigest",
+    "ciphertextSizeBytes", "nonce", "senderEphemeralPublicKey", "signature"
+  ],
+  "properties": {
+    "type": { "const": "catalog-response" },
+    "schemaVersion": { "const": 1 },
+    "pairIdHash": { "$ref": "common.schema.json#/$defs/pairIdHash" },
+    "pairEpoch": { "$ref": "common.schema.json#/$defs/pairEpoch" },
+    "requestId": { "$ref": "common.schema.json#/$defs/capabilityId" },
+    "snapshotId": { "$ref": "common.schema.json#/$defs/monotonicSequence" },
+    "senderDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "recipientDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "expiresAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "algorithm": { "$ref": "common.schema.json#/$defs/aeadAlgorithm" },
+    "ciphertextDigest": {
+      "$ref": "common.schema.json#/$defs/sha256Hex",
+      "description": "Digest of the compressed ciphertext stored in R2, authenticated by this envelope's signature."
+    },
+    "ciphertextSizeBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "MUST NOT exceed the service's maximum compressed/encrypted catalog size (see constants.json)."
+    },
+    "nonce": {
+      "$ref": "common.schema.json#/$defs/aeadNonce",
+      "description": "AES-256-GCM nonce, unique per (senderDeviceKeyId, recipientDeviceKeyId) key pair."
+    },
+    "senderEphemeralPublicKey": {
+      "$ref": "common.schema.json#/$defs/ecPublicKeyJwk",
+      "description": "Sub's ephemeral ECDH public key used to derive the AEAD key with the Owner's ephemeral key from the matching catalog-request."
+    },
+    "signature": { "$ref": "common.schema.json#/$defs/ecdsaSignature" }
+  }
+}

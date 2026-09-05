@@ -1,0 +1,16 @@
+{
+  "type": "acceptance",
+  "schemaVersion": 1,
+  "invitationId": "capIdCAPIDcapIdCAPIDcapIdCAPIDcapIdCAPID",
+  "accepterDeviceKeyId": "f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5",
+  "accepterPublicKey": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "QRSTUVWXYZabcdefghijklmnopQRSTUVWXYZabcdefg",
+    "y": "poNMLKJIHGFEDCBAzyxwvutsrqponMLKJIHGFEDCBAz"
+  },
+  "proofDigest": "4e95c182f4eee6b576b217e961eb031648756ffcf51371319eac7b309ecd2ee5",
+  "createdAt": 1700000010,
+  "expiresAt": 1700000910,
+  "signature": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-ABCDEFGHIJKLMNOPQRSTUV"
+}

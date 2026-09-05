@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/acceptance.schema.json",
+  "title": "Acceptance",
+  "description": "Signed proof published by the receiver after explicit Accept; the inviter activates only once the matching acknowledgement tell arrives from the expected verified sender.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "invitationId", "accepterDeviceKeyId",
+    "accepterPublicKey", "proofDigest", "createdAt", "expiresAt", "signature"
+  ],
+  "properties": {
+    "type": { "const": "acceptance" },
+    "schemaVersion": { "const": 1 },
+    "invitationId": { "$ref": "common.schema.json#/$defs/capabilityId" },
+    "accepterDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "accepterPublicKey": { "$ref": "common.schema.json#/$defs/ecPublicKeyJwk" },
+    "proofDigest": {
+      "$ref": "common.schema.json#/$defs/sha256Hex",
+      "description": "Digest carried in the acknowledgement tell; binds the tell to this acceptance."
+    },
+    "role": { "$ref": "common.schema.json#/$defs/role" },
+    "triggerPhrase": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "expiresAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "signature": { "$ref": "common.schema.json#/$defs/ecdsaSignature" }
+  }
+}

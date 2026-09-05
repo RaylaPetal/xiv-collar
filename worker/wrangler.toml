@@ -1,0 +1,55 @@
+name = "oathbound-relay"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Base config intentionally has no bindings and is never deployed directly;
+# `wrangler dev` / `wrangler deploy` always take an explicit --env so a
+# developer cannot accidentally target production. See docs/deployment.md
+# (added in task 8.4) for account setup and how to fill in the placeholder
+# ids below.
+
+[env.local]
+vars = { RELAY_ENVIRONMENT = "local", CIRCUIT_BREAKER_FORCE_OPEN = "false" }
+
+[[env.local.d1_databases]]
+binding = "RELAY_DB"
+database_name = "oathbound-relay-local"
+database_id = "local-only-placeholder"
+migrations_dir = "migrations"
+
+[[env.local.r2_buckets]]
+binding = "RELAY_CATALOG_BUCKET"
+bucket_name = "oathbound-relay-catalog-local"
+
+[env.staging]
+vars = { RELAY_ENVIRONMENT = "staging", CIRCUIT_BREAKER_FORCE_OPEN = "false" }
+
+[[env.staging.d1_databases]]
+binding = "RELAY_DB"
+database_name = "oathbound-relay-staging"
+database_id = "7a613556-8574-4ad6-bf64-ac23d05c22ce"
+migrations_dir = "migrations"
+
+[[env.staging.r2_buckets]]
+binding = "RELAY_CATALOG_BUCKET"
+bucket_name = "oathbound-relay-catalog-staging"
+
+[env.staging.triggers]
+crons = ["*/15 * * * *"]
+
+[env.production]
+vars = { RELAY_ENVIRONMENT = "production", CIRCUIT_BREAKER_FORCE_OPEN = "false" }
+
+[[env.production.d1_databases]]
+binding = "RELAY_DB"
+database_name = "oathbound-relay-production"
+database_id = "REPLACE_WITH_PRODUCTION_D1_ID"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
+binding = "RELAY_CATALOG_BUCKET"
+bucket_name = "oathbound-relay-catalog-production"
+
+[env.production.triggers]
+crons = ["*/15 * * * *"]

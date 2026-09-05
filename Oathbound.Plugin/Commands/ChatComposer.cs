@@ -22,29 +22,32 @@ public sealed class ChatComposer
     /// idea which, since both are just text appended after the trigger phrase.
     public string Compose(string command) => Wrap(command);
 
-    /// collar/pairing's one-time handshake message: the keyword, this side's own declared Role, this
-    /// side's own code, and (collar/chat-transport) this side's own currently-configured trigger phrase -
-    /// the role lets the receiving side's Pending prompt show what the sender thinks this pairing will be,
-    /// and the trigger phrase lets the receiving side compose future commands using the phrase this side
-    /// actually expects, instead of needing to manually match it. No `/tell` target - there's no captured
-    /// peer identity yet to address it to, so the Owner/Sub types the recipient themselves the same way
-    /// they'd start any other tell.
-    public string ComposePairing()
-    {
-        var roleToken = config.Role == PluginRole.Owner ? "owner" : "sub";
-        return $"collarpair {roleToken} {config.Pairing.MyCode} {config.TriggerPhrase.Trim()}";
-    }
+    /// collar/pairing's relay-assisted handshake: a short lifecycle tell carrying only the invitation's
+    /// capability id - everything else (role, trigger phrase, expiry) lives in the signed invitation itself,
+    /// fetched from the relay once this tell's verified sender is captured (see Relay/PairingService.cs).
+    /// `targetTellAddress` is typed by the user (e.g. "Name Surname@World") since there's no captured peer
+    /// identity yet to address it to automatically.
+    public string ComposeRelayInvitation(string targetTellAddress, string invitationId) =>
+        $"/tell {targetTellAddress.Trim()} collarinvite {invitationId}";
 
-    /// collar/pairing's "One-way pairing handshake completes both sides": the automatic confirmation tell
-    /// sent back to the inviter as part of accepting a pending request. Unlike ComposePairing, the target
-    /// is already known (the verified sender of the request being accepted), so this composes a full
-    /// `/tell` directly rather than going through Wrap's already-paired-peer addressing. `code` echoes back
-    /// the code that was matched to accept, which the inviter checks against their own MyCode.
-    public string ComposePairingAck(string name, string world, string code, string triggerPhrase)
-    {
-        var roleToken = config.Role == PluginRole.Owner ? "owner" : "sub";
-        return $"/tell {name}@{world} collarpairack {roleToken} {code} {triggerPhrase.Trim()}";
-    }
+    /// collar/pairing's acknowledgement tell, sent automatically as part of accepting a pending relay
+    /// invitation. The target is already known (the verified sender of the invitation being accepted), so
+    /// this composes a full `/tell` directly rather than going through Wrap's already-paired-peer
+    /// addressing. `proofDigest` is what the inviter cross-checks against the signed acceptance it fetches
+    /// from the relay before activating - a relay claim without this exact tell can never activate pairing.
+    public string ComposePairingAck(string name, string world, string invitationId, string proofDigest) =>
+        $"/tell {name}@{world} collarpairack {invitationId} {proofDigest}";
+
+    /// collar/catalog-sync: the Owner's lifecycle tell telling the paired Sub a signed catalog-request now
+    /// exists on the relay - carries only the request's capability id, same "short lifecycle tell, fetch
+    /// the signed content separately" shape as the pairing invitation tell.
+    public string ComposeCatalogRequestNotice(string name, string world, string requestId) =>
+        $"/tell {name}@{world} collarcatalogreq {requestId}";
+
+    /// collar/catalog-sync "Sub has not opted in": sent back to the Owner instead of building/uploading
+    /// anything, so the Owner learns a permission status without any catalog content ever existing.
+    public string ComposeCatalogPermissionDenied(string name, string world, string requestId) =>
+        $"/tell {name}@{world} collarcatalogdenied {requestId}";
 
     /// collar/pairing "Panic notifies the peer, best-effort": the automatic notification tell sent from
     /// PanicHandler as a direct consequence of the panic action itself. Like ComposePairingAck, the target

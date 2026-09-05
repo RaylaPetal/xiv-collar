@@ -68,6 +68,8 @@ public class CollarWindow : Window, IDisposable
     private int ctMoodleStatusIndex;
     private int ctRestraintDeviceIndex;
     private string ctChatText = "";
+    private int? editingCustomTriggerIndex;
+    private int? editingCustomTriggerActionIndex;
 
     /// Owner-side ad-hoc Custom Trigger draft (collar/custom-triggers "custom commands should also be
     /// creatable via the Owner commands menu") - separate field set from the Sub-side draft above (ct*),
@@ -86,11 +88,14 @@ public class CollarWindow : Window, IDisposable
     private string ctqMoodleName = "";
     private string ctqRestraintName = "";
     private string ctqChatText = "";
+    private int? editingOwnerActionIndex;
+    private QuickCommand? editingOwnerBundle;
 
     private string newDeviceName = "";
     private int newDeviceSlotIndex;
     private ulong? newDeviceItemId;
     private readonly RestraintRuleEditState newDeviceRuleEdit = new();
+    private string? editingDeviceId;
 
     private string newRestraintAlias = "";
     private int newRestraintDeviceIndex;
@@ -117,6 +122,19 @@ public class CollarWindow : Window, IDisposable
 
     /// collar/ui-organization: search text filtering the Owner's Gesture quick-command list.
     private string gestureQuickSearch = "";
+    private QuickCommand? editingQuickCommand;
+    private List<QuickCommand>? editingQuickList;
+    private string editingQuickLabel = "";
+    private string editingQuickPayload = "";
+    private string editingQuickTarget = "";
+    private string editingQuickOriginalTarget = "";
+    private bool editingQuickTitleIsPrefix;
+    private bool editingQuickOriginalTitleIsPrefix;
+    private Vector3 editingQuickTitleColor = new(1, 1, 1);
+    private Vector3 editingQuickOriginalTitleColor = new(1, 1, 1);
+
+    private enum QuickEditCategory { Raw, Title, Outfit, Gesture, Follow, Moodle }
+    private QuickEditCategory editingQuickCategory;
 
     /// Owner-side per-quick-command rule editor state (collar/restraints "Owner assigns rules to a quick
     /// command"), keyed by the quick command's Label - transient UI-only state, not persisted itself (the
@@ -217,6 +235,7 @@ public class CollarWindow : Window, IDisposable
                 DrawPermissionsCard();
                 break;
         }
+        DrawQuickCommandEditor();
     }
 
     /// Both roles can receive a Pending handshake now (collarpair's role token - see
@@ -226,7 +245,7 @@ public class CollarWindow : Window, IDisposable
     /// for panic to revert.
     private void DrawCharacterHeader()
     {
-        var pending = plugin.ChatCommandListener.Pending;
+        var pending = plugin.PairingService.Pending;
         var peerUnpairedNotice = plugin.ChatCommandListener.PeerUnpairedNotice;
         var pairing = plugin.Configuration.Pairing;
         var config = plugin.Configuration;
@@ -265,16 +284,19 @@ public class CollarWindow : Window, IDisposable
         if (pending is { } request)
         {
             var roleLabel = request.SenderRole == PluginRole.Owner ? "your Owner" : "your Sub";
-            IconGlyph.WrappedColored(Theme.Warning, $"Pending request: {request.Name}@{request.World} wants to pair as {roleLabel}.");
+            var expiresIn = TimeSpan.FromSeconds(Math.Max(0, request.ExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+            var invitationExpired = request.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            IconGlyph.WrappedColored(Theme.Warning, $"Pending request: {request.Name}@{request.World} wants to pair as {roleLabel} (expires in {expiresIn.Minutes}m {expiresIn.Seconds}s).");
             if (sameRoleWarning)
                 IconGlyph.WrappedColored(Theme.Danger, $"You're both set to {config.Role} in Settings - one of you should switch, or nothing will ever trigger.");
 
-            if (ImGui.Button("Accept"))
-                plugin.ChatCommandListener.AcceptPending();
+            using (ImRaii.Disabled(invitationExpired))
+                if (ImGui.Button("Accept"))
+                    Plugin.FireAndForget(plugin.PairingService.AcceptPendingAsync(System.Threading.CancellationToken.None));
             IconGlyph.HelpMarker("Trusts this sender as your paired peer from now on. Locks pairing on if you're set to Sub (only /oathboundpanic, your safeword command, undoes it) - if you're set to Owner, Release pairing (below, once accepted) undoes it any time.");
             ImGui.SameLine();
             if (ImGui.Button("Reject"))
-                plugin.ChatCommandListener.DismissPending();
+                plugin.PairingService.DismissPending();
         }
         else if (peerUnpairedNotice is { } ownerNotice && config.Role == PluginRole.Owner)
         {
@@ -282,7 +304,7 @@ public class CollarWindow : Window, IDisposable
             IconGlyph.WrappedColored(Theme.Warning, $"{peerLabel} side ended pairing via panic - they will not receive any commands until you pair again.");
             if (ImGui.Button("Release pairing"))
             {
-                plugin.PairingCommand.ReleasePeer();
+                plugin.PairingService.ReleasePeer();
                 plugin.ChatCommandListener.DismissPeerUnpairedNotice();
             }
             IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your former Sub's plugin at all.");
@@ -290,13 +312,13 @@ public class CollarWindow : Window, IDisposable
         else if (!pairing.IsPaired)
         {
             IconGlyph.WrappedColored(Theme.TextMuted, "Not paired");
-            IconGlyph.WrappedDisabled("Set your codes and send the pairing message from Settings when you're ready.");
+            IconGlyph.WrappedDisabled("Send or accept a relay invitation from Settings when you're ready.");
         }
         else if (config.Role == PluginRole.Owner)
         {
             IconGlyph.WrappedColored(Theme.Success, $"Owns: {pairing.PeerName}@{pairing.PeerWorld}");
             if (ImGui.Button("Release pairing"))
-                plugin.PairingCommand.ReleasePeer();
+                plugin.PairingService.ReleasePeer();
             IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your Sub's plugin at all. Use this to fix a stale/wrong pairing or to free them up to pair with someone else.");
         }
         else
@@ -367,6 +389,11 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.HelpMarker("Lets a paired Owner apply or clear a Moodle (status effect) from your own registered statuses via a trigger tell - applies immediately, no confirmation queue.");
 
         ImGui.Spacing();
+        if (ImGuiCheckbox("Catalog sync (relay)", permissions.RelayCatalogSync, out var newRelayCatalogSync))
+            SavePermission(() => permissions.RelayCatalogSync = newRelayCatalogSync);
+        IconGlyph.HelpMarker("Lets your paired Owner request an automatic, end-to-end encrypted refresh of your exported catalog (at most once every four hours) instead of you sending a file manually. The relay never sees the plaintext. Off by default; manual file export/import always remains available regardless of this setting.");
+
+        ImGui.Spacing();
         if (!config.CustomChatAcknowledged)
             IconGlyph.WrappedColored(Theme.Warning, "Custom chat messages require their own dedicated acknowledgement in Settings (gear icon) first - separate from the general ToS checkbox above.");
 
@@ -431,8 +458,7 @@ public class CollarWindow : Window, IDisposable
         ImGui.Separator();
         IconGlyph.WrappedDisabled("Design folder allowlist and scanning live in Settings (gear icon). Define your outfit aliases below.");
 
-        DrawClearAliasField("Unlock alias", () => config.Aliases.UnlockOutfitAlias, v => config.Aliases.UnlockOutfitAlias = v, config);
-        IconGlyph.HelpMarker("The alias that unlocks your current Glamourer design, using whichever lock key that design was last applied with.");
+        IconGlyph.WrappedDisabled("Wardrobe release is always `unlock`. For example: kae unlock. This releases the currently locked Glamourer outfit.");
 
         ImGui.Spacing();
         var outfits = config.Aliases.Outfits;
@@ -494,6 +520,7 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints");
         ImGui.Separator();
         IconGlyph.WrappedDisabled("Pick a slot and an item below to capture it as a named restraint device carrying restriction rules, then alias it so an Owner - or your own alias - can apply/release it. The item doesn't need to be equipped or owned.");
+        IconGlyph.WrappedDisabled("Owner force-release is always `restraint unlock`. Individual restraint aliases toggle their own device on and off.");
 
         var devices = config.RestraintMapping.Devices.Values.ToList();
         if (devices.Count > 0)
@@ -504,18 +531,24 @@ public class CollarWindow : Window, IDisposable
             {
                 ImGui.PushID($"device_{device.Id}");
                 var active = plugin.RestraintCommand.IsActive(device.Id);
-                var ruleSummary = string.Join(", ", device.Rules.Select(r => r.Kind switch
+                var ruleSummary = string.Join(" · ", device.Rules.Select(CommandPresentation.Rule));
+                ImGui.TextUnformatted($"{device.Name}{(active ? "  • Active" : "")}");
+                ImGui.Indent();
+                IconGlyph.WrappedDisabled($"{device.Slot} · {GetItemName(device.ItemId)}");
+                IconGlyph.WrappedDisabled(ruleSummary);
+                var staleAnimation = device.Rules.Any(r =>
+                    r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed
+                    && (string.IsNullOrWhiteSpace(r.AnimationId) || !config.GestureMapping.LocalCatalog.ContainsKey(r.AnimationId)));
+                if (staleAnimation)
+                    IconGlyph.WrappedColored(Theme.Warning, "A cuff animation is stale. Choose Edit and select the animation again before using this restraint.");
+                ImGui.Unindent();
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Edit"))
                 {
-                    RestraintRuleKind.ForcedPose => $"forced pose ({PoseName(r.PoseModeId)})",
-                    RestraintRuleKind.WalkOnly => "walk-only",
-                    RestraintRuleKind.ActionBlock => "action-block",
-                    RestraintRuleKind.GagChat => "gagged",
-                    RestraintRuleKind.ArmsCuffed => "arms cuffed",
-                    RestraintRuleKind.LegsCuffed => "legs cuffed",
-                    RestraintRuleKind.FullBodyCuffed => "full body cuffed",
-                    _ => r.Kind.ToString(),
-                }));
-                ImGui.BulletText($"{device.Name} ({device.Slot}){(active ? " (active)" : "")} - {ruleSummary}");
+                    LoadDeviceDraft(device);
+                    ImGui.PopID();
+                    break;
+                }
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Remove"))
                 {
@@ -528,10 +561,11 @@ public class CollarWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        ImGui.TextUnformatted("Capture a new device");
+        ImGui.TextUnformatted(editingDeviceId is null ? "Capture a new device" : "Edit captured device");
         var slotNames = LockableEquipSlots.All.Select(s => s.ToString()).ToArray();
         newDeviceSlotIndex = Math.Clamp(newDeviceSlotIndex, 0, slotNames.Length - 1);
-        ImGui.InputText("Device name##newDevice", ref newDeviceName, 32);
+        ImGui.InputText("Alias##newDevice", ref newDeviceName, 32);
+        IconGlyph.HelpMarker("The command name your Owner uses for this restraint. For example, an alias of \"armcuffs\" is applied with \"restraint lock armcuffs\".");
         ImGui.Combo("Slot##newDevice", ref newDeviceSlotIndex, slotNames, slotNames.Length);
         IconGlyph.HelpMarker("Which equipment slot this device occupies. Applying it locks only this one slot, the same way a locked Outfit alias locks only the slots its design touches.");
 
@@ -552,22 +586,35 @@ public class CollarWindow : Window, IDisposable
         if (hasAnyRule && !boundAnimationsConfigured)
             IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before capturing.");
 
-        using (ImRaii.Disabled(newDeviceName.Length == 0 || newDeviceItemId is null || !hasAnyRule || !boundAnimationsConfigured))
+        var duplicateDeviceName = devices.Any(d => d.Id != editingDeviceId &&
+            string.Equals(d.Name, newDeviceName.Trim(), StringComparison.OrdinalIgnoreCase));
+        var prospectiveRules = ToRules(newDeviceRuleEdit);
+        var safeDeviceCommand = CommandSelector.Fits(RestraintCommand.BuildLockCommand(newDeviceName.Trim(), prospectiveRules));
+        if (duplicateDeviceName)
+            IconGlyph.WrappedColored(Theme.Warning, "A restraint device already uses this name.");
+        if (!safeDeviceCommand)
+            IconGlyph.WrappedColored(Theme.Warning, "This restraint name and rule set are too long for a safe command.");
+        using (ImRaii.Disabled(newDeviceName.Trim().Length == 0 || newDeviceItemId is null || !hasAnyRule || !boundAnimationsConfigured || duplicateDeviceName || !safeDeviceCommand))
         {
-            if (ImGui.Button("Capture device") && newDeviceItemId is { } chosenItemId)
+            if (ImGui.Button(editingDeviceId is null ? "Capture device" : "Save device") && newDeviceItemId is { } chosenItemId)
             {
                 var slot = LockableEquipSlots.All[newDeviceSlotIndex];
                 var rules = ToRules(newDeviceRuleEdit);
 
-                if (plugin.RestraintCommand.CaptureDeviceFromItem(slot, chosenItemId, newDeviceName, rules))
+                var saved = editingDeviceId is null
+                    ? plugin.RestraintCommand.CaptureDeviceFromItem(slot, chosenItemId, newDeviceName, rules)
+                    : SaveDeviceDraft(slot, chosenItemId, rules);
+                if (saved)
                 {
-                    newDeviceName = "";
-                    newDeviceItemId = null;
-                    newDeviceRuleEdit.ForcedPose = newDeviceRuleEdit.WalkOnly = newDeviceRuleEdit.ActionBlock = newDeviceRuleEdit.GagChat = false;
-                    newDeviceRuleEdit.ArmsCuffed = newDeviceRuleEdit.LegsCuffed = newDeviceRuleEdit.FullBodyCuffed = false;
-                    newDeviceRuleEdit.ArmsCuffedAnimationId = newDeviceRuleEdit.LegsCuffedAnimationId = newDeviceRuleEdit.FullBodyCuffedAnimationId = null;
+                    ResetDeviceDraft();
                 }
             }
+        }
+        if (editingDeviceId is not null)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel##editDevice"))
+                ResetDeviceDraft();
         }
 
         ImGui.Spacing();
@@ -681,20 +728,43 @@ public class CollarWindow : Window, IDisposable
         var ownerMode = plugin.Configuration.Role == PluginRole.Owner;
         var localCatalog = plugin.Configuration.GestureMapping.LocalCatalog;
         var peerCatalog = plugin.Configuration.GestureMapping.ImportedPeerCatalog;
-        var chosenLabel = currentAnimationId is { } id
-            ? ownerMode && peerCatalog.TryGetValue(id, out var peer) ? peer.Label
-            : !ownerMode && localCatalog.TryGetValue(id, out var local) ? local.Label
-            : "(missing or stale)"
-            : "(none chosen)";
-        ImGui.TextUnformatted($"Animation: {chosenLabel}");
-        ImGui.SameLine();
-        if (ImGui.SmallButton($"Choose##{idSuffix}"))
+        var chosenLabel = "(none chosen)";
+        var chosenMode = "";
+        if (currentAnimationId is { } id)
         {
-            if (ownerMode) plugin.AnimationPickerWindow.OpenImported(chosen => onChosen(chosen.Id));
-            else plugin.AnimationPickerWindow.Open(chosen => onChosen(chosen.Id));
+            if (ownerMode && peerCatalog.TryGetValue(id, out var peer))
+            {
+                chosenLabel = peer.AnimationName;
+                chosenMode = peer.Trigger is null ? "Enable option only" : peer.Trigger.DisplayName;
+            }
+            else if (!ownerMode && localCatalog.TryGetValue(id, out var local))
+            {
+                chosenLabel = local.AnimationName;
+                chosenMode = local.Trigger is null ? "Enable option only" : local.Trigger.DisplayName;
+            }
+            else
+            {
+                chosenLabel = "(missing or stale)";
+            }
         }
+
+        // Keep the action reachable at narrow widths: the full catalog label used to consume the row and
+        // push Choose outside the column. The button gets its own line; readable detail is shortened and
+        // wraps below it, with the complete option name available on hover.
+        if (ImGui.SmallButton($"{(currentAnimationId is null ? "Choose animation..." : "Change animation...")}##{idSuffix}"))
+        {
+            if (ownerMode) plugin.AnimationPickerWindow.OpenImportedForRestraint(chosen => onChosen(chosen.Id));
+            else plugin.AnimationPickerWindow.OpenForRestraint(chosen => onChosen(chosen.Id));
+        }
+        var shortLabel = CommandPresentation.CompactAnimation(chosenLabel);
+        ImGui.TextUnformatted(shortLabel);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(chosenLabel);
+        if (chosenMode.Length > 0)
+            IconGlyph.WrappedDisabled(chosenMode);
         ImGui.Unindent();
     }
+
 
     private void DrawGestureModule()
     {
@@ -860,8 +930,22 @@ public class CollarWindow : Window, IDisposable
         {
             ImGui.PushID($"customTrigger_{i}");
             var t = triggers[i];
-            var summary = string.Join(", ", t.Actions.Select(SummarizeCustomTriggerAction));
-            ImGui.BulletText($"{t.Alias} -> {summary}");
+            ImGui.TextUnformatted(t.Alias);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(t.Alias);
+            ImGui.Indent();
+            foreach (var action in t.Actions)
+                DrawActionSummary(action);
+            ImGui.Unindent();
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Edit"))
+            {
+                editingCustomTriggerIndex = i;
+                ctNewAlias = t.Alias;
+                ctDraftActions.Clear();
+                ctDraftActions.AddRange(t.Actions.Select(CloneAction));
+                ImGui.PopID();
+                break;
+            }
             ImGui.SameLine();
             if (ImGui.SmallButton("Remove"))
             {
@@ -875,7 +959,7 @@ public class CollarWindow : Window, IDisposable
 
         ImGui.Spacing();
         ImGui.Separator();
-        ImGui.TextUnformatted("New trigger");
+        ImGui.TextUnformatted(editingCustomTriggerIndex is null ? "New trigger" : "Edit trigger");
         ImGui.InputText("Alias##newCustomTrigger", ref ctNewAlias, 32);
         IconGlyph.HelpMarker("Short word the Owner types. Applies every permitted action below in order when triggered.");
         DrawReservedWordWarning(ctNewAlias);
@@ -887,11 +971,25 @@ public class CollarWindow : Window, IDisposable
             for (var i = 0; i < ctDraftActions.Count; i++)
             {
                 ImGui.PushID($"ctDraftAction_{i}");
-                ImGui.BulletText(SummarizeCustomTriggerAction(ctDraftActions[i]));
+                DrawActionSummary(ctDraftActions[i]);
+                ImGui.SameLine();
+                using (ImRaii.Disabled(i == 0))
+                    if (ImGui.SmallButton("↑"))
+                        MoveDraftAction(ctDraftActions, i, i - 1, ref editingCustomTriggerActionIndex);
+                ImGui.SameLine();
+                using (ImRaii.Disabled(i == ctDraftActions.Count - 1))
+                    if (ImGui.SmallButton("↓"))
+                        MoveDraftAction(ctDraftActions, i, i + 1, ref editingCustomTriggerActionIndex);
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Edit"))
+                {
+                    LoadSubActionDraft(ctDraftActions[i]);
+                    editingCustomTriggerActionIndex = i;
+                }
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Remove"))
                 {
-                    ctDraftActions.RemoveAt(i);
+                    RemoveDraftAction(ctDraftActions, i, ref editingCustomTriggerActionIndex);
                     ImGui.PopID();
                     break;
                 }
@@ -904,6 +1002,8 @@ public class CollarWindow : Window, IDisposable
         ctNewActionKindIndex = Math.Clamp(ctNewActionKindIndex, 0, kindNames.Length - 1);
         ImGui.Combo("Add action##newCtKind", ref ctNewActionKindIndex, kindNames, kindNames.Length);
         var kind = Enum.Parse<CustomTriggerActionKind>(kindNames[ctNewActionKindIndex]);
+        if (editingCustomTriggerActionIndex is not null)
+            IconGlyph.WrappedColored(Theme.Accent, "Editing this action. Change its values below, then choose Save action.");
 
         switch (kind)
         {
@@ -913,9 +1013,9 @@ public class CollarWindow : Window, IDisposable
                 ImGui.ColorEdit3("Color##newCtTitle", ref ctTitleColor);
                 using (ImRaii.Disabled(ctTitleText.Length == 0))
                 {
-                    if (ImGui.Button("Add action##newCtTitleBtn"))
+                    if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtTitleBtn"))
                     {
-                        ctDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctTitleText, TitleIsPrefix = ctTitleIsPrefix, TitleColor = ctTitleColor });
+                        CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctTitleText, TitleIsPrefix = ctTitleIsPrefix, TitleColor = ctTitleColor });
                         ctTitleText = "";
                         ctTitleIsPrefix = false;
                         ctTitleColor = new Vector3(1, 1, 1);
@@ -933,10 +1033,10 @@ public class CollarWindow : Window, IDisposable
                 var designNames = designs.Select(d => d.Name).ToArray();
                 ctOutfitDesignIndex = Math.Clamp(ctOutfitDesignIndex, 0, designNames.Length - 1);
                 ImGui.Combo("Design##newCtOutfit", ref ctOutfitDesignIndex, designNames, designNames.Length);
-                if (ImGui.Button("Add action##newCtOutfitBtn"))
+                if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtOutfitBtn"))
                 {
                     var design = designs[ctOutfitDesignIndex];
-                    ctDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Outfit, OutfitDesignId = design.DesignId, OutfitDesignName = design.Name });
+                    CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Outfit, OutfitDesignId = design.DesignId, OutfitDesignName = design.Name });
                 }
                 break;
 
@@ -945,9 +1045,9 @@ public class CollarWindow : Window, IDisposable
                     plugin.AnimationPickerWindow.Open(entry => ctSelectedGesture = entry);
                 using (ImRaii.Disabled(ctSelectedGesture is null))
                 {
-                    if (ImGui.Button("Add action##newCtGestureBtn") && ctSelectedGesture is { } chosenGesture)
+                    if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtGestureBtn") && ctSelectedGesture is { } chosenGesture)
                     {
-                        ctDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Gesture, GestureId = chosenGesture.Id, GestureAnimationName = chosenGesture.AnimationName });
+                        CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Gesture, GestureId = chosenGesture.Id, GestureAnimationName = chosenGesture.AnimationName });
                         ctSelectedGesture = null;
                     }
                 }
@@ -963,10 +1063,10 @@ public class CollarWindow : Window, IDisposable
                 var statusNames = statuses.Select(s => MoodlesTextFormat.StripMarkup(s.Name)).ToArray();
                 ctMoodleStatusIndex = Math.Clamp(ctMoodleStatusIndex, 0, statusNames.Length - 1);
                 ImGui.Combo("Status##newCtMoodle", ref ctMoodleStatusIndex, statusNames, statusNames.Length);
-                if (ImGui.Button("Add action##newCtMoodleBtn"))
+                if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtMoodleBtn"))
                 {
                     var status = statuses[ctMoodleStatusIndex];
-                    ctDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Moodle, MoodleStatusId = status.StatusId, MoodleStatusName = status.Name });
+                    CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Moodle, MoodleStatusId = status.StatusId, MoodleStatusName = status.Name });
                 }
                 break;
 
@@ -981,10 +1081,10 @@ public class CollarWindow : Window, IDisposable
                 ctRestraintDeviceIndex = Math.Clamp(ctRestraintDeviceIndex, 0, deviceNames.Length - 1);
                 ImGui.Combo("Device##newCtRestraint", ref ctRestraintDeviceIndex, deviceNames, deviceNames.Length);
                 IconGlyph.HelpMarker("Toggles this device when the trigger fires - applies if inactive, releases if active, same as a plain restraint alias.");
-                if (ImGui.Button("Add action##newCtRestraintBtn"))
+                if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtRestraintBtn"))
                 {
                     var device = devices[ctRestraintDeviceIndex];
-                    ctDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceId = device.Id, RestraintDeviceName = device.Name });
+                    CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceId = device.Id, RestraintDeviceName = device.Name });
                 }
                 break;
 
@@ -993,9 +1093,9 @@ public class CollarWindow : Window, IDisposable
                 IconGlyph.HelpMarker("Sent exactly as typed, unmodified - start it with a slash command (e.g. /sit) or a channel prefix (e.g. /p) to use those instead of your default chat channel. Needs the Custom chat messages permission and its own acknowledgement in Settings - see the README's Automation risk section.");
                 using (ImRaii.Disabled(ctChatText.Trim().Length == 0))
                 {
-                    if (ImGui.Button("Add action##newCtChatBtn"))
+                    if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtChatBtn"))
                     {
-                        ctDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Chat, ChatText = ctChatText });
+                        CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Chat, ChatText = ctChatText });
                         ctChatText = "";
                     }
                 }
@@ -1004,19 +1104,177 @@ public class CollarWindow : Window, IDisposable
 
         ImGui.Spacing();
         ImGui.Separator();
-        using (ImRaii.Disabled(ctNewAlias.Length == 0 || IsReserved(ctNewAlias) || ctDraftActions.Count == 0))
+        var duplicateAlias = triggers.Where((_, i) => i != editingCustomTriggerIndex)
+            .Any(t => string.Equals(t.Alias, ctNewAlias.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (duplicateAlias)
+            IconGlyph.WrappedColored(Theme.Warning, "A custom trigger already uses this alias.");
+        using (ImRaii.Disabled(ctNewAlias.Trim().Length == 0 || IsReserved(ctNewAlias) || ctDraftActions.Count == 0 || duplicateAlias))
         {
-            if (ImGui.Button("Save trigger"))
+            if (ImGui.Button(editingCustomTriggerIndex is null ? "Save trigger" : "Save changes"))
             {
-                triggers.Add(new CustomTriggerDefinition { Alias = ctNewAlias, Actions = new List<CustomTriggerAction>(ctDraftActions) });
+                var replacement = new CustomTriggerDefinition { Alias = ctNewAlias.Trim(), Actions = ctDraftActions.Select(CloneAction).ToList() };
+                if (editingCustomTriggerIndex is { } editIndex && editIndex >= 0 && editIndex < triggers.Count)
+                    triggers[editIndex] = replacement;
+                else
+                    triggers.Add(replacement);
                 config.Save();
                 ctNewAlias = "";
                 ctDraftActions.Clear();
+                editingCustomTriggerIndex = null;
+                editingCustomTriggerActionIndex = null;
+            }
+        }
+        if (editingCustomTriggerIndex is not null)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel##editCustomTrigger"))
+            {
+                ctNewAlias = "";
+                ctDraftActions.Clear();
+                editingCustomTriggerIndex = null;
+                editingCustomTriggerActionIndex = null;
             }
         }
     }
 
-    private static string SummarizeCustomTriggerAction(CustomTriggerAction a) => CustomTriggerCommand.Summarize(a);
+    private static string SummarizeCustomTriggerAction(CustomTriggerAction a) => CommandPresentation.Action(a);
+
+    private static void DrawActionSummary(CustomTriggerAction action)
+    {
+        var summary = SummarizeCustomTriggerAction(action);
+        ImGui.Bullet();
+        ImGui.SameLine();
+        ImGui.TextWrapped(summary);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(summary);
+    }
+
+    private static CustomTriggerAction CloneAction(CustomTriggerAction action) => new()
+    {
+        Kind = action.Kind,
+        TitleText = action.TitleText,
+        TitleIsPrefix = action.TitleIsPrefix,
+        TitleColor = action.TitleColor,
+        OutfitDesignId = action.OutfitDesignId,
+        OutfitDesignName = action.OutfitDesignName,
+        GestureId = action.GestureId,
+        GestureAnimationName = action.GestureAnimationName,
+        MoodleStatusId = action.MoodleStatusId,
+        MoodleStatusName = action.MoodleStatusName,
+        RestraintDeviceId = action.RestraintDeviceId,
+        RestraintDeviceName = action.RestraintDeviceName,
+        ChatText = action.ChatText,
+    };
+
+    private void CommitSubAction(CustomTriggerAction action)
+    {
+        if (editingCustomTriggerActionIndex is { } index && index >= 0 && index < ctDraftActions.Count)
+            ctDraftActions[index] = action;
+        else
+            ctDraftActions.Add(action);
+        editingCustomTriggerActionIndex = null;
+    }
+
+    private void CommitOwnerAction(CustomTriggerAction action)
+    {
+        if (editingOwnerActionIndex is { } index && index >= 0 && index < ctqDraftActions.Count)
+            ctqDraftActions[index] = action;
+        else
+            ctqDraftActions.Add(action);
+        editingOwnerActionIndex = null;
+    }
+
+    private static void MoveDraftAction(List<CustomTriggerAction> actions, int from, int to, ref int? editingIndex)
+    {
+        (actions[from], actions[to]) = (actions[to], actions[from]);
+        if (editingIndex == from) editingIndex = to;
+        else if (editingIndex == to) editingIndex = from;
+    }
+
+    private static void RemoveDraftAction(List<CustomTriggerAction> actions, int index, ref int? editingIndex)
+    {
+        actions.RemoveAt(index);
+        if (editingIndex == index) editingIndex = null;
+        else if (editingIndex > index) editingIndex--;
+    }
+
+    private void LoadSubActionDraft(CustomTriggerAction action)
+    {
+        ctNewActionKindIndex = (int)action.Kind;
+        ctTitleText = action.TitleText;
+        ctTitleIsPrefix = action.TitleIsPrefix;
+        ctTitleColor = action.TitleColor;
+        var designs = plugin.Configuration.WardrobeMapping.LocalDesigns.Values.ToList();
+        ctOutfitDesignIndex = Math.Max(0, designs.FindIndex(d => d.DesignId == action.OutfitDesignId));
+        ctSelectedGesture = plugin.Configuration.GestureMapping.LocalCatalog.Values
+            .FirstOrDefault(g => string.Equals(g.Id, action.GestureId, StringComparison.OrdinalIgnoreCase));
+        var statuses = plugin.Configuration.MoodlesMapping.LocalCatalog.Values.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        ctMoodleStatusIndex = Math.Max(0, statuses.FindIndex(s => s.StatusId == action.MoodleStatusId));
+        var devices = plugin.Configuration.RestraintMapping.Devices.Values.ToList();
+        ctRestraintDeviceIndex = Math.Max(0, devices.FindIndex(d => d.Id == action.RestraintDeviceId));
+        ctChatText = action.ChatText;
+    }
+
+    private void LoadOwnerActionDraft(CustomTriggerAction action)
+    {
+        ctqKindIndex = (int)action.Kind;
+        ctqTitleText = action.TitleText;
+        ctqTitleIsPrefix = action.TitleIsPrefix;
+        ctqTitleColor = action.TitleColor;
+        ctqOutfitName = action.OutfitDesignName;
+        ctqGestureName = action.GestureAnimationName;
+        ctqMoodleName = MoodlesTextFormat.StripMarkup(action.MoodleStatusName);
+        ctqRestraintName = action.RestraintDeviceName;
+        ctqChatText = action.ChatText;
+    }
+
+    private void LoadDeviceDraft(RestraintDeviceDefinition device)
+    {
+        editingDeviceId = device.Id;
+        newDeviceName = device.Name;
+        newDeviceSlotIndex = Math.Max(0, LockableEquipSlots.All.ToList().IndexOf(device.Slot));
+        newDeviceItemId = device.ItemId;
+        CopyRuleEdit(FromRules(device.Rules), newDeviceRuleEdit);
+    }
+
+    private bool SaveDeviceDraft(ApiEquipSlot slot, ulong itemId, List<RestraintRuleAssignment> rules)
+    {
+        if (editingDeviceId is not { } id || !plugin.Configuration.RestraintMapping.Devices.TryGetValue(id, out var device))
+            return false;
+
+        var oldName = device.Name;
+        device.Name = newDeviceName.Trim();
+        device.Slot = slot;
+        device.ItemId = itemId;
+        device.Rules = rules;
+        foreach (var alias in plugin.Configuration.Aliases.Restraints.Where(a => a.DeviceId == id))
+            alias.DeviceName = device.Name;
+        plugin.Configuration.Save();
+        Plugin.Log.Debug($"Edited restraint device '{oldName}' while preserving id {id}.");
+        return true;
+    }
+
+    private void ResetDeviceDraft()
+    {
+        editingDeviceId = null;
+        newDeviceName = "";
+        newDeviceItemId = null;
+        CopyRuleEdit(new RestraintRuleEditState(), newDeviceRuleEdit);
+    }
+
+    private static void CopyRuleEdit(RestraintRuleEditState source, RestraintRuleEditState target)
+    {
+        target.ForcedPose = source.ForcedPose;
+        target.PoseIndex = source.PoseIndex;
+        target.WalkOnly = source.WalkOnly;
+        target.ActionBlock = source.ActionBlock;
+        target.GagChat = source.GagChat;
+        target.ArmsCuffed = source.ArmsCuffed;
+        target.ArmsCuffedAnimationId = source.ArmsCuffedAnimationId;
+        target.LegsCuffed = source.LegsCuffed;
+        target.LegsCuffedAnimationId = source.LegsCuffedAnimationId;
+        target.FullBodyCuffed = source.FullBodyCuffed;
+        target.FullBodyCuffedAnimationId = source.FullBodyCuffedAnimationId;
+    }
 
     /// collar/collaring: the Sub's own configured Neck-slot collar. Capture-only (see design.md's "Collar
     /// capture, not manual entry") - equip what you want first, then click Capture. Locked once applied at
@@ -1140,6 +1398,8 @@ public class CollarWindow : Window, IDisposable
 
         DrawImportCommandsButton();
         ImGui.Spacing();
+        DrawCatalogRelaySection();
+        ImGui.Spacing();
 
         var pairing = plugin.Configuration.Pairing;
         var canSend = pairing.IsPaired;
@@ -1154,7 +1414,7 @@ public class CollarWindow : Window, IDisposable
         DrawOwnerSection("Collar (2 actions)##ownerCollar", () => DrawCollarQuickSection(canSend));
         DrawOwnerSection($"Moodles ({quick.Moodles.Count} imported)##ownerMoodles", () => DrawMoodlesQuickSection(canSend));
         DrawOwnerSection($"Restraints ({quick.Restraints.Count} imported)##ownerRestraints", () => DrawRestraintQuickSection(canSend));
-        DrawOwnerSection("Custom Trigger (ad-hoc)##ownerCustomTrigger", () => DrawCustomTriggerQuickSection(canSend));
+        DrawOwnerSection("Custom Trigger (ad-hoc)##ownerCustomTrigger", () => DrawCustomTriggerQuickSection(canSend), forceOpen: editingOwnerBundle is not null);
         DrawOwnerSection($"Custom Trigger Bundles / one-off ({quick.Aliases.Count} saved)##ownerAlias", () => DrawFreeformComposer(canSend));
     }
 
@@ -1234,6 +1494,50 @@ public class CollarWindow : Window, IDisposable
     private static void RemoveImportedEntries(List<QuickCommand> list) =>
         list.RemoveAll(cmd => cmd.Source == ImportSource.Imported);
 
+    /// collar/catalog-sync "Owner refresh controls": shows current phase, last successful snapshot/counts,
+    /// next allowed time, and actionable failure text; the button itself is disabled during an active
+    /// request or cooldown so it can never be double-clicked into a second one (task 7.3).
+    private void DrawCatalogRelaySection()
+    {
+        var relayService = plugin.CatalogSyncRelayService;
+        var pairing = plugin.Configuration.Pairing;
+        IconGlyph.Text(FontAwesomeIcon.CloudDownloadAlt, "Automatic sync (relay)");
+        if (!pairing.IsPaired)
+        {
+            IconGlyph.WrappedDisabled("Not paired - use manual Import above, or pair from Settings first.");
+            return;
+        }
+
+        var cooldown = relayService.CooldownRemaining;
+        using (ImRaii.Disabled(relayService.RequestInFlight || cooldown is not null))
+        {
+            if (ImGui.Button(relayService.RequestInFlight ? "Requesting..." : "Request refresh"))
+                Plugin.FireAndForget(relayService.RequestRefreshAsync(System.Threading.CancellationToken.None));
+        }
+        IconGlyph.HelpMarker("Asks your paired Sub for a fresh, end-to-end encrypted catalog snapshot instead of a manually transferred file - at most once every four hours, enforced by both sides.");
+
+        IconGlyph.WrappedDisabled($"Status: {relayService.Phase}.");
+
+        if (cooldown is { } remaining)
+            IconGlyph.WrappedDisabled($"Next refresh available in {(remaining.TotalHours >= 1 ? $"{(int)remaining.TotalHours}h {remaining.Minutes}m" : $"{remaining.Minutes}m")}.");
+        else if (pairing.LastAcceptedCatalogSyncUnixSeconds > 0)
+            IconGlyph.WrappedDisabled("Refresh is available now.");
+
+        if (pairing.LastAcceptedCatalogSyncUnixSeconds > 0)
+        {
+            var lastSuccess = DateTimeOffset.FromUnixTimeSeconds(pairing.LastAcceptedCatalogSyncUnixSeconds).LocalDateTime;
+            IconGlyph.WrappedDisabled($"Last successful sync: {lastSuccess:g} (snapshot #{pairing.LastImportedSnapshotId}).");
+        }
+
+        if (relayService.LastAttemptAt is { } attempted)
+            IconGlyph.WrappedDisabled($"Last relay response: {attempted.LocalDateTime:g}.");
+
+        if (relayService.LastError is { Length: > 0 } lastError)
+            IconGlyph.WrappedColored(Theme.Danger, lastError);
+        else if (relayService.LastImportResult is { Error: null } result && result.Added + result.Updated + result.Removed > 0)
+            IconGlyph.WrappedColored(Theme.Success, $"Last sync: {result.Added} added, {result.Updated} updated, {result.Removed} removed.");
+    }
+
     /// collar/ui-organization: draws a section's icon+title, then (if `showClearAll`) a "Clear all" button
     /// right-aligned on that same row - no prior "title ... [button]" row existed anywhere in this UI, so
     /// this is the one shared right-alignment routine every quick-command section now uses (design.md
@@ -1273,8 +1577,10 @@ public class CollarWindow : Window, IDisposable
             ImGui.NewLine();
     }
 
-    private static void DrawOwnerSection(string label, Action draw, bool defaultOpen = false)
+    private static void DrawOwnerSection(string label, Action draw, bool defaultOpen = false, bool forceOpen = false)
     {
+        if (forceOpen)
+            ImGui.SetNextItemOpen(true, ImGuiCond.Always);
         var flags = defaultOpen ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
         if (ImGui.CollapsingHeader(label, flags))
         {
@@ -1437,11 +1743,25 @@ public class CollarWindow : Window, IDisposable
             for (var i = 0; i < ctqDraftActions.Count; i++)
             {
                 ImGui.PushID($"ctqDraftAction_{i}");
-                ImGui.BulletText(SummarizeCustomTriggerAction(ctqDraftActions[i]));
+                DrawActionSummary(ctqDraftActions[i]);
+                ImGui.SameLine();
+                using (ImRaii.Disabled(i == 0))
+                    if (ImGui.SmallButton("↑"))
+                        MoveDraftAction(ctqDraftActions, i, i - 1, ref editingOwnerActionIndex);
+                ImGui.SameLine();
+                using (ImRaii.Disabled(i == ctqDraftActions.Count - 1))
+                    if (ImGui.SmallButton("↓"))
+                        MoveDraftAction(ctqDraftActions, i, i + 1, ref editingOwnerActionIndex);
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Edit"))
+                {
+                    LoadOwnerActionDraft(ctqDraftActions[i]);
+                    editingOwnerActionIndex = i;
+                }
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Remove"))
                 {
-                    ctqDraftActions.RemoveAt(i);
+                    RemoveDraftAction(ctqDraftActions, i, ref editingOwnerActionIndex);
                     ImGui.PopID();
                     break;
                 }
@@ -1455,6 +1775,8 @@ public class CollarWindow : Window, IDisposable
         ImGui.SetNextItemWidth(160);
         ImGui.Combo("Add action##ctqKind", ref ctqKindIndex, kindNames, kindNames.Length);
         var kind = Enum.Parse<CustomTriggerActionKind>(kindNames[ctqKindIndex]);
+        if (editingOwnerActionIndex is not null)
+            IconGlyph.WrappedColored(Theme.Accent, "Editing this action. Change its values below, then choose Save.");
 
         switch (kind)
         {
@@ -1465,9 +1787,9 @@ public class CollarWindow : Window, IDisposable
                 ImGui.ColorEdit3("Color##ctqTitle", ref ctqTitleColor);
                 using (ImRaii.Disabled(ctqTitleText.Trim().Length == 0))
                 {
-                    if (ImGui.SmallButton("Add##ctqTitleBtn"))
+                    if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqTitleBtn"))
                     {
-                        ctqDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctqTitleText.Trim(), TitleIsPrefix = ctqTitleIsPrefix, TitleColor = ctqTitleColor });
+                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctqTitleText.Trim(), TitleIsPrefix = ctqTitleIsPrefix, TitleColor = ctqTitleColor });
                         ctqTitleText = "";
                         ctqTitleIsPrefix = false;
                         ctqTitleColor = new Vector3(1, 1, 1);
@@ -1481,9 +1803,9 @@ public class CollarWindow : Window, IDisposable
                 IconGlyph.HelpMarker("Type the exact wardrobe design name your Sub told you.");
                 using (ImRaii.Disabled(ctqOutfitName.Trim().Length == 0))
                 {
-                    if (ImGui.SmallButton("Add##ctqOutfitBtn"))
+                    if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqOutfitBtn"))
                     {
-                        ctqDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Outfit, OutfitDesignName = ctqOutfitName.Trim() });
+                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Outfit, OutfitDesignName = ctqOutfitName.Trim() });
                         ctqOutfitName = "";
                     }
                 }
@@ -1495,9 +1817,9 @@ public class CollarWindow : Window, IDisposable
                 IconGlyph.HelpMarker("Type the exact gesture/animation name your Sub told you.");
                 using (ImRaii.Disabled(ctqGestureName.Trim().Length == 0))
                 {
-                    if (ImGui.SmallButton("Add##ctqGestureBtn"))
+                    if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqGestureBtn"))
                     {
-                        ctqDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Gesture, GestureAnimationName = ctqGestureName.Trim() });
+                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Gesture, GestureAnimationName = ctqGestureName.Trim() });
                         ctqGestureName = "";
                     }
                 }
@@ -1509,9 +1831,9 @@ public class CollarWindow : Window, IDisposable
                 IconGlyph.HelpMarker("Type the exact Moodles status name your Sub told you.");
                 using (ImRaii.Disabled(ctqMoodleName.Trim().Length == 0))
                 {
-                    if (ImGui.SmallButton("Add##ctqMoodleBtn"))
+                    if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqMoodleBtn"))
                     {
-                        ctqDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Moodle, MoodleStatusName = ctqMoodleName.Trim() });
+                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Moodle, MoodleStatusName = ctqMoodleName.Trim() });
                         ctqMoodleName = "";
                     }
                 }
@@ -1523,9 +1845,9 @@ public class CollarWindow : Window, IDisposable
                 IconGlyph.HelpMarker("Type the exact restraint device name your Sub told you. Always applies rather than toggling, since this bundle has no captured device to check the active state of - use the Restraints section above to release it.");
                 using (ImRaii.Disabled(ctqRestraintName.Trim().Length == 0))
                 {
-                    if (ImGui.SmallButton("Add##ctqRestraintBtn"))
+                    if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqRestraintBtn"))
                     {
-                        ctqDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceName = ctqRestraintName.Trim() });
+                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceName = ctqRestraintName.Trim() });
                         ctqRestraintName = "";
                     }
                 }
@@ -1537,9 +1859,9 @@ public class CollarWindow : Window, IDisposable
                 IconGlyph.HelpMarker("Sent exactly as typed, unmodified - start it with a slash command (e.g. /sit) or a channel prefix (e.g. /p) to use those instead of the default chat channel. Needs your Sub's Custom chat messages permission and its own acknowledgement (see the README's Automation risk section).");
                 using (ImRaii.Disabled(ctqChatText.Trim().Length == 0))
                 {
-                    if (ImGui.SmallButton("Add##ctqChatBtn"))
+                    if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqChatBtn"))
                     {
-                        ctqDraftActions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Chat, ChatText = ctqChatText });
+                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Chat, ChatText = ctqChatText });
                         ctqChatText = "";
                     }
                 }
@@ -1550,19 +1872,64 @@ public class CollarWindow : Window, IDisposable
         if (ctqLabel.Trim().Length > 0 && ctqDraftActions.Count > 0)
         {
             var command = CustomTriggerCommand.BuildCastCommand(ctqLabel.Trim(), ctqDraftActions);
-            ImGui.TextUnformatted("Send this bundle:");
+            ImGui.TextUnformatted(editingOwnerBundle is null ? "Send or save this bundle:" : "Update this saved bundle:");
             ContinueRowOrWrap(ButtonWidth("Send"));
             DrawSendCopyButtons(command, canSend, "ctqCustomTrigger");
-            if (ImGui.SmallButton("Clear bundle##ctq"))
+            ContinueRowOrWrap(ButtonWidth("Save bundle"));
+            var aliases = plugin.Configuration.QuickCommands.Aliases;
+            var stale = editingOwnerBundle is not null && !aliases.Contains(editingOwnerBundle);
+            var duplicate = aliases.Any(q => !ReferenceEquals(q, editingOwnerBundle) &&
+                (string.Equals(q.Label, ctqLabel.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(q.Command, command, StringComparison.OrdinalIgnoreCase)));
+            var safe = CommandSelector.Fits(plugin.ChatComposer.Compose(command));
+            using (ImRaii.Disabled(stale || duplicate || !safe))
             {
-                ctqDraftActions.Clear();
-                ctqLabel = "";
+                if (ImGui.SmallButton($"{(editingOwnerBundle is null ? "Save bundle" : "Save changes")}##ctqSave"))
+                {
+                    if (editingOwnerBundle is null)
+                        aliases.Add(new QuickCommand { Label = ctqLabel.Trim(), Command = command });
+                    else
+                    {
+                        editingOwnerBundle.Label = ctqLabel.Trim();
+                        editingOwnerBundle.Command = command;
+                    }
+                    plugin.Configuration.Save();
+                    ClearOwnerBundleDraft();
+                }
             }
+            if (stale) IconGlyph.WrappedColored(Theme.Warning, "This saved bundle was removed while it was being edited.");
+            else if (duplicate) IconGlyph.WrappedColored(Theme.Warning, "Another saved bundle already uses this label or command.");
+            else if (!safe) IconGlyph.WrappedColored(Theme.Warning, "This bundle is too long for a safe chat payload.");
+            ContinueRowOrWrap(ButtonWidth("Cancel"));
+            if (ImGui.SmallButton($"{(editingOwnerBundle is null ? "Clear bundle" : "Cancel")}##ctq"))
+                ClearOwnerBundleDraft();
         }
         else
         {
             IconGlyph.WrappedColored(Theme.Warning, "Give this bundle a label and at least one action before it can be sent.");
         }
+    }
+
+    private void ClearOwnerBundleDraft()
+    {
+        ctqDraftActions.Clear();
+        ctqLabel = "";
+        editingOwnerActionIndex = null;
+        editingOwnerBundle = null;
+    }
+
+    private void BeginOwnerBundleEdit(QuickCommand command)
+    {
+        const string prefix = "customtrigger cast ";
+        if (!command.Command.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !CustomTriggerCommand.TryParseCastCommand(command.Command[prefix.Length..], out var label, out var actions))
+            return;
+
+        editingOwnerBundle = command;
+        ctqLabel = label;
+        ctqDraftActions.Clear();
+        ctqDraftActions.AddRange(actions.Select(CloneAction));
+        editingOwnerActionIndex = null;
     }
 
     private void DrawRestraintQuickRow(QuickCommand cmd, List<QuickCommand> list, bool canSend)
@@ -1576,6 +1943,9 @@ public class CollarWindow : Window, IDisposable
         ContinueRowOrWrap(ButtonWidth("Send"));
         using (ImRaii.Disabled(!hasRules))
             DrawSendCopyButtons(cmd.Command, canSend, $"{cmd.Label}_{cmd.Command}");
+        ContinueRowOrWrap(ButtonWidth("Edit"));
+        if (ImGui.SmallButton("Edit##restraintQuick"))
+            BeginQuickCommandEdit(cmd, list);
         var configureLabel = hasRules ? "Edit rules" : "Configure rules";
         ContinueRowOrWrap(ButtonWidth(configureLabel));
         var expanded = expandedRestraintRuleEditors.Contains(cmd.Label);
@@ -1915,16 +2285,218 @@ public class CollarWindow : Window, IDisposable
     private void DrawSavedQuickRow(QuickCommand cmd, List<QuickCommand> list, bool canSend, Func<string, string>? displayLabel = null)
     {
         ImGui.TextUnformatted(displayLabel?.Invoke(cmd.Label) ?? cmd.Label);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(displayLabel?.Invoke(cmd.Label) ?? cmd.Label);
         ContinueRowOrWrap(ButtonWidth("Favorited"));
         DrawFavoriteToggle(cmd, $"{cmd.Label}_{cmd.Command}");
         ContinueRowOrWrap(ButtonWidth("Send"));
         DrawSendCopyButtons(cmd.Command, canSend, $"{cmd.Label}_{cmd.Command}");
+        ContinueRowOrWrap(ButtonWidth("Edit"));
+        if (ImGui.SmallButton($"Edit##{cmd.Label}_{cmd.Command}"))
+        {
+            if (ReferenceEquals(list, plugin.Configuration.QuickCommands.Aliases) &&
+                cmd.Command.StartsWith("customtrigger cast ", StringComparison.OrdinalIgnoreCase))
+                BeginOwnerBundleEdit(cmd);
+            else
+                BeginQuickCommandEdit(cmd, list);
+        }
         ContinueRowOrWrap(ButtonWidth("Remove"));
         if (ImGui.SmallButton($"Remove##{cmd.Label}_{cmd.Command}"))
         {
             list.Remove(cmd);
             plugin.Configuration.Save();
         }
+    }
+
+    private void BeginQuickCommandEdit(QuickCommand command, List<QuickCommand> list)
+    {
+        editingQuickCommand = command;
+        editingQuickList = list;
+        editingQuickLabel = command.Label;
+        editingQuickPayload = command.Command;
+        editingQuickCategory = CategoryFor(list);
+        editingQuickTarget = command.Target ?? ExtractQuickTarget(command, editingQuickCategory);
+        editingQuickOriginalTarget = editingQuickTarget;
+        editingQuickTitleIsPrefix = command.TitleIsPrefix;
+        editingQuickTitleColor = command.TitleColor ?? new Vector3(1, 1, 1);
+
+        if (editingQuickCategory == QuickEditCategory.Title &&
+            command.Command.StartsWith("title style ", StringComparison.OrdinalIgnoreCase) &&
+            TitleCommand.TryParseStyleCommand(command.Command["title style ".Length..], out var title, out var prefix, out var color))
+        {
+            editingQuickTarget = title;
+            editingQuickTitleIsPrefix = prefix;
+            editingQuickTitleColor = color;
+        }
+        editingQuickOriginalTarget = editingQuickTarget;
+        editingQuickOriginalTitleIsPrefix = editingQuickTitleIsPrefix;
+        editingQuickOriginalTitleColor = editingQuickTitleColor;
+    }
+
+    private QuickEditCategory CategoryFor(List<QuickCommand> list)
+    {
+        var quick = plugin.Configuration.QuickCommands;
+        if (ReferenceEquals(list, quick.Titles)) return QuickEditCategory.Title;
+        if (ReferenceEquals(list, quick.Outfits)) return QuickEditCategory.Outfit;
+        if (ReferenceEquals(list, quick.Gestures)) return QuickEditCategory.Gesture;
+        if (ReferenceEquals(list, quick.Follow)) return QuickEditCategory.Follow;
+        if (ReferenceEquals(list, quick.Moodles)) return QuickEditCategory.Moodle;
+        return QuickEditCategory.Raw;
+    }
+
+    private static string ExtractQuickTarget(QuickCommand command, QuickEditCategory category)
+    {
+        var prefixes = category switch
+        {
+            QuickEditCategory.Outfit => new[] { "outfit lock " },
+            QuickEditCategory.Gesture => new[] { "gesture " },
+            QuickEditCategory.Moodle => new[] { "moodle apply " },
+            _ => Array.Empty<string>(),
+        };
+        foreach (var prefix in prefixes)
+            if (command.Command.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return command.Command[prefix.Length..].Trim().Trim('"');
+        return category == QuickEditCategory.Follow ? command.Command : command.Label;
+    }
+
+    /// A shared focused draft editor for Owner entries. Nothing touches the stored object until Save;
+    /// Cancel and validation failures therefore remain lossless, and reference identity detects a row
+    /// removed while the editor was open.
+    private void DrawQuickCommandEditor()
+    {
+        if (editingQuickCommand is not { } source || editingQuickList is not { } list)
+            return;
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        IconGlyph.Text(FontAwesomeIcon.Pen, "Edit saved command");
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputText("Label##quickEdit", ref editingQuickLabel, 80);
+
+        switch (editingQuickCategory)
+        {
+            case QuickEditCategory.Title:
+                ImGui.SetNextItemWidth(-1);
+                ImGui.InputText("Title text##quickEdit", ref editingQuickTarget, 64);
+                ImGui.Checkbox("Prefix (not suffix)##quickEdit", ref editingQuickTitleIsPrefix);
+                ImGui.ColorEdit3("Color##quickEdit", ref editingQuickTitleColor);
+                break;
+            case QuickEditCategory.Outfit:
+                ImGui.SetNextItemWidth(-1);
+                ImGui.InputText("Outfit name##quickEdit", ref editingQuickTarget, 96);
+                break;
+            case QuickEditCategory.Gesture:
+                DrawQuickGestureTargetPicker();
+                break;
+            case QuickEditCategory.Follow:
+                ImGui.SetNextItemWidth(-1);
+                ImGui.InputText("Sub alias##quickEdit", ref editingQuickTarget, 32);
+                break;
+            case QuickEditCategory.Moodle:
+                ImGui.SetNextItemWidth(-1);
+                ImGui.InputText("Moodle status##quickEdit", ref editingQuickTarget, 96);
+                break;
+            default:
+                ImGui.SetNextItemWidth(-1);
+                ImGui.InputText("Command##quickEdit", ref editingQuickPayload, 400);
+                break;
+        }
+
+        var (draftCommand, draftTarget) = BuildQuickEditPayload(source);
+
+        var stale = !list.Contains(source);
+        var duplicate = list.Any(q => !ReferenceEquals(q, source) &&
+            (string.Equals(q.Label, editingQuickLabel.Trim(), StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(q.Command, draftCommand, StringComparison.OrdinalIgnoreCase)));
+        var aliasList = ReferenceEquals(list, plugin.Configuration.QuickCommands.Aliases) ||
+            ReferenceEquals(list, plugin.Configuration.QuickCommands.Follow);
+        var reserved = aliasList && IsReserved(draftCommand);
+        var safe = CommandSelector.Fits(plugin.ChatComposer.Compose(draftCommand));
+        var validTarget = draftCommand.Length > 0 && (editingQuickCategory != QuickEditCategory.Gesture || draftTarget is not null);
+        if (stale) IconGlyph.WrappedColored(Theme.Warning, "This entry was removed while it was being edited.");
+        else if (duplicate) IconGlyph.WrappedColored(Theme.Warning, "Another saved entry already uses this label or command.");
+        else if (reserved) IconGlyph.WrappedColored(Theme.Warning, "This alias is reserved for a direct Owner command.");
+        else if (!safe) IconGlyph.WrappedColored(Theme.Warning, "This command is too long for a safe chat payload.");
+
+        using (ImRaii.Disabled(stale || duplicate || reserved || !safe || !validTarget || editingQuickLabel.Trim().Length == 0))
+        {
+            if (ImGui.Button("Save##quickEdit"))
+            {
+                source.Label = editingQuickLabel.Trim();
+                source.Command = draftCommand;
+                source.Target = draftTarget;
+                if (editingQuickCategory == QuickEditCategory.Title)
+                {
+                    source.TitleIsPrefix = editingQuickTitleIsPrefix;
+                    source.TitleColor = editingQuickTitleColor;
+                }
+                if (editingQuickCategory == QuickEditCategory.Gesture && draftTarget is not null &&
+                    plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(draftTarget, out var gesture))
+                {
+                    source.GestureModName = gesture.ModName;
+                    source.GestureGroupName = gesture.GroupName;
+                    source.GestureGroupOrder = gesture.GroupOrder;
+                    source.GestureOptionOrder = gesture.OptionOrder;
+                }
+                plugin.Configuration.Save();
+                CancelQuickCommandEdit();
+            }
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel##quickEdit"))
+            CancelQuickCommandEdit();
+    }
+
+    private void DrawQuickGestureTargetPicker()
+    {
+        var catalog = plugin.Configuration.GestureMapping.ImportedPeerCatalog.Values
+            .OrderBy(g => g.ModName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(g => g.GroupOrder).ThenBy(g => g.OptionOrder).ToList();
+        var preview = plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(editingQuickTarget, out var selected)
+            ? CommandSelector.GestureSelector(selected, catalog)
+            : "Choose an imported gesture...";
+        ImGui.SetNextItemWidth(-1);
+        if (!ImGui.BeginCombo("Gesture##quickEdit", preview)) return;
+        foreach (var entry in catalog)
+        {
+            var label = CommandSelector.GestureSelector(entry, catalog);
+            if (ImGui.Selectable($"{label}##{entry.Id}", string.Equals(entry.Id, editingQuickTarget, StringComparison.OrdinalIgnoreCase)))
+                editingQuickTarget = entry.Id;
+        }
+        ImGui.EndCombo();
+    }
+
+    private (string Command, string? Target) BuildQuickEditPayload(QuickCommand source)
+    {
+        var target = editingQuickTarget.Trim();
+        var targetChanged = !string.Equals(target, editingQuickOriginalTarget.Trim(), StringComparison.Ordinal) ||
+            (editingQuickCategory == QuickEditCategory.Title &&
+             (editingQuickTitleIsPrefix != editingQuickOriginalTitleIsPrefix || editingQuickTitleColor != editingQuickOriginalTitleColor));
+        if (!targetChanged && editingQuickCategory != QuickEditCategory.Raw)
+            return (source.Command, source.Target);
+        return editingQuickCategory switch
+        {
+            QuickEditCategory.Title when target.Length > 0 =>
+                (TitleCommand.BuildStyleCommand(target, editingQuickTitleIsPrefix, editingQuickTitleColor), null),
+            QuickEditCategory.Outfit when target.Length > 0 => ($"outfit lock {target}", target),
+            QuickEditCategory.Gesture when plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(target, out var entry) =>
+                ($"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, plugin.Configuration.GestureMapping.ImportedPeerCatalog.Values))}", entry.Id),
+            QuickEditCategory.Follow when target.Length > 0 => (target, null),
+            QuickEditCategory.Moodle when target.Length > 0 =>
+                ($"moodle apply {CommandSelector.Quote(target)}", target),
+            QuickEditCategory.Raw => (editingQuickPayload.Trim(), source.Target),
+            _ => ("", null),
+        };
+    }
+
+    private void CancelQuickCommandEdit()
+    {
+        editingQuickCommand = null;
+        editingQuickList = null;
+        editingQuickLabel = "";
+        editingQuickPayload = "";
+        editingQuickTarget = "";
+        editingQuickOriginalTarget = "";
+        editingQuickCategory = QuickEditCategory.Raw;
     }
 
     /// collar/ui-organization "Owner can favorite quick commands for quick access": a plain toggle shared

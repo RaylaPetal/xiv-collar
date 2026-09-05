@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/invitation.schema.json",
+  "title": "Invitation",
+  "description": "Single-use pairing invitation created by the inviter and fetched by the receiver after a tell reference is sent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "invitationId", "inviterDeviceKeyId",
+    "inviterPublicKey", "role", "createdAt", "expiresAt", "signature"
+  ],
+  "properties": {
+    "type": { "const": "invitation" },
+    "schemaVersion": { "const": 1 },
+    "invitationId": { "$ref": "common.schema.json#/$defs/capabilityId" },
+    "inviterDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "inviterPublicKey": { "$ref": "common.schema.json#/$defs/ecPublicKeyJwk" },
+    "role": {
+      "$ref": "common.schema.json#/$defs/role",
+      "description": "Role the inviter is proposing for itself."
+    },
+    "triggerPhrase": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "expiresAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "signature": { "$ref": "common.schema.json#/$defs/ecdsaSignature" }
+  }
+}

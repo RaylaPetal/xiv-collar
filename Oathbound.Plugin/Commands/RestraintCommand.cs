@@ -18,6 +18,7 @@ namespace Oathbound.Plugin.Commands;
 /// "joker" override that locks out the Sub's own controls while active.
 public sealed class RestraintCommand
 {
+    public string? LastFailureReason { get; private set; }
     private const string Owner = "Restraints";
     private const long PlayDelayMs = 500;
 
@@ -86,12 +87,44 @@ public sealed class RestraintCommand
     /// stored rules. Always force-locks.
     public bool ForceApply(string deviceName)
     {
+        LastFailureReason = null;
         var entry = config.RestraintMapping.Devices.Values
             .FirstOrDefault(d => string.Equals(d.Name, deviceName, StringComparison.OrdinalIgnoreCase));
         if (entry is null)
+        {
+            LastFailureReason = $"device \"{deviceName}\" was not found";
             return false;
+        }
 
         if (!ApplyDevice(entry.Id, entry))
+            return false;
+
+        runtimeState.RestraintsForceLocked = true;
+        return true;
+    }
+
+    /// Applies a Sub-authored Custom Trigger's restraint action by its stable captured-device identity.
+    /// A Custom Trigger is still an Owner command, so this deliberately does not use Toggle (which is
+    /// Sub self-service and is refused after an Owner force-lock). Multiple calls from the same bundle may
+    /// therefore add multiple compatible devices before leaving the category force-locked.
+    public bool ForceApplyById(string deviceId)
+    {
+        LastFailureReason = null;
+        if (!config.RestraintMapping.Devices.TryGetValue(deviceId, out var device))
+        {
+            LastFailureReason = $"saved device id {deviceId} is stale";
+            return false;
+        }
+
+        // Re-running an apply-only bundle is idempotent: do not toggle an active device back off or try to
+        // acquire its already-held restriction claims again.
+        if (activeDeviceIds.Contains(deviceId))
+        {
+            runtimeState.RestraintsForceLocked = true;
+            return true;
+        }
+
+        if (!ApplyDevice(device.Id, device))
             return false;
 
         runtimeState.RestraintsForceLocked = true;
@@ -189,27 +222,35 @@ public sealed class RestraintCommand
     {
         if (slotLocks.WouldOverlap([device.Slot], Owner))
         {
+            var conflicts = slotLocks.ConflictingLocks([device.Slot], Owner);
+            LastFailureReason = conflicts.Count > 0
+                ? $"equipment slot {device.Slot} is locked by {conflicts[0].Owner}"
+                : $"equipment slot {device.Slot} is already locked";
             Plugin.Log.Warning($"Restraint apply refused for \"{device.Name}\": a locked slot is already held by a different owner.");
             return false;
         }
         if (restrictionRules.WouldConflict(device.Rules, deviceId))
         {
+            LastFailureReason = "a pose or cuff rule conflicts with a different active restraint; unlock existing restraints first";
             Plugin.Log.Warning($"Restraint apply refused for \"{device.Name}\": a restriction rule conflicts with a different device already active.");
             return false;
         }
         if (!restrictionRules.CanActivate(device.Rules, out var unavailable))
         {
+            LastFailureReason = $"{unavailable} enforcement is unavailable";
             Plugin.Log.Warning($"Restraint apply refused for '{device.Name}': {unavailable} enforcement is unavailable.");
             return false;
         }
         if (device.Rules.Any(r => r.Kind == RestraintRuleKind.ForcedPose) && PlayerState.Instance() == null)
         {
+            LastFailureReason = "the local pose state is unavailable";
             Plugin.Log.Warning($"Restraint apply refused for '{device.Name}': pose state is unavailable.");
             return false;
         }
         var boundRules = device.Rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed).ToList();
         if (boundRules.Any(r => ResolveAnimation(r.AnimationId) is null))
         {
+            LastFailureReason = "a selected cuff animation is missing, stale, or ambiguous; edit the restraint and select it again";
             Plugin.Log.Warning($"Restraint apply refused for '{device.Name}': a bound animation is missing, stale, or ambiguous.");
             return false;
         }
@@ -217,12 +258,14 @@ public sealed class RestraintCommand
         var value = new SlotLockValue(device.ItemId, device.Stain, device.Stain2);
         if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [device.Slot] = value }))
         {
+            LastFailureReason = $"Glamourer could not apply or lock equipment slot {device.Slot}";
             Plugin.Log.Warning($"Restraint apply failed for \"{device.Name}\": could not apply/lock its slot.");
             return false;
         }
 
         if (device.Rules.Count > 0 && !restrictionRules.TryActivate(deviceId, device.Rules))
         {
+            LastFailureReason = "restriction enforcement could not be activated";
             slotLocks.Release(Owner);
             return false;
         }
@@ -238,6 +281,7 @@ public sealed class RestraintCommand
             restrictionRules.Release(deviceId);
             slotLocks.Release(Owner);
             Plugin.Log.Warning($"Restraint apply rolled back for '{device.Name}': bound animation activation failed.");
+            LastFailureReason = "Penumbra could not activate the selected cuff animation; the restraint was rolled back";
             return false;
         }
 
@@ -276,7 +320,7 @@ public sealed class RestraintCommand
     private GestureCatalogEntry? ResolveAnimation(string? selector)
     {
         if (string.IsNullOrWhiteSpace(selector)) return null;
-        var resolved = CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, selector);
+        var resolved = CommandSelector.ResolveGestureDetailed(config.GestureMapping.LocalCatalog.Values, selector, requireTrigger: false).Entry;
         if (resolved is not null)
             return resolved;
 
@@ -285,13 +329,15 @@ public sealed class RestraintCommand
         // before local catalog resolution. Without this, real options such as
         // "Get Cuffed (Gsit2,idle,walk)" arrive as "Gsit2·idle·walk" and always fail preflight.
         return selector.Contains('·')
-            ? CommandSelector.ResolveGesture(config.GestureMapping.LocalCatalog.Values, selector.Replace('·', ','))
+            ? CommandSelector.ResolveGestureDetailed(config.GestureMapping.LocalCatalog.Values, selector.Replace('·', ','), requireTrigger: false).Entry
             : null;
     }
 
     private bool EngageBoundAnimation(string deviceId, RestraintRuleAssignment rule)
     {
-        if (ResolveAnimation(rule.AnimationId) is not { } entry || entry.Trigger is null)
+        if (ResolveAnimation(rule.AnimationId) is not { } entry
+            || string.IsNullOrWhiteSpace(entry.ModDirectory)
+            || entry.GroupSelections.Count == 0)
         {
             Plugin.Log.Warning($"Restraint {rule.Kind} rule refused to engage: animation '{rule.AnimationId}' is unavailable.");
             return false;
@@ -311,19 +357,23 @@ public sealed class RestraintCommand
         }
 
         boundAnimations[(deviceId, rule.Kind)] = (collection.Value, entry.ModDirectory);
-        pendingBoundPlays[(deviceId, rule.Kind)] = (entry.Trigger, Environment.TickCount64 + PlayDelayMs);
+        if (entry.Trigger is not null)
+            pendingBoundPlays[(deviceId, rule.Kind)] = (entry.Trigger, Environment.TickCount64 + PlayDelayMs);
         return true;
     }
 
     private void ReleaseBoundAnimations(string deviceId)
     {
+        var removedAny = false;
         foreach (var key in boundAnimations.Keys.Where(k => k.DeviceId == deviceId).ToList())
         {
             pendingBoundPlays.Remove(key);
             var (collection, modDirectory) = boundAnimations[key];
-            penumbra.TryRemoveTemporarySettings(collection, modDirectory);
+            removedAny |= penumbra.TryRemoveTemporarySettings(collection, modDirectory);
             boundAnimations.Remove(key);
         }
+        if (removedAny && !penumbra.TryRedrawLocalPlayer())
+            Plugin.Log.Warning($"Restraint release for '{deviceId}' removed temporary animation settings, but the Penumbra redraw failed; a manual redraw may be required.");
     }
 
     /// collar/restraints "Panic releases every active restriction rule": reverts every currently-held bound
@@ -333,11 +383,14 @@ public sealed class RestraintCommand
     /// else this class doesn't own.
     public void ReleaseAllBoundAnimationsForPanic()
     {
+        var removedAny = false;
         foreach (var (collection, modDirectory) in boundAnimations.Values)
-            penumbra.TryRemoveTemporarySettings(collection, modDirectory);
+            removedAny |= penumbra.TryRemoveTemporarySettings(collection, modDirectory);
         boundAnimations.Clear();
         pendingBoundPlays.Clear();
         activeDeviceIds.Clear();
+        if (removedAny && !penumbra.TryRedrawLocalPlayer())
+            Plugin.Log.Warning("Restraint teardown removed temporary animation settings, but the Penumbra redraw failed; a manual redraw may be required.");
     }
 
     private void ReleaseDevice(string deviceId)

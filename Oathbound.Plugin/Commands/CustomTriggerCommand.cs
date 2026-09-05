@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Text;
 using Oathbound.Plugin.Config;
+using Oathbound.Plugin.UI;
 using ECommons.Automation;
 
 namespace Oathbound.Plugin.Commands;
@@ -90,19 +91,17 @@ public sealed class CustomTriggerCommand
 
                 case CustomTriggerActionKind.Restraint:
                     if (!(config.Permissions.Restraints && config.TosAcknowledged)) { skipped.Add("restraint (permission/acknowledgement)"); break; }
-                    // Same real-id-vs-name-only split as Outfit above: a Sub-defined trigger has a real
-                    // captured device id and toggles it (apply if inactive, release if active) like a plain
-                    // restraint alias; an Owner ad-hoc bundle only has the device name (told to them by the
-                    // Sub), so it falls back to the same name-based ForceApply a plain `restraint lock
-                    // <name>` override already uses - always applies, it can't toggle a device it can't
-                    // look up locally.
+                    // Both branches are apply-only because the bundle itself arrived as an Owner command.
+                    // In particular, do not route stable IDs through the Sub self-service Toggle method:
+                    // Toggle is rejected by an Owner force-lock and made multi-restraint bundles depend on
+                    // unrelated prior runtime state.
                     var restraintOk = config.RestraintMapping.Devices.ContainsKey(action.RestraintDeviceId)
-                        ? restraints.Toggle(new RestraintAliasDefinition { DeviceId = action.RestraintDeviceId, DeviceName = action.RestraintDeviceName })
+                        ? restraints.ForceApplyById(action.RestraintDeviceId)
                         : restraints.ForceApply(action.RestraintDeviceName);
                     if (restraintOk)
-                        applied.Add("restraint");
+                        applied.Add($"restraint \"{action.RestraintDeviceName}\"");
                     else
-                        skipped.Add("restraint (force-locked or not found)");
+                        skipped.Add($"restraint \"{action.RestraintDeviceName}\" ({restraints.LastFailureReason ?? "apply failed"})");
                     break;
 
                 case CustomTriggerActionKind.Chat:
@@ -280,16 +279,7 @@ public sealed class CustomTriggerCommand
     /// list (`CollarWindow.SummarizeCustomTriggerAction`) and `CatalogSyncService`'s Aliases export
     /// description, so both places describe a Custom Trigger's contents identically rather than each
     /// re-deriving their own text.
-    public static string Summarize(CustomTriggerAction a) => a.Kind switch
-    {
-        CustomTriggerActionKind.Title => $"title \"{a.TitleText}\"",
-        CustomTriggerActionKind.Outfit => $"outfit {a.OutfitDesignName}",
-        CustomTriggerActionKind.Gesture => $"gesture {a.GestureAnimationName}",
-        CustomTriggerActionKind.Moodle => $"moodle {MoodlesTextFormat.StripMarkup(a.MoodleStatusName)}",
-        CustomTriggerActionKind.Restraint => $"restraint {a.RestraintDeviceName}",
-        CustomTriggerActionKind.Chat => $"chat \"{a.ChatText}\"",
-        _ => a.Kind.ToString(),
-    };
+    public static string Summarize(CustomTriggerAction a) => CommandPresentation.Action(a);
 
     private static string EncodeText(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
 

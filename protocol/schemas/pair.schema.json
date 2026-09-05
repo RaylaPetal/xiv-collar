@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/pair.schema.json",
+  "title": "Pair",
+  "description": "Server-side pair record activated once both device proofs are observed. Contains no character name, world, or command content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "pairIdHash", "pairEpoch",
+    "ownerDeviceKeyId", "subDeviceKeyId", "createdAt"
+  ],
+  "properties": {
+    "type": { "const": "pair" },
+    "schemaVersion": { "const": 1 },
+    "pairIdHash": { "$ref": "common.schema.json#/$defs/pairIdHash" },
+    "pairEpoch": { "$ref": "common.schema.json#/$defs/pairEpoch" },
+    "ownerDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "subDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/common.schema.json",
+  "$defs": {
+    "protocolVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "deviceKeyId": {
+      "type": "string",
+      "description": "SHA-256 fingerprint (hex) of a device's ECDSA P-256 public key.",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "pairIdHash": {
+      "type": "string",
+      "description": "SHA-256 hash of the pair identifier; never derived from character name/world.",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "pairEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "monotonicSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "capabilityId": {
+      "type": "string",
+      "description": "Opaque, high-entropy, unguessable identifier. Only its hash is stored server-side.",
+      "pattern": "^[A-Za-z0-9_-]{32,64}$"
+    },
+    "unixSeconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nonce": {
+      "type": "string",
+      "description": "128-bit single-use request-signing nonce, base64url without padding.",
+      "pattern": "^[A-Za-z0-9_-]{22}$"
+    },
+    "aeadNonce": {
+      "type": "string",
+      "description": "96-bit AES-256-GCM nonce (per protocol/constants.json aead.nonceLengthBytes), base64url without padding.",
+      "pattern": "^[A-Za-z0-9_-]{16}$"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "base64UrlBlob": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "role": {
+      "type": "string",
+      "enum": ["owner", "sub"]
+    },
+    "ecdsaSignature": {
+      "type": "string",
+      "description": "Raw ECDSA P-256/SHA-256 signature (r||s, 64 bytes), base64url without padding.",
+      "pattern": "^[A-Za-z0-9_-]{86}$"
+    },
+    "ecPublicKeyJwk": {
+      "type": "object",
+      "description": "P-256 public key as a JWK, used for both ECDSA (signing) and ECDH (key agreement) device keys.",
+      "additionalProperties": false,
+      "required": ["kty", "crv", "x", "y"],
+      "properties": {
+        "kty": { "const": "EC" },
+        "crv": { "const": "P-256" },
+        "x": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "y": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+      }
+    },
+    "aeadAlgorithm": {
+      "type": "string",
+      "const": "ECDH-P256+HKDF-SHA256+AES-256-GCM"
+    }
+  }
+}

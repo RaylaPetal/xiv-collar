@@ -1,32 +1,32 @@
 using System;
 using System.Linq;
+using System.Threading;
 using Oathbound.Plugin.Config;
+using Oathbound.Plugin.Relay;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 
 namespace Oathbound.Plugin.Commands;
 
-public readonly record struct PendingPairingRequest(string Name, string World, PluginRole SenderRole, string? TriggerPhrase = null);
-
 /// collar/pairing "Receiving a panic notification updates the header": the peer's declared role at the
-/// moment they panicked, so the header can say "your Sub" or "your Owner" - transient, in-memory, the same
-/// shape `PendingPairingRequest`/`Pending` already use.
+/// moment they panicked, so the header can say "your Sub" or "your Owner" - transient, in-memory.
 public readonly record struct PeerUnpairedNotice(PluginRole PeerRole);
 
-/// collar/chat-transport's listener, now split into two independent things it watches every incoming
-/// tell for:
-///  - a one-time pairing handshake message (both roles listen - collar/pairing), which never applies
-///    anything, only offers a Pending request once the embedded code matches the locally-configured
-///    PeerCode; and
-///  - ongoing alias-trigger tells (Sub role only), matched by the sender name+world that a prior accepted
-///    handshake captured - the same server-verified-identity check the original design used, just now
-///    populated via chat instead of typed in Settings.
+/// collar/chat-transport's listener, watching every incoming tell for three things:
+///  - a relay invitation reference (`collarinvite`) and its acknowledgement (`collarpairack`) - both roles
+///    listen, both only ever hand off to PairingService, which owns the actual relay verification and
+///    Pending state (collar/pairing);
+///  - a panic/unpair notification (`collarunpair`); and
+///  - ongoing alias-trigger tells (Sub role only), matched by the sender name+world an accepted relay
+///    pairing captured.
 public sealed class ChatCommandListener : IDisposable
 {
     private const string PairingAckKeyword = "collarpairack";
-    private const string PairingKeyword = "collarpair";
+    private const string InviteKeyword = "collarinvite";
     private const string UnpairNoticeKeyword = "collarunpair";
+    private const string CatalogRequestKeyword = "collarcatalogreq";
+    private const string CatalogPermissionDeniedKeyword = "collarcatalogdenied";
 
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
     /// lookup (see Resolve/HandleForce*). A Sub alias can never be named one of these - CollarWindow's
@@ -34,9 +34,8 @@ public sealed class ChatCommandListener : IDisposable
     public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint", "customtrigger"];
 
     private readonly PluginConfig config;
-    private readonly PairingCommand pairing;
-    private readonly ChatComposer composer;
-    private readonly ChatSender sender;
+    private readonly PairingService pairing;
+    private readonly CatalogSyncRelayService catalogSyncRelay;
     private readonly TitleCommand title;
     private readonly OutfitCommand outfit;
     private readonly GestureCommand gesture;
@@ -45,9 +44,6 @@ public sealed class ChatCommandListener : IDisposable
     private readonly MoodlesCommand moodles;
     private readonly RestraintCommand restraints;
     private readonly CustomTriggerCommand customTriggers;
-
-    public PendingPairingRequest? Pending { get; private set; }
-    public event Action? PendingChanged;
 
     public PeerUnpairedNotice? PeerUnpairedNotice { get; private set; }
     public event Action? PeerUnpairedNoticeChanged;
@@ -60,12 +56,11 @@ public sealed class ChatCommandListener : IDisposable
         PeerUnpairedNoticeChanged?.Invoke();
     }
 
-    public ChatCommandListener(PluginConfig config, PairingCommand pairing, ChatComposer composer, ChatSender sender, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, CustomTriggerCommand customTriggers)
+    public ChatCommandListener(PluginConfig config, PairingService pairing, CatalogSyncRelayService catalogSyncRelay, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, CustomTriggerCommand customTriggers)
     {
         this.config = config;
         this.pairing = pairing;
-        this.composer = composer;
-        this.sender = sender;
+        this.catalogSyncRelay = catalogSyncRelay;
         this.title = title;
         this.outfit = outfit;
         this.gesture = gesture;
@@ -80,43 +75,6 @@ public sealed class ChatCommandListener : IDisposable
 
     public void Dispose() => Plugin.ChatGui.ChatMessage -= OnChatMessage;
 
-    /// Called from Settings when the Sub/Owner clicks Accept on a shown Pending request. collar/pairing's
-    /// "Accepting a pairing request applies a configured collar": a conditional side effect of acceptance
-    /// itself, not a separate command - only fires when the accepting side has both a configured collar
-    /// item and the "Collar" permission enabled, silently does nothing otherwise.
-    public void AcceptPending()
-    {
-        if (Pending is not { } request)
-            return;
-
-        pairing.AcceptPeer(request.Name, request.World, request.TriggerPhrase);
-
-        // collar/pairing "One-way pairing handshake completes both sides": the one narrow, explicit
-        // exception to "no automated sending" (collar/chat-transport) - a single confirmation tell, sent
-        // as a direct consequence of this Accept click, so the inviter's own side completes without a
-        // second explicit action. Echoes back the code that was actually matched (this side's PeerCode,
-        // which is the inviter's own MyCode) so the inviter can verify it's a real response to their invite.
-        var ack = composer.ComposePairingAck(request.Name, request.World, config.Pairing.PeerCode ?? "", config.TriggerPhrase);
-        sender.Send(ack);
-
-        if (config.Permissions.Collar && config.Collar.IsConfigured)
-            collar.ForceApply();
-
-        Pending = null;
-        PendingChanged?.Invoke();
-
-        // A freshly-completed pairing supersedes any stale "your peer panicked" notice left over from
-        // before - most relevant when re-pairing with the same person after they panicked.
-        if (PeerUnpairedNotice is not null)
-            DismissPeerUnpairedNotice();
-    }
-
-    public void DismissPending()
-    {
-        Pending = null;
-        PendingChanged?.Invoke();
-    }
-
     private void OnChatMessage(Dalamud.Game.Chat.IChatMessage message)
     {
         if (message.LogKind != XivChatType.TellIncoming)
@@ -124,14 +82,15 @@ public sealed class ChatCommandListener : IDisposable
 
         var text = message.Message.TextValue.Trim();
 
-        // Ack must be checked before the invite keyword - "collarpairack" itself starts with "collarpair",
-        // so checking invite first would swallow every ack as a malformed invite (unparseable role token)
-        // before it ever reached the ack handler.
-        if (TryHandlePairingAckMessage(text, message.Sender))
+        if (TryHandleRelayAckMessage(text, message.Sender))
             return;
-        if (TryHandlePairingMessage(text, message.Sender))
+        if (TryHandleRelayInviteMessage(text, message.Sender))
             return;
         if (TryHandleUnpairNoticeMessage(text, message.Sender))
+            return;
+        if (TryHandleCatalogRequestMessage(text, message.Sender))
+            return;
+        if (TryHandleCatalogPermissionDeniedMessage(text, message.Sender))
             return;
 
         // Only the Sub role ever reacts to ongoing alias triggers - the Owner's plugin only composes (see
@@ -205,72 +164,51 @@ public sealed class ChatCommandListener : IDisposable
         }
     }
 
-    /// collar/pairing "One-way pairing handshake completes both sides": a "collarpairack <role> <code>
-    /// <triggerPhrase>" tell sent automatically by AcceptPending. Completes pairing on the inviting side
-    /// immediately, with no Pending prompt - the code check here is the same one an invite's Pending
-    /// request already required, just verified against this side's own MyCode instead of a configured
-    /// PeerCode (see ChatComposer.ComposePairingAck), so a stray or forged ack that doesn't echo the exact
-    /// code this side sent out is silently ignored. Consumes the message (returns true) whenever it starts
-    /// with the keyword, matching TryHandlePairingMessage's own "fail closed, never fall through" shape.
-    private bool TryHandlePairingAckMessage(string text, SeString sender)
+    /// collar/pairing's relay handshake, inviter side: a "collarpairack <invitationId> <proofDigest>" tell
+    /// sent automatically by PairingService.AcceptPendingAsync. Consumes the message (returns true)
+    /// whenever it starts with the keyword and parses, matching every other handshake message's "fail
+    /// closed, never fall through" shape - the actual verification (does the fetched invitation's signed
+    /// acceptance carry this exact proof digest, from an invitation this side created) happens in
+    /// PairingService, not here; this method's only job is recognizing the tell and capturing its
+    /// server-verified sender.
+    private bool TryHandleRelayAckMessage(string text, SeString sender)
     {
         if (!text.StartsWith(PairingAckKeyword, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var (roleToken, rest) = SplitFirstToken(text[PairingAckKeyword.Length..].Trim());
-        if (!TryParseRole(roleToken, out _))
-            return true;
-
-        var (receivedCode, triggerPhrase) = SplitFirstToken(rest);
-
-        var expectedCode = config.Pairing.MyCode;
-        if (receivedCode.Length == 0 || string.IsNullOrWhiteSpace(expectedCode))
-            return true;
-        if (!string.Equals(receivedCode, expectedCode, StringComparison.OrdinalIgnoreCase))
+        var (invitationId, rest) = SplitFirstToken(text[PairingAckKeyword.Length..].Trim());
+        var (proofDigest, _) = SplitFirstToken(rest);
+        if (invitationId.Length == 0 || proofDigest.Length == 0)
             return true;
 
         var (name, world) = ExtractNameAndWorld(sender);
         if (name is null || world is null)
             return true;
 
-        pairing.AcceptPeer(name, world, triggerPhrase.Length > 0 ? triggerPhrase : null);
+        Plugin.FireAndForget(pairing.HandleAcknowledgementTellAsync(invitationId, proofDigest, name, world, CancellationToken.None));
         return true;
     }
 
-    /// collar/pairing's manual handshake: a "collarpair <role> <code> <triggerPhrase>" tell from either
-    /// side, `role` being the sender's own declared Role ("sub"/"owner") so the receiving side's Pending
-    /// prompt can show what the sender thinks this pairing will be, not just that a code matched - catches
-    /// a same-role misconfiguration (both sides set to Sub, say) before Accept locks it in, rather than
-    /// silently pairing into a dead end where nothing ever triggers. `triggerPhrase` (collar/chat-transport)
-    /// is the sender's own currently-configured trigger phrase, additive to the original "collarpair <role>
-    /// <code>" format - absent from an older client's handshake, in which case it's simply not captured
-    /// (see AcceptPending) and composing falls back to this side's own trigger phrase, same as before this
-    /// field existed. Consumes the message (returns true) whenever it starts with the keyword, whether or
-    /// not the code actually matches - a wrong/malformed/unconfigured code is silently ignored, never falls
-    /// through to alias parsing.
-    private bool TryHandlePairingMessage(string text, SeString sender)
+    /// collar/pairing's relay handshake, receiver side: a "collarinvite <invitationId>" tell from either
+    /// role. `senderName`/`senderWorld` (FFXIV's own server-verified sender) is the character identity
+    /// PairingService binds the fetched invitation to - never a free-text field. Consumes the message
+    /// (returns true) whenever it starts with the keyword and parses, whether or not the invitation turns
+    /// out to be valid once fetched - a wrong/expired/forged reference is silently ignored by
+    /// PairingService, never falls through to alias parsing.
+    private bool TryHandleRelayInviteMessage(string text, SeString sender)
     {
-        if (!text.StartsWith(PairingKeyword, StringComparison.OrdinalIgnoreCase))
+        if (!text.StartsWith(InviteKeyword, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var (roleToken, rest) = SplitFirstToken(text[PairingKeyword.Length..].Trim());
-        if (!TryParseRole(roleToken, out var senderRole))
-            return true;
-
-        var (receivedCode, triggerPhrase) = SplitFirstToken(rest);
-
-        var expectedCode = config.Pairing.PeerCode;
-        if (receivedCode.Length == 0 || string.IsNullOrWhiteSpace(expectedCode))
-            return true;
-        if (!string.Equals(receivedCode, expectedCode, StringComparison.OrdinalIgnoreCase))
+        var (invitationId, _) = SplitFirstToken(text[InviteKeyword.Length..].Trim());
+        if (invitationId.Length == 0)
             return true;
 
         var (name, world) = ExtractNameAndWorld(sender);
         if (name is null || world is null)
             return true;
 
-        Pending = new PendingPairingRequest(name, world, senderRole, triggerPhrase.Length > 0 ? triggerPhrase : null);
-        PendingChanged?.Invoke();
+        Plugin.FireAndForget(pairing.HandleInvitationTellAsync(invitationId, name, world, CancellationToken.None));
         return true;
     }
 
@@ -298,7 +236,45 @@ public sealed class ChatCommandListener : IDisposable
             return true;
 
         PeerUnpairedNotice = new PeerUnpairedNotice(peerRole);
+        pairing.EndFromVerifiedPeerNotice();
         PeerUnpairedNoticeChanged?.Invoke();
+        return true;
+    }
+
+    /// collar/catalog-sync: a "collarcatalogreq <requestId>" tell from either role - CatalogSyncRelayService
+    /// itself re-verifies sender identity and the request's own signature before doing anything, so this
+    /// method's only job is recognizing the keyword and capturing the verified sender.
+    private bool TryHandleCatalogRequestMessage(string text, SeString sender)
+    {
+        if (!text.StartsWith(CatalogRequestKeyword, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var (requestId, _) = SplitFirstToken(text[CatalogRequestKeyword.Length..].Trim());
+        if (requestId.Length == 0)
+            return true;
+
+        var (name, world) = ExtractNameAndWorld(sender);
+        if (name is null || world is null)
+            return true;
+
+        Plugin.FireAndForget(catalogSyncRelay.HandleCatalogRequestTellAsync(requestId, name, world, CancellationToken.None));
+        return true;
+    }
+
+    /// collar/catalog-sync "Sub has not opted in": a "collarcatalogdenied <requestId>" tell telling the
+    /// Owner their paired Sub hasn't enabled catalog sync.
+    private bool TryHandleCatalogPermissionDeniedMessage(string text, SeString sender)
+    {
+        if (!text.StartsWith(CatalogPermissionDeniedKeyword, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var (requestId, _) = SplitFirstToken(text[CatalogPermissionDeniedKeyword.Length..].Trim());
+        if (requestId.Length == 0)
+            return true;
+        if (!string.Equals(ExtractNameAndWorld(sender).Name, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        catalogSyncRelay.HandlePermissionDeniedTell(requestId);
         return true;
     }
 
@@ -422,9 +398,18 @@ public sealed class ChatCommandListener : IDisposable
         if (name.Length == 0)
             return LocalTestResult.Fail("\"gesture\" was given no name.");
 
-        return gesture.ForceApply(name)
-            ? LocalTestResult.Ok($"Gesture \"{name}\" played.")
-            : LocalTestResult.Fail($"No gesture matching \"{name}\" (or it failed to play).");
+        var result = gesture.ForceApplyDetailed(name);
+        return result.Status switch
+        {
+            GestureCommand.ApplyStatus.Success => LocalTestResult.Ok($"Gesture \"{result.DisplayName ?? name}\" queued for playback."),
+            GestureCommand.ApplyStatus.Missing => LocalTestResult.Fail($"Gesture \"{name}\" is missing or stale in the Sub's current animation catalog. Re-import and edit the Owner quick command."),
+            GestureCommand.ApplyStatus.Ambiguous => LocalTestResult.Fail($"Gesture \"{name}\" matches more than one animation; choose a more specific selector."),
+            GestureCommand.ApplyStatus.Malformed => LocalTestResult.Fail($"Gesture selector \"{name}\" is malformed."),
+            GestureCommand.ApplyStatus.CollectionUnavailable => LocalTestResult.Fail("Gesture failed because the Sub's effective Penumbra collection is unavailable."),
+            GestureCommand.ApplyStatus.TemporarySettingsFailed => LocalTestResult.Fail($"Gesture \"{result.DisplayName ?? name}\" failed while applying temporary Penumbra settings."),
+            GestureCommand.ApplyStatus.RedrawFailed => LocalTestResult.Fail($"Gesture \"{result.DisplayName ?? name}\" failed while redrawing; temporary settings were rolled back."),
+            _ => LocalTestResult.Fail($"Gesture \"{name}\" failed."),
+        };
     }
 
     /// Only `collar unlock` exists - the collar only ever applies as a side effect of pairing acceptance
@@ -554,7 +539,9 @@ public sealed class ChatCommandListener : IDisposable
             return LocalTestResult.Ok($"Alias \"{alias}\" matched clear-title.");
         }
 
-        if (Matches(alias, aliases.UnlockOutfitAlias))
+        // Fixed release vocabulary: unlike user-authored apply aliases, wardrobe release is always
+        // "unlock" so an Owner never has to discover a mutable safety command.
+        if (Matches(alias, "unlock"))
         {
             if (!permissions.Outfit)
                 return LocalTestResult.Fail("Outfit permission is not enabled.");

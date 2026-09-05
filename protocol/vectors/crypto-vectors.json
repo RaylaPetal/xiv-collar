@@ -1,0 +1,108 @@
+{
+  "canonicalJson": {
+    "description": "RFC 8785 canonicalization of a sample envelope-shaped object; SHA-256 hex digest of the canonical UTF-8 bytes.",
+    "input": {
+      "type": "catalog-request",
+      "schemaVersion": 1,
+      "pairEpoch": 3,
+      "requestId": "capIdCAPIDcapIdCAPIDcapIdCAPIDcapIdCAPID",
+      "createdAt": 1700002000,
+      "nested": {
+        "z": 1,
+        "a": [
+          3,
+          1,
+          2
+        ],
+        "m": "text with \"quotes\" and unicode café"
+      }
+    },
+    "canonical": "{\"createdAt\":1700002000,\"nested\":{\"a\":[3,1,2],\"m\":\"text with \\\"quotes\\\" and unicode café\",\"z\":1},\"pairEpoch\":3,\"requestId\":\"capIdCAPIDcapIdCAPIDcapIdCAPIDcapIdCAPID\",\"schemaVersion\":1,\"type\":\"catalog-request\"}",
+    "sha256Hex": "5036d556856a46e0e6e7394e2c7d07654e377bd58e908d4106183189fef397ac"
+  },
+  "ecdsaSignRequest": {
+    "description": "Request-signing base string signed with ECDSA P-256/SHA-256, raw r||s signature. Both runtimes must produce this exact base string and a signature that verifies against the public key (ECDSA is randomized, so the signature bytes themselves are not required to match byte-for-byte across implementations -- only verification success is asserted).",
+    "signingPublicKeyJwk": {
+      "key_ops": [
+        "verify"
+      ],
+      "ext": true,
+      "kty": "EC",
+      "x": "aTWHGmnunopMnVuQMMeGdWwIN8ODjSkA15jdLg92hts",
+      "y": "8ozE6y__J-SN0ZZzqDAmkc0jBJaFUrZbBZD1gUtKJLs",
+      "crv": "P-256"
+    },
+    "signingPrivateKeyJwk": {
+      "key_ops": [
+        "sign"
+      ],
+      "ext": true,
+      "kty": "EC",
+      "x": "aTWHGmnunopMnVuQMMeGdWwIN8ODjSkA15jdLg92hts",
+      "y": "8ozE6y__J-SN0ZZzqDAmkc0jBJaFUrZbBZD1gUtKJLs",
+      "crv": "P-256",
+      "d": "KXa-6gN_oB4qQj9teW4WWKNedBBhepytjVhMruqMo00"
+    },
+    "baseStringParts": {
+      "method": "POST",
+      "path": "/v1/catalog/request",
+      "bodyDigestSha256Hex": "5036d556856a46e0e6e7394e2c7d07654e377bd58e908d4106183189fef397ac",
+      "timestamp": 1700002000,
+      "nonce": "n0nceN0NCEn0nceN0NCEn0"
+    },
+    "baseString": "POST\n/v1/catalog/request\n5036d556856a46e0e6e7394e2c7d07654e377bd58e908d4106183189fef397ac\n1700002000\nn0nceN0NCEn0nceN0NCEn0",
+    "signatureBase64Url": "Sr1uSvWut1kSDlPy2KqrwwBBNR-l6_RXLonB2bCtMqmIwcPdqli5rcjDZijAIIXJvtX9FMOkuB3xwiCqisHfGg",
+    "signatureLengthBytes": 64,
+    "verifiesWithPublicKey": true
+  },
+  "ecdhHkdfAesGcmCatalogEnvelope": {
+    "description": "ECDH P-256 key agreement between an Owner and Sub ephemeral key pair, HKDF-SHA256 key derivation, and AES-256-GCM encryption of a sample plaintext bound to catalog-response metadata as AAD. Both the Sub-derived and Owner-derived shared secrets and AES keys must match, and decryption must recover the exact plaintext.",
+    "ownerEphemeralPublicKeyJwk": {
+      "key_ops": [],
+      "ext": true,
+      "kty": "EC",
+      "x": "62O6DLPjQNPyMIJmcbA5NlTchtovEzaFP8eiB6x40cQ",
+      "y": "rG5CJixxa3cWgTrTFEiSpZxecT-muaQUdQkheRPqCc0",
+      "crv": "P-256"
+    },
+    "ownerEphemeralPrivateKeyJwk": {
+      "key_ops": [
+        "deriveBits"
+      ],
+      "ext": true,
+      "kty": "EC",
+      "x": "62O6DLPjQNPyMIJmcbA5NlTchtovEzaFP8eiB6x40cQ",
+      "y": "rG5CJixxa3cWgTrTFEiSpZxecT-muaQUdQkheRPqCc0",
+      "crv": "P-256",
+      "d": "_ILA0EuKNqdD5GieVTRAzgUH_BhAEthzl_7TE_6egaE"
+    },
+    "subEphemeralPublicKeyJwk": {
+      "key_ops": [],
+      "ext": true,
+      "kty": "EC",
+      "x": "RMSWdueu7KFvkDguI8jNM9bBlo68dkF9XsWXFvP5XHs",
+      "y": "9yAYneLqXPN2muh-OXTiasvOXO5Q0QJW8Cj1pVoX38M",
+      "crv": "P-256"
+    },
+    "subEphemeralPrivateKeyJwk": {
+      "key_ops": [
+        "deriveBits"
+      ],
+      "ext": true,
+      "kty": "EC",
+      "x": "RMSWdueu7KFvkDguI8jNM9bBlo68dkF9XsWXFvP5XHs",
+      "y": "9yAYneLqXPN2muh-OXTiasvOXO5Q0QJW8Cj1pVoX38M",
+      "crv": "P-256",
+      "d": "LCkk5N0VZnj775jliOy-WPqYZcA9hnhag_ElUzQqIl4"
+    },
+    "saltSha256Hex": "959f8d8ccbfb1f2e6a1d0cfc72805d873ca68b94720ed2cdbf40e634178d5101",
+    "infoUtf8": "oathbound-relay-catalog-v165628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59fcapIdCAPIDcapIdCAPIDcapIdCAPIDcapIdCAPID",
+    "derivedAesKeyHex": "efb383093032fea548358302bd0d5c9930368212d9172a70ba063822e5562c68",
+    "nonceBase64Url": "F9-tbBL3hyqDXTTh",
+    "additionalAuthenticatedDataCanonicalJson": "{\"algorithm\":\"ECDH-P256+HKDF-SHA256+AES-256-GCM\",\"ciphertextSizeBytes\":0,\"createdAt\":1700002100,\"expiresAt\":1700003000,\"pairEpoch\":3,\"pairIdHash\":\"65628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59f\",\"recipientDeviceKeyId\":\"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\",\"requestId\":\"capIdCAPIDcapIdCAPIDcapIdCAPIDcapIdCAPID\",\"schemaVersion\":1,\"senderDeviceKeyId\":\"f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5\",\"senderEphemeralPublicKey\":{\"crv\":\"P-256\",\"ext\":true,\"key_ops\":[],\"kty\":\"EC\",\"x\":\"RMSWdueu7KFvkDguI8jNM9bBlo68dkF9XsWXFvP5XHs\",\"y\":\"9yAYneLqXPN2muh-OXTiasvOXO5Q0QJW8Cj1pVoX38M\"},\"snapshotId\":7,\"type\":\"catalog-response\"}",
+    "plaintextUtf8": "{\"catalog\":\"sample snapshot payload\"}",
+    "ciphertextWithTagBase64Url": "okJEQbPNE7Hku4IfpPHbWl1fudTiXAbW-SpRB5tT0SwOUty0_fXICuwA8zbZZ8izO3d7AqQ",
+    "ciphertextDigestSha256Hex": "58b54fcf8c2d20ad1877f1196d00c8ea78c79ec7a988b1022313711aece26737",
+    "roundTripDecryptMatchesPlaintext": true
+  }
+}

@@ -135,20 +135,16 @@ public class AliasBook
 
     public List<OutfitAliasDefinition> Outfits { get; set; } = new();
 
-    /// Releases whichever slots the currently-locked outfit design claimed (SlotLockManager) - the Sub
-    /// never has to type or remember a key to release their own outfit.
-    public string UnlockOutfitAlias { get; set; } = "unlock";
-
     public List<GestureAliasDefinition> Gestures { get; set; } = new();
     public FollowAliasWords Follow { get; set; } = new();
 
     public List<MoodlesAliasDefinition> Moodles { get; set; } = new();
 
     /// Removes the Sub's currently active Moodle - the same "one dedicated clear word" shape
-    /// ClearTitleAlias/UnlockOutfitAlias already use.
+    /// ClearTitleAlias and the fixed wardrobe `unlock` action already use.
     public string ClearMoodleAlias { get; set; } = "clear-moodle";
 
-    /// Unlike Outfit's single "one design locked at a time" + shared Unlock alias, multiple restraint
+    /// Unlike Outfit's single "one design locked at a time" + fixed unlock action, multiple restraint
     /// devices can be active at once (collar/restraints), so each device's alias toggles that one device:
     /// applies it if not currently active, releases it (and only its own rules) if it is.
     public List<RestraintAliasDefinition> Restraints { get; set; } = new();

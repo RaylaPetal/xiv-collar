@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Text.Json.Serialization;
 using Dalamud.Configuration;
 using Dalamud.Game.ClientState.Keys;
 using Glamourer.Api.Enums;
+using Oathbound.Plugin.Relay;
 
 namespace Oathbound.Plugin.Config;
 
@@ -32,29 +34,130 @@ public class FavoritesButtonSettings
     public Vector2 Margin { get; set; } = new(16, 16);
 }
 
-/// collar/pairing's manual code handshake. `MyCode` is generated once per install and shared out of band
-/// (voice, DM, etc); `PeerCode` is the other side's code, entered the same way. Neither code is ever
-/// checked against ongoing trigger tells - they only gate the one-time pairing handshake message (see
-/// ChatCommandListener), which is what actually populates `PeerName`/`PeerWorld` from FFXIV's own
-/// server-verified sender field. `Paired` is the explicit accept action on that handshake - never
-/// auto-enabled by receiving a correctly-coded message alone.
+/// collar/pairing's relay-assisted pairing state. There is no manual code handshake any more - identity is
+/// bound by matching `PeerName`/`PeerWorld` (FFXIV's own server-verified sender field) against the verified
+/// sender of an invitation/acknowledgement tell, cross-checked against the relay's signed invitation and
+/// acceptance envelopes (see Relay/PairingService.cs). `Paired` is the explicit local activation that
+/// follows a fully-verified handshake - never auto-enabled by relay state alone.
 [Serializable]
 public class PairingState
 {
-    public string MyCode { get; set; } = CodeGenerator.Generate();
-    public string? PeerCode { get; set; }
+    /// Deterministic (SHA-256 of both devices' sorted key ids - see RelayCrypto/computePairIdHash on the
+    /// Worker), so this side can always recompute it locally; cached here so it doesn't need recomputing
+    /// on every relay call.
+    public string? PairIdHash { get; set; }
+
+    /// Server-assigned each time this pairIdHash is (re)activated after any prior revocation; every signed
+    /// envelope this side sends or accepts for this pair must declare this exact epoch, so a message from a
+    /// stale pairing can never affect a newer one.
+    public int PairEpoch { get; set; }
+
+    /// The peer's persistent device signing key fingerprint - required to verify a revocation or catalog
+    /// envelope's signature came from the actual paired peer, not just from someone claiming to be them.
+    public string? PeerDeviceKeyId { get; set; }
+
+    /// The peer's signing public key itself (not just its fingerprint above) - captured once from the
+    /// signed invitation/acceptance envelope at activation time, so this side can verify a later revocation
+    /// or catalog envelope's signature without depending on the relay being reachable at verification time.
+    public string? PeerPublicKeyX { get; set; }
+    public string? PeerPublicKeyY { get; set; }
+
     public string? PeerName { get; set; }
     public string? PeerWorld { get; set; }
     public bool Paired { get; set; }
 
-    /// collar/chat-transport: the peer's own trigger phrase, captured from their handshake message (see
-    /// ChatCommandListener.TryHandlePairingMessage) so composing a command to them never needs to manually
-    /// match their independently-configured trigger phrase. Null for a pairing formed before this field
-    /// existed, or with a peer whose handshake didn't declare one (an older client) - ChatComposer falls
-    /// back to this side's own TriggerPhrase in that case.
+    /// collar/chat-transport: the peer's own trigger phrase, captured from their invitation/acceptance
+    /// envelope so composing a command to them never needs to manually match their independently-configured
+    /// trigger phrase. Null for a peer whose envelope didn't declare one - ChatComposer falls back to this
+    /// side's own TriggerPhrase in that case.
     public string? PeerTriggerPhrase { get; set; }
 
+    /// The highest revocation sequence number this side has issued for this pairIdHash across every epoch
+    /// it has ever held (monotonic; never resets on re-pair) - the next outgoing revocation uses
+    /// OutgoingRevocationSequence + 1.
+    public int OutgoingRevocationSequence { get; set; }
+
+    /// The highest revocation sequence number this side has accepted for this pairIdHash - an incoming
+    /// revocation at or below this value is a stale replay and is ignored (collar/pairing "Old revocation is
+    /// replayed after re-pairing").
+    public int IncomingRevocationSequence { get; set; }
+
+    /// Unix seconds of the last relay revocation check for this pair (login, or the low-frequency bounded
+    /// poll) - drives the "no more often than every six hours, with jitter" schedule.
+    public long LastRevocationCheckUnixSeconds { get; set; }
+
+    /// collar/catalog-sync: Owner-side, unix seconds of the last *accepted* (uploaded, not merely
+    /// requested) catalog synchronization for this pair - mirrors the Worker's own per-pair cooldown so the
+    /// UI can show/enforce the four-hour wait without a round trip, though the server's decision is still
+    /// authoritative (protocol/constants.json catalogCooldownSeconds).
+    public long LastAcceptedCatalogSyncUnixSeconds { get; set; }
+
+    /// collar/catalog-sync: Owner-side, the highest snapshotId successfully imported for this pair epoch -
+    /// a retrieved snapshot at or below this value is stale or replayed and is ignored without touching the
+    /// existing imported set (collar/catalog-sync "Older snapshot arrives late").
+    public int LastImportedSnapshotId { get; set; }
+
+    /// collar/catalog-sync: Sub-side, this device's own monotonic counter for snapshots it has sent for
+    /// this pair - the next uploaded catalog-response envelope uses NextOutgoingSnapshotId + 1, satisfying
+    /// the Worker's own strictly-increasing-per-pair-epoch requirement.
+    public int NextOutgoingSnapshotId { get; set; }
+
+    /// UI-only delivery state for the most recent local unpair/panic notification. Never controls pairing.
+    public string? LastRevocationDeliveryStatus { get; set; }
+    public long LastRevocationDeliveryUpdatedAt { get; set; }
+
     public bool IsPaired => Paired && !string.IsNullOrWhiteSpace(PeerName) && !string.IsNullOrWhiteSpace(PeerWorld);
+}
+
+/// collar/pairing: this installation's persistent cryptographic device identity, generated once and
+/// reused for every relay-assisted pairing until an explicit reset. The private key is protected with the
+/// strongest locally-available OS mechanism (Windows DPAPI); under Wine this provides no real
+/// confidentiality guarantee beyond ordinary file permissions - see protocol/docs/threat-model.md's "Local
+/// key storage under Wine" - so Settings must disclose that limitation, never imply the key is "protected"
+/// unconditionally.
+[Serializable]
+public class DeviceIdentityState
+{
+    public string? PublicKeyX { get; set; }
+    public string? PublicKeyY { get; set; }
+
+    /// DPAPI-protected (or, if DPAPI throws, deliberately left null and the caller must regenerate) private
+    /// scalar. Never serialized into an export, tell, or log - see DeviceIdentityService.
+    public byte[]? ProtectedPrivateKey { get; set; }
+
+    /// Cached SHA-256 fingerprint of the public key JWK (see RelayCrypto.DeviceKeyId) - recomputed from
+    /// PublicKeyX/Y if absent, never trusted as authoritative on its own.
+    public string? DeviceKeyId { get; set; }
+
+    public bool HasIdentity => PublicKeyX is not null && PublicKeyY is not null && ProtectedPrivateKey is not null;
+}
+
+/// A best-effort revocation the relay HTTP call for is currently failing (offline, relay down, quota) -
+/// persisted so it survives a plugin restart and keeps retrying with bounded backoff until it either
+/// succeeds or visibly expires. Never restores pairing on its own; the local teardown that created this
+/// entry already happened synchronously before this was ever written (collar/pairing "Panic notifies the
+/// peer, best-effort").
+[Serializable]
+public class RevocationRetryEntry
+{
+    public string PairIdHash { get; set; } = "";
+    public int PairEpoch { get; set; }
+    public int Sequence { get; set; }
+    public string Reason { get; set; } = "";
+    public long CreatedAt { get; set; }
+    public long ExpiresAt { get; set; }
+    public string Signature { get; set; } = "";
+    public int Attempt { get; set; }
+    public long NextAttemptAtUnixSeconds { get; set; }
+}
+
+[Serializable]
+public class PendingRelayOperationState
+{
+    public string Kind { get; set; } = "";
+    public string OperationId { get; set; } = "";
+    public string? Target { get; set; }
+    public long ExpiresAt { get; set; }
 }
 
 /// collar/catalog-sync: where a `QuickCommand` came from - lets reset-imports (see CollarWindow's
@@ -83,6 +186,14 @@ public class QuickCommand
 
     /// collar/catalog-sync "Owner can reset every import to a blank slate": see ImportSource.
     public ImportSource Source { get; set; } = ImportSource.Manual;
+
+    /// collar/catalog-sync: which paired Sub's relay snapshot this entry came from (see
+    /// CatalogSyncService.ApplyRelaySnapshot) - null for a manually-imported-file entry, a
+    /// pre-existing legacy import (from before this field existed), or any Manual entry. Lets a
+    /// later relay snapshot from the *same* pair atomically replace only its own prior entries
+    /// without touching manual entries or another pair's imports, and lets a stale/legacy imported
+    /// entry be explicitly associated or reset (task 6.6) rather than silently swept.
+    public string? SourcePairIdHash { get; set; }
 
     /// collar/catalog-sync "Import skips commands that duplicate an existing quick command": the design
     /// name, gesture id, or (markup-stripped) Moodles status name this entry applies, set only for an
@@ -200,6 +311,12 @@ public class PermissionSet
     /// chat action send arbitrary text to any channel, so it needs its own opt-in, never implied by any
     /// other permission being on. See PluginConfig.CustomChatAcknowledged for the matching acknowledgement.
     public bool CustomChatMessages { get; set; }
+
+    /// collar/catalog-sync "Sub has not opted in": Sub-side, gates whether a valid catalog-request tell
+    /// from the paired Owner is honored at all. Defaults off for both existing and new installs (task 6.1)
+    /// - a denied request never builds or uploads anything, and the Owner learns only a permission status,
+    /// never catalog contents.
+    public bool RelayCatalogSync { get; set; }
 }
 
 /// collar/restraints: the fixed set of restriction rule kinds a restraint device may carry.
@@ -255,11 +372,14 @@ public class RestraintMapping
 [Serializable]
 public class PluginConfig : IPluginConfiguration
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
     public PluginRole Role { get; set; } = PluginRole.Sub;
 
     public PairingState Pairing { get; set; } = new();
+    public DeviceIdentityState DeviceIdentity { get; set; } = new();
+    public List<RevocationRetryEntry> RevocationOutbox { get; set; } = new();
+    public List<PendingRelayOperationState> PendingRelayOperations { get; set; } = new();
     public PermissionSet Permissions { get; set; } = new();
     public GestureMapping GestureMapping { get; set; } = new();
     public WardrobeMapping WardrobeMapping { get; set; } = new();
@@ -330,5 +450,12 @@ public class PluginConfig : IPluginConfiguration
     /// than silently riding on the existing one.
     public bool CustomChatAcknowledged { get; set; }
 
-    public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
+    [JsonIgnore]
+    public Action? SaveOverride { get; set; }
+
+    public void Save()
+    {
+        if (SaveOverride is not null) SaveOverride();
+        else Plugin.PluginInterface.SavePluginConfig(this);
+    }
 }

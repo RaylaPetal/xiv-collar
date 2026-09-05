@@ -1,9 +1,11 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Ipc;
+using Oathbound.Plugin.Relay;
 using Oathbound.Plugin.Safety;
 using Oathbound.Plugin.UI;
 using Dalamud.Game.ClientState.Keys;
@@ -73,7 +75,10 @@ public sealed class Plugin : IDalamudPlugin
     public ChatGagService ChatGagService { get; }
     public RestrictionRuleManager RestrictionRuleManager { get; }
 
-    public PairingCommand PairingCommand { get; }
+    public DeviceIdentityService DeviceIdentityService { get; }
+    public RelayClient RelayClient { get; }
+    public PairingService PairingService { get; }
+    public RevocationService RevocationService { get; }
     public TitleCommand TitleCommand { get; }
     public OutfitCommand OutfitCommand { get; }
     public GestureCommand GestureCommand { get; }
@@ -83,6 +88,7 @@ public sealed class Plugin : IDalamudPlugin
     public RestraintCommand RestraintCommand { get; }
     public CustomTriggerCommand CustomTriggerCommand { get; }
     public CatalogSyncService CatalogSyncService { get; }
+    public CatalogSyncRelayService CatalogSyncRelayService { get; }
     public ChatComposer ChatComposer { get; }
     public ChatSender ChatSender { get; }
     public ChatCommandListener ChatCommandListener { get; }
@@ -90,6 +96,16 @@ public sealed class Plugin : IDalamudPlugin
     public PanicHandler PanicHandler { get; }
 
     private bool panicHotkeyWasPressed;
+    private DateTime nextRevocationOutboxRetryUtc = DateTime.MinValue;
+    private DateTime nextRevocationCheckUtc = DateTime.MinValue;
+
+    /// collar/relay-service "requests stop on logout/disposal": recurring background relay work (the
+    /// outbox retry and the missed-revocation check) is cancelled and restarted on every logout, and
+    /// cancelled for good in Dispose(). One-shot user-triggered relay actions (Send Invitation, Accept,
+    /// panic's revocation publish) are intentionally not tied to this - they're already bounded by
+    /// RelayClient's own HTTP timeout, and cancelling a button click the user just made because they
+    /// happened to log out mid-request would be a worse experience than just letting it time out normally.
+    private CancellationTokenSource relayBackgroundWorkCts = new();
 
     public Plugin()
     {
@@ -117,7 +133,11 @@ public sealed class Plugin : IDalamudPlugin
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.GagChat, ChatGagService);
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.FullBodyCuffed, new MovementLockEnforcer(MovementLockService, "RestraintsFullBody"));
 
-        PairingCommand = new PairingCommand(Configuration);
+        DeviceIdentityService = new DeviceIdentityService(Configuration);
+        DeviceIdentityService.EnsureIdentity();
+        RelayClient = new RelayClient(Configuration, DeviceIdentityService);
+        RevocationService = new RevocationService(Configuration, RelayClient, DeviceIdentityService);
+
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
@@ -129,9 +149,11 @@ public sealed class Plugin : IDalamudPlugin
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
-        ChatCommandListener = new ChatCommandListener(Configuration, PairingCommand, ChatComposer, ChatSender, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, CustomTriggerCommand);
+        PairingService = new PairingService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CollarCommand, RevocationService);
+        CatalogSyncRelayService = new CatalogSyncRelayService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CatalogSyncService);
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, CustomTriggerCommand);
 
-        PanicHandler = new PanicHandler(PairingCommand, Configuration, ChatComposer, ChatSender, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState, CollarCommand);
+        PanicHandler = new PanicHandler(PairingService, RevocationService, Configuration, ChatComposer, ChatSender, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState, CollarCommand);
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
@@ -179,13 +201,45 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
 
         Framework.Update += OnFrameworkUpdate;
+        ClientState.Login += OnLogin;
+        ClientState.Logout += OnLogout;
+
+        // collar/pairing "check the relay at login...": one check at startup, independent of the
+        // low-frequency periodic schedule below (which is seeded past its own interval so it doesn't
+        // immediately double up on this one).
+        nextRevocationCheckUtc = DateTime.UtcNow.AddHours(6);
+        FireAndForget(RevocationService.CheckForMissedRevocationAsync(relayBackgroundWorkCts.Token));
 
         Log.Information("Oathbound loaded.");
+    }
+
+    /// collar/pairing "check the relay at login": a fresh login is exactly the "at login" moment the spec
+    /// means, distinct from the plugin merely loading (which can happen mid-session on a reload).
+    private void OnLogin()
+    {
+        nextRevocationCheckUtc = DateTime.UtcNow.AddHours(6);
+        FireAndForget(RevocationService.CheckForMissedRevocationAsync(relayBackgroundWorkCts.Token));
+    }
+
+    /// collar/relay-service "requests stop on logout": cancels any in-flight recurring relay background
+    /// work and starts a fresh token source so work resumed after the next login isn't pre-cancelled.
+    private void OnLogout(int type, int code)
+    {
+        RelayClient.CancelPendingRequests();
+        relayBackgroundWorkCts.Cancel();
+        relayBackgroundWorkCts.Dispose();
+        relayBackgroundWorkCts = new CancellationTokenSource();
     }
 
     public void Dispose()
     {
         Framework.Update -= OnFrameworkUpdate;
+        ClientState.Login -= OnLogin;
+        ClientState.Logout -= OnLogout;
+        relayBackgroundWorkCts.Cancel();
+        relayBackgroundWorkCts.Dispose();
+
+        RelayClient.Dispose();
 
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.Draw -= FileDialogManager.Draw;
@@ -268,12 +322,34 @@ public sealed class Plugin : IDalamudPlugin
         FollowCommand.OnFrameworkUpdate();
         WalkOnlyService.OnFrameworkUpdate();
         CollarCommand.OnFrameworkUpdate();
+
+        var utcNow = DateTime.UtcNow;
+        if (utcNow >= nextRevocationOutboxRetryUtc)
+        {
+            nextRevocationOutboxRetryUtc = utcNow.AddSeconds(30);
+            FireAndForget(RevocationService.RetryOutboxAsync(relayBackgroundWorkCts.Token));
+        }
+        // collar/pairing "check... on a low-frequency bounded schedule": no more often than every six
+        // hours, with jitter so many clients don't all poll on the same clock edge.
+        if (utcNow >= nextRevocationCheckUtc)
+        {
+            nextRevocationCheckUtc = utcNow.AddHours(6).AddSeconds(Random.Shared.Next(0, 1800));
+            FireAndForget(RevocationService.CheckForMissedRevocationAsync(relayBackgroundWorkCts.Token));
+        }
     }
 
     private void MigrateConfiguration()
     {
         var follow = Configuration.Aliases.Follow;
         var changed = false;
+        if (Configuration.Version < 2)
+        {
+            Configuration.Version = 2;
+            changed = true;
+        }
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (Configuration.PendingRelayOperations.RemoveAll(o => o.ExpiresAt <= now) > 0)
+            changed = true;
         if (string.Equals(follow.EngageAlias, "leash-on", StringComparison.Ordinal) &&
             string.Equals(follow.ReleaseAlias, "leash-off", StringComparison.Ordinal))
         {

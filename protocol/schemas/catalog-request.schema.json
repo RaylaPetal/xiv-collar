@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/catalog-request.schema.json",
+  "title": "CatalogRequest",
+  "description": "One-use Owner-initiated request for a fresh catalog snapshot; the Worker enforces at most one accepted synchronization per pair per four hours.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "pairIdHash", "pairEpoch", "requestId",
+    "requesterDeviceKeyId", "ownerEphemeralPublicKey", "createdAt",
+    "expiresAt", "signature"
+  ],
+  "properties": {
+    "type": { "const": "catalog-request" },
+    "schemaVersion": { "const": 1 },
+    "pairIdHash": { "$ref": "common.schema.json#/$defs/pairIdHash" },
+    "pairEpoch": { "$ref": "common.schema.json#/$defs/pairEpoch" },
+    "requestId": { "$ref": "common.schema.json#/$defs/capabilityId" },
+    "requesterDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "ownerEphemeralPublicKey": {
+      "$ref": "common.schema.json#/$defs/ecPublicKeyJwk",
+      "description": "Ephemeral ECDH public key the Sub encrypts the snapshot to; never reused across requests."
+    },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "expiresAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "signature": { "$ref": "common.schema.json#/$defs/ecdsaSignature" }
+  }
+}

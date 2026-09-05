@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/envelope.schema.json",
+  "title": "RelayEnvelope",
+  "description": "Discriminated union of every envelope type the relay accepts. This is the complete contract surface: there is no branch for restraint, gesture, outfit, title, Moodle, follow, collar, custom-trigger, arbitrary chat, or any other gameplay command, and no branch matches an unrecognized `type`. A payload that does not conform to exactly one of these schemas (including any unknown `type` or extra property, since every branch sets `additionalProperties: false`) fails closed.",
+  "oneOf": [
+    { "$ref": "invitation.schema.json" },
+    { "$ref": "acceptance.schema.json" },
+    { "$ref": "pair.schema.json" },
+    { "$ref": "revocation.schema.json" },
+    { "$ref": "catalog-request.schema.json" },
+    { "$ref": "catalog-response.schema.json" },
+    { "$ref": "error.schema.json" },
+    { "$ref": "retry.schema.json" }
+  ]
+}

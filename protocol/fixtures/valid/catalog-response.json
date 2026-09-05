@@ -1,0 +1,23 @@
+{
+  "type": "catalog-response",
+  "schemaVersion": 1,
+  "pairIdHash": "65628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59f",
+  "pairEpoch": 1,
+  "requestId": "capIdCAPIDcapIdCAPIDcapIdCAPIDcapIdCAPID",
+  "snapshotId": 7,
+  "senderDeviceKeyId": "f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5",
+  "recipientDeviceKeyId": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  "createdAt": 1700002100,
+  "expiresAt": 1700003000,
+  "algorithm": "ECDH-P256+HKDF-SHA256+AES-256-GCM",
+  "ciphertextDigest": "08bb0b70c9effe7db954630af22ece95b3750c84c9ff7432bf516ed51afaf87d",
+  "ciphertextSizeBytes": 8192,
+  "nonce": "lzXl8DJVe6_tSnOt",
+  "senderEphemeralPublicKey": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "QRSTUVWXYZabcdefghijklmnopQRSTUVWXYZabcdefg",
+    "y": "poNMLKJIHGFEDCBAzyxwvutsrqponMLKJIHGFEDCBAz"
+  },
+  "signature": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-ABCDEFGHIJKLMNOPQRSTUV"
+}

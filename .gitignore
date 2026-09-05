@@ -2,6 +2,10 @@
 obj/
 bin/
 *.user
+node_modules/
+.wrangler/
+worker/dist/
+.dev.vars
 
 # Claude Code tooling (skills, commands, local settings) - not part of the plugin source
 .claude/

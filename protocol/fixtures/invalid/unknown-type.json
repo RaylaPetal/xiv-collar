@@ -1,0 +1,6 @@
+{
+  "type": "presence",
+  "schemaVersion": 1,
+  "pairIdHash": "65628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59f",
+  "note": "There is no 'presence' branch in envelope.schema.json; this must fail validation against every schema in schemas/ (oneOf has no matching branch)."
+}

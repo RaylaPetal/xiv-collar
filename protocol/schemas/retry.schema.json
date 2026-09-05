@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/retry.schema.json",
+  "title": "Retry",
+  "description": "Client-persisted revocation retry-outbox record. Contains no command or catalog content, only what is needed to re-attempt best-effort publication of a revocation already decided locally.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "pairIdHash", "pairEpoch", "sequence",
+    "revocation", "attempt", "nextAttemptAt", "createdAt", "expiresAt"
+  ],
+  "properties": {
+    "type": { "const": "retry" },
+    "schemaVersion": { "const": 1 },
+    "pairIdHash": { "$ref": "common.schema.json#/$defs/pairIdHash" },
+    "pairEpoch": { "$ref": "common.schema.json#/$defs/pairEpoch" },
+    "sequence": { "$ref": "common.schema.json#/$defs/monotonicSequence" },
+    "revocation": {
+      "$ref": "revocation.schema.json",
+      "description": "The already-signed revocation envelope being retried verbatim."
+    },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "nextAttemptAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "expiresAt": {
+      "$ref": "common.schema.json#/$defs/unixSeconds",
+      "description": "Retry stops and surfaces a visible warning at expiry; pairing is never restored by this record."
+    }
+  }
+}

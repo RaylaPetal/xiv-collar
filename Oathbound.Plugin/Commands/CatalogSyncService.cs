@@ -44,6 +44,11 @@ public readonly record struct CatalogImportResult(int Title, int Wardrobe, int G
     public int TotalAdded => Title + Wardrobe + Gesture + Moodles + Restraints + Bundles;
 }
 
+/// collar/catalog-sync: the outcome of a single relay snapshot's atomic apply (see
+/// CatalogSyncService.ApplyRelaySnapshot) - Added/Updated/Removed span every category together, since the
+/// Owner-facing status only ever needs to say "your Sub's catalog changed," not break it down by category.
+public readonly record struct CatalogSnapshotResult(int Added, int Updated, int Removed, int Duplicates, string? Error);
+
 /// collar/catalog-sync: composes each category's existing export output into one sectioned text file, and
 /// splits an imported file back into each category's quick-command list, using the same matching/dedup
 /// behavior each category's own individual import already had (moved here from CollarWindow so the
@@ -89,6 +94,193 @@ public sealed class CatalogSyncService
         this.gesture = gesture;
         this.moodles = moodles;
         this.restraints = restraints;
+    }
+
+    /// collar/catalog-sync "Automatic import replaces one peer snapshot atomically". Unlike ParseImport
+    /// (manual file import, purely additive/dedup, never removes anything), a relay snapshot from a given
+    /// pair is a *replacement* of that pair's own previously-imported entries: anything from this pair not
+    /// present in the new snapshot is removed, anything present is added or updated, and a stable-identity
+    /// match (Target, or Label when a category has no Target) carries forward IsFavorite and
+    /// presentation-only fields from the entry it replaces. Manual entries and other pairs' imports are
+    /// never touched. Nothing is mutated until every category has been parsed successfully and reconciled
+    /// in memory; config.Save() is called at most once, at the very end - a parse failure partway through
+    /// leaves the prior snapshot completely intact (task 6.4/6.5).
+    public CatalogSnapshotResult ApplyRelaySnapshot(string exportText, string sourcePairIdHash)
+    {
+        if (string.IsNullOrWhiteSpace(exportText))
+            return new CatalogSnapshotResult(0, 0, 0, 0, "Snapshot is empty - nothing imported.");
+
+        var sections = SplitSections(exportText);
+        if (sections.Count == 0)
+            return new CatalogSnapshotResult(0, 0, 0, 0, "Snapshot doesn't look like a Collar export (no recognized sections) - nothing imported.");
+        if (!ValidateRelaySnapshot(sections, out var validationError))
+            return new CatalogSnapshotResult(0, 0, 0, 0, validationError);
+
+        var quick = config.QuickCommands;
+
+        // Cross-source duplicate prevention still applies (a Sub's alias can't collide with a manual entry
+        // or another pair's import), but this pair's *own* prior entries are excluded from that check -
+        // they're about to be replaced, not compared against their own successors.
+        var usedCommandsExcludingThisPair = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var cmd in quick.Titles.Concat(quick.Outfits).Concat(quick.Gestures).Concat(quick.Moodles).Concat(quick.Restraints).Concat(quick.Aliases))
+            if (cmd.SourcePairIdHash != sourcePairIdHash)
+                usedCommandsExcludingThisPair.Add(cmd.Command);
+
+        var duplicates = 0;
+
+        var newTitles = new List<QuickCommand>();
+        if (sections.TryGetValue(TitleAliasesHeader, out var ta))
+            ImportAliasLines(ta, newTitles, usedCommandsExcludingThisPair, ref duplicates);
+
+        var newOutfits = new List<QuickCommand>();
+        if (sections.TryGetValue(WardrobeHeader, out var w))
+            ImportPlainNames(w, newOutfits, name => $"outfit lock {name}", usedCommandsExcludingThisPair, name => name, ref duplicates);
+        if (sections.TryGetValue(WardrobeAliasesHeader, out var wa))
+            ImportAliasLines(wa, newOutfits, usedCommandsExcludingThisPair, ref duplicates);
+
+        var newGestures = new List<QuickCommand>();
+        var stagedGestureCatalog = new Dictionary<string, GestureExportEntry>(config.GestureMapping.ImportedPeerCatalog);
+        var gestureCatalogRefreshed = sections.TryGetValue(GestureHeader, out var g);
+        if (gestureCatalogRefreshed)
+        {
+            stagedGestureCatalog.Clear();
+            ImportGestureLines(g!, newGestures, usedCommandsExcludingThisPair, ref duplicates, stagedGestureCatalog);
+        }
+        if (sections.TryGetValue(GestureAliasesHeader, out var ga))
+            ImportAliasLines(ga, newGestures, usedCommandsExcludingThisPair, ref duplicates);
+
+        var newMoodles = new List<QuickCommand>();
+        if (sections.TryGetValue(MoodlesHeader, out var m))
+            ImportPlainNames(m, newMoodles, name => $"moodle apply {CommandSelector.Quote(CommandSelector.MoodleSelector(name, m))}", usedCommandsExcludingThisPair, MoodlesTextFormat.StripMarkup, ref duplicates);
+        if (sections.TryGetValue(MoodlesAliasesHeader, out var ma))
+            ImportAliasLines(ma, newMoodles, usedCommandsExcludingThisPair, ref duplicates);
+
+        var newRestraints = new List<QuickCommand>();
+        if (sections.TryGetValue(RestraintsHeader, out var r))
+            ImportPlainNames(r, newRestraints, name => $"restraint lock {name}", usedCommandsExcludingThisPair, targetSelector: null, ref duplicates);
+        if (sections.TryGetValue(RestraintsAliasesHeader, out var ra))
+            ImportAliasLines(ra, newRestraints, usedCommandsExcludingThisPair, ref duplicates);
+
+        var newBundles = new List<QuickCommand>();
+        if (sections.TryGetValue(BundlesHeader, out var bundles))
+            ImportAliasLines(bundles, newBundles, usedCommandsExcludingThisPair, ref duplicates);
+
+        foreach (var entry in newTitles.Concat(newOutfits).Concat(newGestures).Concat(newMoodles).Concat(newRestraints).Concat(newBundles))
+            entry.SourcePairIdHash = sourcePairIdHash;
+
+        var added = 0;
+        var updated = 0;
+        var removed = 0;
+
+        var oldTitles = quick.Titles; var oldOutfits = quick.Outfits; var oldGestures = quick.Gestures;
+        var oldMoodles = quick.Moodles; var oldRestraints = quick.Restraints; var oldAliases = quick.Aliases;
+        var oldGestureCatalog = config.GestureMapping.ImportedPeerCatalog;
+        quick.Titles = ReconcileCategory(oldTitles, newTitles, sourcePairIdHash, ref added, ref updated, ref removed);
+        quick.Outfits = ReconcileCategory(oldOutfits, newOutfits, sourcePairIdHash, ref added, ref updated, ref removed);
+        quick.Gestures = ReconcileCategory(oldGestures, newGestures, sourcePairIdHash, ref added, ref updated, ref removed, carryForwardExtra: CarryForwardGestureFields);
+        quick.Moodles = ReconcileCategory(oldMoodles, newMoodles, sourcePairIdHash, ref added, ref updated, ref removed);
+        quick.Restraints = ReconcileCategory(oldRestraints, newRestraints, sourcePairIdHash, ref added, ref updated, ref removed, carryForwardExtra: CarryForwardRestraintRules);
+        quick.Aliases = ReconcileCategory(oldAliases, newBundles, sourcePairIdHash, ref added, ref updated, ref removed);
+        if (gestureCatalogRefreshed)
+            config.GestureMapping.ImportedPeerCatalog = stagedGestureCatalog;
+
+        try { config.Save(); }
+        catch (Exception ex)
+        {
+            quick.Titles = oldTitles; quick.Outfits = oldOutfits; quick.Gestures = oldGestures;
+            quick.Moodles = oldMoodles; quick.Restraints = oldRestraints; quick.Aliases = oldAliases;
+            config.GestureMapping.ImportedPeerCatalog = oldGestureCatalog;
+            return new CatalogSnapshotResult(0, 0, 0, duplicates, $"Could not save the imported snapshot: {ex.Message}");
+        }
+        return new CatalogSnapshotResult(added, updated, removed, duplicates, null);
+    }
+
+    private static void CarryForwardGestureFields(QuickCommand from, QuickCommand to)
+    {
+        to.GestureModName = from.GestureModName;
+        to.GestureGroupName = from.GestureGroupName;
+        to.GestureGroupOrder = from.GestureGroupOrder;
+        to.GestureOptionOrder = from.GestureOptionOrder;
+    }
+
+    private static void CarryForwardRestraintRules(QuickCommand from, QuickCommand to) => to.RestraintRules = from.RestraintRules;
+
+    /// Matches by stable identity (Target when the category has one, else Label) against the entries this
+    /// pair previously contributed to `existing`, so a matched entry keeps its favorite flag and any
+    /// presentation-only fields the Owner can't get back from the Sub's export alone (restraint rules,
+    /// gesture grouping). Everything from another source (manual, another pair) passes through untouched;
+    /// everything previously from this pair that has no match in `incoming` is dropped (removed).
+    private static List<QuickCommand> ReconcileCategory(
+        List<QuickCommand> existing,
+        List<QuickCommand> incoming,
+        string sourcePairIdHash,
+        ref int added,
+        ref int updated,
+        ref int removed,
+        Action<QuickCommand, QuickCommand>? carryForwardExtra = null)
+    {
+        var previousFromThisPair = existing.Where(c => c.SourcePairIdHash == sourcePairIdHash).ToList();
+        var result = existing.Where(c => c.SourcePairIdHash != sourcePairIdHash).ToList();
+
+        foreach (var incomingEntry in incoming)
+        {
+            var match = previousFromThisPair.FirstOrDefault(p =>
+                incomingEntry.Target is not null && p.Target is not null
+                    ? string.Equals(p.Target, incomingEntry.Target, StringComparison.OrdinalIgnoreCase)
+                    : string.Equals(p.Label, incomingEntry.Label, StringComparison.OrdinalIgnoreCase));
+
+            if (match is not null)
+            {
+                incomingEntry.IsFavorite = match.IsFavorite;
+                carryForwardExtra?.Invoke(match, incomingEntry);
+                updated++;
+            }
+            else
+            {
+                added++;
+            }
+            result.Add(incomingEntry);
+        }
+
+        removed += previousFromThisPair.Count(p => !incoming.Any(i =>
+            i.Target is not null && p.Target is not null
+                ? string.Equals(p.Target, i.Target, StringComparison.OrdinalIgnoreCase)
+                : string.Equals(p.Label, i.Label, StringComparison.OrdinalIgnoreCase)));
+
+        result.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+        return result;
+    }
+
+    /// collar/catalog-sync "explicit legacy-import associate/reset path" (task 6.6): a legacy imported
+    /// entry (SourcePairIdHash null, Source Imported - i.e. from before relay sync existed, or from a
+    /// manual file import) is never touched by ApplyRelaySnapshot's reconciliation. Associating it with a
+    /// pair lets the *next* relay snapshot from that pair reconcile it normally (update or remove);
+    /// resetting drops every such legacy-imported entry outright. Both are explicit, Owner-initiated
+    /// actions - never automatic, so adopting relay sync can never silently delete unscoped legacy imports.
+    public int AssociateLegacyImportsWithPair(string sourcePairIdHash)
+    {
+        var quick = config.QuickCommands;
+        var count = 0;
+        foreach (var list in new[] { quick.Titles, quick.Outfits, quick.Gestures, quick.Moodles, quick.Restraints })
+        {
+            foreach (var entry in list.Where(c => c.SourcePairIdHash is null && c.Source == ImportSource.Imported))
+            {
+                entry.SourcePairIdHash = sourcePairIdHash;
+                count++;
+            }
+        }
+        if (count > 0) config.Save();
+        return count;
+    }
+
+    public int ResetLegacyImports()
+    {
+        var quick = config.QuickCommands;
+        var count = 0;
+        foreach (var list in new List<List<QuickCommand>> { quick.Titles, quick.Outfits, quick.Gestures, quick.Moodles, quick.Restraints })
+            count += list.RemoveAll(c => c.SourcePairIdHash is null && c.Source == ImportSource.Imported);
+        if (count > 0) config.Save();
+        return count;
     }
 
     /// Every category's header is always emitted, even with zero body lines - an empty category is
@@ -212,6 +404,13 @@ public sealed class CatalogSyncService
             return new CatalogImportResult(0, 0, 0, 0, 0, 0, 0, "File doesn't look like a Collar export (no recognized sections) - nothing imported.");
 
         var quick = config.QuickCommands;
+        var stagedTitles = CloneQuickList(quick.Titles);
+        var stagedOutfits = CloneQuickList(quick.Outfits);
+        var stagedGestures = CloneQuickList(quick.Gestures);
+        var stagedMoodles = CloneQuickList(quick.Moodles);
+        var stagedRestraints = CloneQuickList(quick.Restraints);
+        var stagedAliases = CloneQuickList(quick.Aliases);
+        var stagedGestureCatalog = new Dictionary<string, GestureExportEntry>(config.GestureMapping.ImportedPeerCatalog);
 
         // collar/catalog-sync "Import skips commands that duplicate an existing quick command": seeded
         // once, before any category import runs, from every command already saved anywhere - not just the
@@ -225,60 +424,83 @@ public sealed class CatalogSyncService
         var duplicates = 0;
 
         var titleAdded = sections.TryGetValue(TitleAliasesHeader, out var ta)
-            ? ImportAliasLines(ta, quick.Titles, usedCommands, ref duplicates)
+            ? ImportAliasLines(ta, stagedTitles, usedCommands, ref duplicates)
             : 0;
 
         var wardrobeAdded = sections.TryGetValue(WardrobeHeader, out var w)
-            ? ImportPlainNames(w, quick.Outfits, name => $"outfit lock {name}", usedCommands, name => name, ref duplicates)
+            ? ImportPlainNames(w, stagedOutfits, name => $"outfit lock {name}", usedCommands, name => name, ref duplicates)
             : 0;
         wardrobeAdded += sections.TryGetValue(WardrobeAliasesHeader, out var wa)
-            ? ImportAliasLines(wa, quick.Outfits, usedCommands, ref duplicates)
+            ? ImportAliasLines(wa, stagedOutfits, usedCommands, ref duplicates)
             : 0;
 
         var gestureCatalogRefreshed = sections.TryGetValue(GestureHeader, out var g);
         if (gestureCatalogRefreshed)
-            config.GestureMapping.ImportedPeerCatalog.Clear();
+            stagedGestureCatalog.Clear();
         var gestureAdded = gestureCatalogRefreshed
-            ? ImportGestureLines(g!, quick.Gestures, usedCommands, ref duplicates)
+            ? ImportGestureLines(g!, stagedGestures, usedCommands, ref duplicates, stagedGestureCatalog)
             : 0;
         gestureAdded += sections.TryGetValue(GestureAliasesHeader, out var ga)
-            ? ImportAliasLines(ga, quick.Gestures, usedCommands, ref duplicates)
+            ? ImportAliasLines(ga, stagedGestures, usedCommands, ref duplicates)
             : 0;
         if (gestureCatalogRefreshed)
         {
-            foreach (var cmd in quick.Gestures.Where(c => c.Target is not null && config.GestureMapping.ImportedPeerCatalog.ContainsKey(c.Target)))
+            foreach (var cmd in stagedGestures.Where(c => c.Target is not null && stagedGestureCatalog.ContainsKey(c.Target)))
             {
-                var entry = config.GestureMapping.ImportedPeerCatalog[cmd.Target!];
-                cmd.Command = $"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, config.GestureMapping.ImportedPeerCatalog.Values))}";
+                var entry = stagedGestureCatalog[cmd.Target!];
+                cmd.Command = $"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, stagedGestureCatalog.Values))}";
             }
         }
 
         var moodlesAdded = sections.TryGetValue(MoodlesHeader, out var m)
-            ? ImportPlainNames(m, quick.Moodles, name => $"moodle apply {CommandSelector.Quote(CommandSelector.MoodleSelector(name, m))}", usedCommands, MoodlesTextFormat.StripMarkup, ref duplicates)
+            ? ImportPlainNames(m, stagedMoodles, name => $"moodle apply {CommandSelector.Quote(CommandSelector.MoodleSelector(name, m))}", usedCommands, MoodlesTextFormat.StripMarkup, ref duplicates)
             : 0;
         moodlesAdded += sections.TryGetValue(MoodlesAliasesHeader, out var ma)
-            ? ImportAliasLines(ma, quick.Moodles, usedCommands, ref duplicates)
+            ? ImportAliasLines(ma, stagedMoodles, usedCommands, ref duplicates)
             : 0;
 
         var restraintsAdded = sections.TryGetValue(RestraintsHeader, out var r)
-            ? ImportPlainNames(r, quick.Restraints, name => $"restraint lock {name}", usedCommands, targetSelector: null, ref duplicates)
+            ? ImportPlainNames(r, stagedRestraints, name => $"restraint lock {name}", usedCommands, targetSelector: null, ref duplicates)
             : 0;
         restraintsAdded += sections.TryGetValue(RestraintsAliasesHeader, out var ra)
-            ? ImportAliasLines(ra, quick.Restraints, usedCommands, ref duplicates)
+            ? ImportAliasLines(ra, stagedRestraints, usedCommands, ref duplicates)
             : 0;
 
         // Also the landing spot for an older export's flat "## ALIASES" section, which mixed single- and
         // multi-action entries together - those all land here unchanged, never split out retroactively
         // into a single category's list (tasks.md 2.5's backward-compatibility requirement).
         var bundlesAdded = sections.TryGetValue(BundlesHeader, out var b)
-            ? ImportAliasLines(b, quick.Aliases, usedCommands, ref duplicates)
+            ? ImportAliasLines(b, stagedAliases, usedCommands, ref duplicates)
             : 0;
 
         if (titleAdded + wardrobeAdded + gestureAdded + moodlesAdded + restraintsAdded + bundlesAdded > 0 || gestureCatalogRefreshed)
-            config.Save();
+        {
+            var oldTitles = quick.Titles; var oldOutfits = quick.Outfits; var oldGestures = quick.Gestures;
+            var oldMoodles = quick.Moodles; var oldRestraints = quick.Restraints; var oldAliases = quick.Aliases;
+            var oldGestureCatalog = config.GestureMapping.ImportedPeerCatalog;
+            quick.Titles = stagedTitles;
+            quick.Outfits = stagedOutfits;
+            quick.Gestures = stagedGestures;
+            quick.Moodles = stagedMoodles;
+            quick.Restraints = stagedRestraints;
+            quick.Aliases = stagedAliases;
+            if (gestureCatalogRefreshed)
+                config.GestureMapping.ImportedPeerCatalog = stagedGestureCatalog;
+            try { config.Save(); }
+            catch (Exception ex)
+            {
+                quick.Titles = oldTitles; quick.Outfits = oldOutfits; quick.Gestures = oldGestures;
+                quick.Moodles = oldMoodles; quick.Restraints = oldRestraints; quick.Aliases = oldAliases;
+                config.GestureMapping.ImportedPeerCatalog = oldGestureCatalog;
+                return new CatalogImportResult(0, 0, 0, 0, 0, 0, duplicates, $"Import could not be saved: {ex.Message}");
+            }
+        }
 
         return new CatalogImportResult(titleAdded, wardrobeAdded, gestureAdded, moodlesAdded, restraintsAdded, bundlesAdded, duplicates, null);
     }
+
+    private static List<QuickCommand> CloneQuickList(List<QuickCommand> source) =>
+        JsonSerializer.Deserialize<List<QuickCommand>>(JsonSerializer.Serialize(source)) ?? new List<QuickCommand>();
 
     /// Splits on the ten known "## " headers; a line before the first recognized header, or under an
     /// unrecognized header, is ignored rather than treated as an error - tolerant of a hand-edited or
@@ -304,6 +526,49 @@ public sealed class CatalogSyncService
         }
 
         return result;
+    }
+
+    /// Relay snapshots are produced by this version's BuildExport, so unlike tolerant manual imports they
+    /// must be complete and every structured line must parse. This prevents a truncated/corrupt response
+    /// from being interpreted as intentional category deletion during replacement reconciliation.
+    private static bool ValidateRelaySnapshot(Dictionary<string, List<string>> sections, out string? error)
+    {
+        foreach (var header in KnownHeaders)
+        {
+            if (!sections.ContainsKey(header))
+            {
+                error = $"Snapshot was incomplete (missing {header}) - existing imports were left unchanged.";
+                return false;
+            }
+        }
+
+        foreach (var header in new[] { TitleAliasesHeader, WardrobeAliasesHeader, GestureAliasesHeader, MoodlesAliasesHeader, RestraintsAliasesHeader, BundlesHeader })
+        {
+            if (sections[header].Any(line => !TryParseAliasEntry(line, out _)))
+            {
+                error = $"Snapshot contained a malformed entry in {header} - existing imports were left unchanged.";
+                return false;
+            }
+        }
+
+        if (sections[GestureHeader].Any(line => !GestureCommand.TryParseExport(line, out var entry) || entry is null))
+        {
+            error = "Snapshot contained a malformed gesture entry - existing imports were left unchanged.";
+            return false;
+        }
+
+        foreach (var header in new[] { WardrobeHeader, MoodlesHeader, RestraintsHeader })
+        {
+            if (sections[header].Any(line => line.Length > 80 || line.IndexOfAny(['{', '}', ';', '<', '>', '\t']) >= 0 ||
+                line.Contains("http://", StringComparison.OrdinalIgnoreCase) || line.Contains("https://", StringComparison.OrdinalIgnoreCase)))
+            {
+                error = $"Snapshot contained an unsafe entry in {header} - existing imports were left unchanged.";
+                return false;
+            }
+        }
+
+        error = null;
+        return true;
     }
 
     /// Same matching/dedup and line-sanity guards `ImportQuickCommands` used to apply per-button - skips
@@ -379,17 +644,23 @@ public sealed class CatalogSyncService
         return added;
     }
 
-    private int ImportGestureLines(IEnumerable<string> lines, List<QuickCommand> target, HashSet<string> usedCommands, ref int duplicates)
+    private int ImportGestureLines(IEnumerable<string> lines, List<QuickCommand> target, HashSet<string> usedCommands, ref int duplicates, Dictionary<string, GestureExportEntry>? importedCatalog = null)
     {
+        importedCatalog ??= config.GestureMapping.ImportedPeerCatalog;
         var added = 0;
         foreach (var line in lines)
         {
             if (!GestureCommand.TryParseExport(line, out var entry) || entry is null)
                 continue;
 
-            config.GestureMapping.ImportedPeerCatalog[entry.Id] = entry;
+            importedCatalog[entry.Id] = entry;
 
-            var command = $"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, config.GestureMapping.ImportedPeerCatalog.Values))}";
+            // Triggerless entries are exported for restraint enable-only selection, but are not ordinary
+            // Gesture commands: without a pose/emote there is nothing for the Gesture category to play.
+            if (entry.Trigger is null)
+                continue;
+
+            var command = $"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, importedCatalog.Values))}";
             var isDuplicateTarget = target.Any(existing => existing.Target is not null && string.Equals(existing.Target, entry.Id, StringComparison.OrdinalIgnoreCase));
             if (isDuplicateTarget || usedCommands.Contains(command))
             {

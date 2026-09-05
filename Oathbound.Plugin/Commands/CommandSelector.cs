@@ -9,6 +9,8 @@ namespace Oathbound.Plugin.Commands;
 
 public static class CommandSelector
 {
+    public enum ResolutionStatus { Success, Missing, Ambiguous, Malformed }
+    public readonly record struct GestureResolution(ResolutionStatus Status, GestureCatalogEntry? Entry);
     public const int MaxCommandLength = 400;
     public static string Quote(string value) => $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
 
@@ -52,17 +54,39 @@ public static class CommandSelector
     }
 
     public static GestureCatalogEntry? ResolveGesture(IEnumerable<GestureCatalogEntry> entries, string selector)
+        => ResolveGestureDetailed(entries, selector).Entry;
+
+    public static GestureResolution ResolveGestureDetailed(IEnumerable<GestureCatalogEntry> entries, string input, bool requireTrigger = true)
     {
-        var all = entries.Where(e => e.Trigger is not null).ToList();
+        if (!TryRead(input, out var selector, out var remainder) || remainder.Length > 0)
+            return new GestureResolution(ResolutionStatus.Malformed, null);
+
+        var all = entries.Where(e => !requireTrigger || e.Trigger is not null).ToList();
+        var exactIds = all.Where(e => string.Equals(e.Id, selector, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+        if (exactIds.Count == 1)
+            return new GestureResolution(ResolutionStatus.Success, exactIds[0]);
+        if (exactIds.Count > 1)
+            return new GestureResolution(ResolutionStatus.Ambiguous, null);
+
         var hash = selector.LastIndexOf(" #", StringComparison.Ordinal);
         if (hash > 0)
         {
             var prefix = selector[(hash + 2)..];
             var byPrefix = all.Where(e => e.Id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
-            if (byPrefix.Count == 1) return byPrefix[0];
+            if (byPrefix.Count == 1) return new GestureResolution(ResolutionStatus.Success, byPrefix[0]);
+            if (byPrefix.Count > 1) return new GestureResolution(ResolutionStatus.Ambiguous, null);
         }
-        return ResolveUnique(all, selector, e => e.Id, e => e.AnimationName, e => e.Label,
-            e => GestureLabel(e.ModName, e.GroupName, e.AnimationName, e.Trigger));
+
+        var matches = all.Where(e => string.Equals(e.AnimationName, selector, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(e.Label, selector, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(GestureLabel(e.ModName, e.GroupName, e.AnimationName, e.Trigger), selector, StringComparison.OrdinalIgnoreCase))
+            .Take(2).ToList();
+        return matches.Count switch
+        {
+            1 => new GestureResolution(ResolutionStatus.Success, matches[0]),
+            > 1 => new GestureResolution(ResolutionStatus.Ambiguous, null),
+            _ => new GestureResolution(ResolutionStatus.Missing, null),
+        };
     }
 
     public static string MoodleSelector(string rawName, IEnumerable<string> rawNames)

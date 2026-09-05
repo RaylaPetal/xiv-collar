@@ -57,7 +57,16 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
                     foreach (var g in groups.Where(g => !g.Implicit))
                         selections[g.Name] = g == group ? SelectionFor(g, option.Name) : g.Selected.ToList();
                     var triggers = GestureTriggerResolver.Detect(group.Name, option.Name, option.Paths);
-                    if (triggers.Count == 0) triggers.Add(null);
+                    // A single Penumbra option can replace both a pose and the ordinary idle/walk set.
+                    // Trigger detection finds the pose path, but restraints must also be able to enable
+                    // that same option without issuing the pose. Emit an explicit enable-only catalog
+                    // entry whenever the manifest names an idle, even if other triggers were detected.
+                    var hasIdle = HasIdleHint(group.Name) || HasIdleHint(option.Name)
+                        || option.Paths.Any(HasIdleHint);
+                    if (triggers.Count == 0)
+                        triggers.Add(null);
+                    else if (hasIdle)
+                        triggers.Insert(0, null);
                     for (var triggerOrder = 0; triggerOrder < triggers.Count; triggerOrder++)
                     {
                         var entry = new GestureCatalogEntry
@@ -87,6 +96,7 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
     }
 
     private static bool IsUnder(string path, string folder) => path.Equals(folder.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) || path.StartsWith(folder.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase);
+    private static bool HasIdleHint(string text) => Regex.IsMatch(text, @"(^|[^a-z])idle([^a-z]|$)", RegexOptions.IgnoreCase);
     private static List<string> SelectionFor(Group group, string option) => group.Multi ? group.Selected.Append(option).Distinct().ToList() : [option];
 
     private static string StableId(GestureCatalogEntry e)

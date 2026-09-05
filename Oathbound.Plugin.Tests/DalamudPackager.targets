@@ -1,0 +1,5 @@
+<Project>
+  <!-- This project is an executable regression harness, not an installable Dalamud plugin. Providing a
+       project-local packager target suppresses the SDK's default manifest/zip generation in both Debug
+       and Release configurations. -->
+</Project>

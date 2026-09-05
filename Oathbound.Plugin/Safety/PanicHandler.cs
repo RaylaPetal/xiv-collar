@@ -1,7 +1,9 @@
 using System;
+using System.Threading;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Ipc;
+using Oathbound.Plugin.Relay;
 
 namespace Oathbound.Plugin.Safety;
 
@@ -19,7 +21,8 @@ namespace Oathbound.Plugin.Safety;
 /// panic guarantees.
 public sealed class PanicHandler
 {
-    private readonly PairingCommand pairing;
+    private readonly PairingService pairing;
+    private readonly RevocationService revocation;
     private readonly PluginConfig config;
     private readonly ChatComposer composer;
     private readonly ChatSender sender;
@@ -32,9 +35,10 @@ public sealed class PanicHandler
     private readonly SubRuntimeState runtimeState;
     private readonly CollarCommand collar;
 
-    public PanicHandler(PairingCommand pairing, PluginConfig config, ChatComposer composer, ChatSender sender, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, SubRuntimeState runtimeState, CollarCommand collar)
+    public PanicHandler(PairingService pairing, RevocationService revocation, PluginConfig config, ChatComposer composer, ChatSender sender, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, SubRuntimeState runtimeState, CollarCommand collar)
     {
         this.pairing = pairing;
+        this.revocation = revocation;
         this.config = config;
         this.composer = composer;
         this.sender = sender;
@@ -48,21 +52,21 @@ public sealed class PanicHandler
         this.collar = collar;
     }
 
+    /// collar/pairing "Unpair and panic publish authenticated revocation": every local, synchronous
+    /// teardown step runs and completes *before* either notification is even attempted - a network attempt
+    /// (tell send, relay publish) can never delay or skip a local safety step, and both notifications are
+    /// independent best-effort additions on top of teardown that has already fully happened.
     public void Panic()
     {
-        // collar/pairing "Panic notifies the peer, best-effort": captured before any other step runs, so a
-        // future change to what EndPairingLocally clears can't silently break this - and isolated in its
-        // own RunStep so a send failure (offline peer, network down) never affects any other panic step.
+        // Snapshot notification data first: EndPairingLocally only flips Paired (never clears these), but
+        // capturing them before touching anything at all keeps this immune to any future change in what
+        // local teardown clears.
         var peerName = config.Pairing.PeerName;
         var peerWorld = config.Pairing.PeerWorld;
-        RunStep("notify peer", () =>
-        {
-            if (!string.IsNullOrWhiteSpace(peerName) && !string.IsNullOrWhiteSpace(peerWorld))
-                sender.Send(composer.ComposeUnpairNotice(peerName, peerWorld));
-        });
+        var pairIdHash = config.Pairing.PairIdHash;
+        var pairEpoch = config.Pairing.PairEpoch;
 
         RunStep("unpair", () => pairing.EndPairingLocally());
-
         RunStep("revert outfit/collar", () => glamourer.RevertToAutomationFull());
         RunStep("release slot locks", slotLocks.ReleaseAllForPanic);
         RunStep("clear collar moodle", collar.PanicRelease);
@@ -79,6 +83,17 @@ public sealed class PanicHandler
 
         runtimeState.Reset();
         Plugin.Log.Information("Panic triggered: unpaired, outfit/collar reverted, title cleared, movement lock released, all slot locks and restriction rules released.");
+
+        // Everything above is already done, unconditionally, by this point. Only now are the two
+        // best-effort notifications attempted, independently of each other and of everything above.
+        RunStep("notify peer (tell)", () =>
+        {
+            if (!string.IsNullOrWhiteSpace(peerName) && !string.IsNullOrWhiteSpace(peerWorld))
+                sender.Send(composer.ComposeUnpairNotice(peerName, peerWorld));
+        });
+
+        if (pairIdHash is not null)
+            Plugin.FireAndForget(revocation.PublishBestEffortAsync(pairIdHash, pairEpoch, "panic", CancellationToken.None));
     }
 
     private static void RunStep(string name, Action step)

@@ -1,0 +1,73 @@
+import type { Env } from "./env";
+import { RelayError } from "./lib/errors";
+import { logEvent } from "./lib/log";
+import { acceptInvitation, consumeInvitation, createInvitation, fetchInvitation } from "./routes/invitations";
+import { fetchPair } from "./routes/pairs";
+import { checkRevocations, publishRevocation } from "./routes/revocations";
+import { consumeCatalogResponse, createCatalogRequest, fetchCatalogRequest, uploadCatalogResponse } from "./routes/catalog";
+import { health } from "./routes/health";
+import { runScheduledCleanup } from "./scheduled";
+import { enforceQuota } from "./lib/quotas";
+import { originScope } from "./lib/origin";
+
+async function route(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const method = request.method.toUpperCase();
+  const segments = url.pathname.split("/").filter(Boolean);
+
+  if (segments[0] !== "v1") return new RelayError("not_found").toResponse();
+
+  // Account-level budget guard. Safety traffic has an independent reserve so scans/pairing abuse cannot
+  // consume its allowance, while both pools keep total accepted Worker traffic comfortably below the
+  // platform's free daily request and D1-write ceilings.
+  const safetyRoute = segments[1] === "revocations";
+  await enforceQuota(env, safetyRoute ? "globalDailySafety" : "globalDailyWork", "all");
+  // Applied before authentication/body parsing so malformed and oversized anonymous traffic is bounded
+  // too. The scope is a one-way hash; raw client IPs are never retained.
+  await enforceQuota(env, "originRequests", await originScope(request));
+
+  if (method === "GET" && segments.length === 2 && segments[1] === "health") {
+    return health(env);
+  }
+
+  if (segments[1] === "invitations") {
+    if (method === "POST" && segments.length === 2) return createInvitation(request, env);
+    if (method === "GET" && segments.length === 3) return fetchInvitation(request, env, segments[2]!);
+    if (method === "POST" && segments.length === 4 && segments[3] === "accept") return acceptInvitation(request, env, segments[2]!);
+    if (method === "POST" && segments.length === 4 && segments[3] === "consume") return consumeInvitation(request, env, segments[2]!);
+  }
+
+  if (segments[1] === "pairs") {
+    if (method === "GET" && segments.length === 3) return fetchPair(request, env, segments[2]!);
+  }
+
+  if (segments[1] === "revocations") {
+    if (method === "POST" && segments.length === 2) return publishRevocation(request, env);
+    if (method === "GET" && segments.length === 3) return checkRevocations(request, env, segments[2]!);
+  }
+
+  if (segments[1] === "catalog" && segments[2] === "requests") {
+    if (method === "POST" && segments.length === 3) return createCatalogRequest(request, env);
+    if (method === "GET" && segments.length === 4) return fetchCatalogRequest(request, env, segments[3]!);
+    if (method === "POST" && segments.length === 5 && segments[4] === "upload") return uploadCatalogResponse(request, env, segments[3]!);
+    if (method === "POST" && segments.length === 5 && segments[4] === "consume") return consumeCatalogResponse(request, env, segments[3]!);
+  }
+
+  return new RelayError("not_found").toResponse();
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    try {
+      return await route(request, env);
+    } catch (error) {
+      if (error instanceof RelayError) return error.toResponse();
+      logEvent("unhandled_error", { message: error instanceof Error ? error.message : "unknown" });
+      return new RelayError("invalid_request").toResponse();
+    }
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await runScheduledCleanup(env);
+  },
+};

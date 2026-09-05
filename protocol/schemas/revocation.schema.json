@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/revocation.schema.json",
+  "title": "Revocation",
+  "description": "Signed unpair/panic notice. Retained only long enough to deliver and prevent replay (max 7 days); accepted only for a newer pair epoch/sequence than the recipient's stored state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "pairIdHash", "pairEpoch", "sequence",
+    "reason", "issuedByDeviceKeyId", "createdAt", "expiresAt", "signature"
+  ],
+  "properties": {
+    "type": { "const": "revocation" },
+    "schemaVersion": { "const": 1 },
+    "pairIdHash": { "$ref": "common.schema.json#/$defs/pairIdHash" },
+    "pairEpoch": { "$ref": "common.schema.json#/$defs/pairEpoch" },
+    "sequence": { "$ref": "common.schema.json#/$defs/monotonicSequence" },
+    "reason": {
+      "type": "string",
+      "enum": ["unpair", "panic"]
+    },
+    "issuedByDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "expiresAt": {
+      "allOf": [{ "$ref": "common.schema.json#/$defs/unixSeconds" }],
+      "description": "MUST be <= createdAt + 604800 (7 days); enforced by the Worker, not representable purely in schema."
+    },
+    "signature": { "$ref": "common.schema.json#/$defs/ecdsaSignature" }
+  }
+}
