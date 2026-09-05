@@ -82,6 +82,11 @@ public sealed class PairingService
     /// tell. One click, one invitation, one tell (task 4.1).
     public async Task<bool> CreateAndSendInvitationAsync(string targetTellAddress, CancellationToken ct)
     {
+        if (config.Pairing.IsPaired)
+        {
+            SetError("Already paired. Release the current pairing (Owner) or use /oathboundpanic (Sub) before sending another invitation.");
+            return false;
+        }
         try
         {
             identity.EnsureIdentity();
@@ -122,6 +127,11 @@ public sealed class PairingService
     /// a copied/forged reference that doesn't verify is silently dropped, never shown.
     public async Task HandleInvitationTellAsync(string invitationId, string senderName, string senderWorld, CancellationToken ct)
     {
+        if (config.Pairing.IsPaired)
+        {
+            SetError("An invitation was received, but this client is already paired. Release the current pairing before accepting a new one.");
+            return;
+        }
         try
         {
             var invitation = await relay.FetchInvitationAsync(invitationId, ct).ConfigureAwait(false);
@@ -170,6 +180,11 @@ public sealed class PairingService
     /// not this side's; this side's own Pending clears either way once Accept is clicked).
     public async Task<bool> AcceptPendingAsync(CancellationToken ct)
     {
+        if (config.Pairing.IsPaired)
+        {
+            SetError("Already paired. Release the current pairing before accepting another invitation.");
+            return false;
+        }
         if (Pending is not { } request) return false;
         if (request.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds())
         {
