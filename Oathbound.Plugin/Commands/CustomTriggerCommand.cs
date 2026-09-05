@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 using Oathbound.Plugin.Config;
@@ -95,9 +96,12 @@ public sealed class CustomTriggerCommand
                     // In particular, do not route stable IDs through the Sub self-service Toggle method:
                     // Toggle is rejected by an Owner force-lock and made multi-restraint bundles depend on
                     // unrelated prior runtime state.
-                    var restraintOk = config.RestraintMapping.Devices.ContainsKey(action.RestraintDeviceId)
-                        ? restraints.ForceApplyById(action.RestraintDeviceId)
-                        : restraints.ForceApply(action.RestraintDeviceName);
+                    var restraintOk = action.RestraintCatalogId.Length > 0
+                        ? restraints.ForceApplyCatalog(action.RestraintCatalogId, action.RestraintItemId,
+                            config.RestraintMapping.ConfiguredMods.FirstOrDefault(x => x.CatalogId == action.RestraintCatalogId)?.Rules ?? [])
+                        : config.RestraintMapping.Devices.ContainsKey(action.RestraintDeviceId)
+                            ? restraints.ForceApplyById(action.RestraintDeviceId)
+                            : restraints.ForceApply(action.RestraintDeviceName);
                     if (restraintOk)
                         applied.Add($"restraint \"{action.RestraintDeviceName}\"");
                     else
@@ -155,7 +159,9 @@ public sealed class CustomTriggerCommand
                     segments.Add($"moodle={action.MoodleStatusId}|{EncodeText(action.MoodleStatusName)}");
                     break;
                 case CustomTriggerActionKind.Restraint:
-                    segments.Add($"restraint={action.RestraintDeviceId}|{EncodeText(action.RestraintDeviceName)}");
+                    segments.Add(action.RestraintCatalogId.Length > 0
+                        ? $"restraint=catalog:{action.RestraintCatalogId}:{action.RestraintItemId}|{EncodeText(action.RestraintDeviceName)}"
+                        : $"restraint={action.RestraintDeviceId}|{EncodeText(action.RestraintDeviceName)}");
                     break;
                 case CustomTriggerActionKind.Chat:
                     chatSegment = $"chat={action.ChatText}";
@@ -260,7 +266,14 @@ public sealed class CustomTriggerCommand
                     case "restraint":
                         if (parts.Length != 2 || parts[0].Length == 0 || !TryDecodeText(parts[1], out var deviceName) || deviceName.Length == 0)
                             return false;
-                        actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceId = parts[0], RestraintDeviceName = deviceName });
+                        if (parts[0].StartsWith("catalog:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var catalogParts = parts[0].Split(':');
+                            if (catalogParts.Length != 3 || !ulong.TryParse(catalogParts[2], out var itemId) || itemId == 0) return false;
+                            actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintCatalogId = catalogParts[1], RestraintItemId = itemId, RestraintDeviceName = deviceName });
+                        }
+                        else
+                            actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceId = parts[0], RestraintDeviceName = deviceName });
                         break;
 
                     default:

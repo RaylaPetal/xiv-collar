@@ -110,6 +110,8 @@ public class CustomTriggerAction
     // Restraint
     public string RestraintDeviceId { get; set; } = "";
     public string RestraintDeviceName { get; set; } = "";
+    public string RestraintCatalogId { get; set; } = "";
+    public ulong RestraintItemId { get; set; }
 
     // Chat - collar/custom-triggers "Sending a chat message requires its own dedicated permission and
     // acknowledgement": sent verbatim, any channel, any text - gated at apply time, never here.

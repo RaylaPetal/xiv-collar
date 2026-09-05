@@ -1152,20 +1152,22 @@ public class CollarWindow : Window, IDisposable
                 break;
 
             case CustomTriggerActionKind.Restraint:
-                var devices = config.RestraintMapping.Devices.Values.ToList();
-                if (devices.Count == 0)
+                var restraintChoices = config.RestraintMapping.Devices.Values.Select(d => (Id: d.Id, Name: d.Name, CatalogId: "", ItemId: 0UL))
+                    .Concat(config.RestraintMapping.ConfiguredMods.Where(x => x.ItemId > 0 && x.Rules.Count > 0)
+                        .Select(x => (Id: x.Id, Name: $"{x.Name} (Penumbra)", CatalogId: x.CatalogId, ItemId: x.ItemId!.Value))).ToList();
+                if (restraintChoices.Count == 0)
                 {
-                    IconGlyph.WrappedDisabled("No captured restraint devices yet - capture one in the Restraints tab first.");
+                    IconGlyph.WrappedDisabled("No configured restraint devices yet - configure one in the Restraints tab first.");
                     break;
                 }
-                var deviceNames = devices.Select(d => d.Name).ToArray();
+                var deviceNames = restraintChoices.Select(d => d.Name).ToArray();
                 ctRestraintDeviceIndex = Math.Clamp(ctRestraintDeviceIndex, 0, deviceNames.Length - 1);
                 ImGui.Combo("Device##newCtRestraint", ref ctRestraintDeviceIndex, deviceNames, deviceNames.Length);
                 IconGlyph.HelpMarker("Toggles this device when the trigger fires - applies if inactive, releases if active, same as a plain restraint alias.");
                 if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtRestraintBtn"))
                 {
-                    var device = devices[ctRestraintDeviceIndex];
-                    CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceId = device.Id, RestraintDeviceName = device.Name });
+                    var device = restraintChoices[ctRestraintDeviceIndex];
+                    CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceId = device.CatalogId.Length == 0 ? device.Id : "", RestraintCatalogId = device.CatalogId, RestraintItemId = device.ItemId, RestraintDeviceName = device.Name });
                 }
                 break;
 
@@ -1243,6 +1245,8 @@ public class CollarWindow : Window, IDisposable
         MoodleStatusName = action.MoodleStatusName,
         RestraintDeviceId = action.RestraintDeviceId,
         RestraintDeviceName = action.RestraintDeviceName,
+        RestraintCatalogId = action.RestraintCatalogId,
+        RestraintItemId = action.RestraintItemId,
         ChatText = action.ChatText,
     };
 
