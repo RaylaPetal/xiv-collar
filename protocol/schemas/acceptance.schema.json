@@ -16,8 +16,8 @@
     "accepterDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
     "accepterPublicKey": { "$ref": "common.schema.json#/$defs/ecPublicKeyJwk" },
     "proofDigest": {
-      "$ref": "common.schema.json#/$defs/sha256Hex",
-      "description": "Digest carried in the acknowledgement tell; binds the tell to this acceptance."
+      "$ref": "common.schema.json#/$defs/proofDigestHex",
+      "description": "Token carried in the acknowledgement tell; binds the tell to this acceptance."
     },
     "role": { "$ref": "common.schema.json#/$defs/role" },
     "triggerPhrase": { "type": "string", "minLength": 1, "maxLength": 32 },

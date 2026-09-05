@@ -30,6 +30,38 @@ public sealed class ChatComposer
     public string ComposeRelayInvitation(string targetTellAddress, string invitationId) =>
         $"/tell {targetTellAddress.Trim()} collarinvite {invitationId}";
 
+    /// collar/pairing "Invite target is validated before sending": a typed target that doesn't match
+    /// "Name Surname@World" produces a `/tell` the game itself silently rejects with no plugin-visible
+    /// feedback - this catches the structural cases (no `@`, empty name/world) before that ever happens.
+    /// Cannot and does not check whether the character actually exists; that information is not available
+    /// to the plugin.
+    public static bool TryValidateTellTarget(string target, out string error)
+    {
+        var trimmed = target.Trim();
+        var atIndex = trimmed.IndexOf('@');
+        if (atIndex < 0 || trimmed.IndexOf('@', atIndex + 1) >= 0)
+        {
+            error = "Target must be in the form \"Name Surname@World\" - exactly one '@' was expected.";
+            return false;
+        }
+
+        var name = trimmed[..atIndex].Trim();
+        var world = trimmed[(atIndex + 1)..].Trim();
+        if (name.Length == 0)
+        {
+            error = "A character name is required before '@'.";
+            return false;
+        }
+        if (world.Length == 0)
+        {
+            error = "A world name is required after '@'.";
+            return false;
+        }
+
+        error = "";
+        return true;
+    }
+
     /// collar/pairing's acknowledgement tell, sent automatically as part of accepting a pending relay
     /// invitation. The target is already known (the verified sender of the invitation being accepted), so
     /// this composes a full `/tell` directly rather than going through Wrap's already-paired-peer

@@ -1,7 +1,10 @@
 import { sha256Hex } from "./json";
 import { bytesToBase64Url } from "./base64";
 
-const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{32,64}$/;
+// 22 chars covers the shorter 128-bit invitationId (protocol/constants.json
+// capabilitySecrets.invitationIdException); 64 covers the 256-bit default used by other capability ids
+// (e.g. catalog requestId).
+const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{22,64}$/;
 
 /**
  * Capability identifiers (invitationId, requestId) are themselves the

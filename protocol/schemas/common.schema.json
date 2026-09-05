@@ -26,8 +26,8 @@
     },
     "capabilityId": {
       "type": "string",
-      "description": "Opaque, high-entropy, unguessable identifier. Only its hash is stored server-side.",
-      "pattern": "^[A-Za-z0-9_-]{32,64}$"
+      "description": "Opaque, high-entropy, unguessable identifier. Only its hash is stored server-side. Length varies by use: an invitationId is 128-bit (22 chars, short-lived and rate-limited so this remains adequate); other capability ids (e.g. catalog requestId) stay 256-bit (43 chars). The range accepts both.",
+      "pattern": "^[A-Za-z0-9_-]{22,64}$"
     },
     "unixSeconds": {
       "type": "integer",
@@ -46,6 +46,11 @@
     "sha256Hex": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "proofDigestHex": {
+      "type": "string",
+      "description": "128-bit single-use, exact-match acceptance proof token (not itself a content hash - see acceptance.schema.json proofDigest), lowercase hex, 32 chars.",
+      "pattern": "^[0-9a-f]{32}$"
     },
     "base64UrlBlob": {
       "type": "string",

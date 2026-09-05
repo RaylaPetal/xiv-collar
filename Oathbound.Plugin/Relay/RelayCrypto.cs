@@ -65,11 +65,25 @@ public static class RelayCrypto
 
     /// 256-bit capability secret / high-entropy id, base64url without padding (43 characters) - matches
     /// protocol/schemas/common.schema.json `capabilityId` and the request-signing `nonce` pattern's shape
-    /// family (see RandomNonce for the shorter 128-bit variant).
+    /// family (see RandomNonce for the shorter 128-bit variant). Used for capability ids other than
+    /// invitationId (e.g. catalog requestId) - see RandomInvitationId for the shorter invitation-specific id.
     public static string RandomCapabilityId() => Base64UrlEncode(RandomBytes(32));
 
     /// 128-bit request-signing nonce, base64url without padding (22 characters).
     public static string RandomNonce() => Base64UrlEncode(RandomBytes(16));
+
+    /// 128-bit invitation id, base64url without padding (22 characters) - shorter than RandomCapabilityId's
+    /// 256 bits since an invitation is single-use, short-lived (protocol/constants.json
+    /// sizeAndExpiryLimits.invitationExpirySeconds), and already bounded by the deviceInvitationCreate rate
+    /// limit; the shorter id keeps the `collarinvite` tell shorter without weakening it in practice
+    /// (protocol/constants.json capabilitySecrets.invitationIdException).
+    public static string RandomInvitationId() => Base64UrlEncode(RandomBytes(16));
+
+    /// 128-bit acceptance proof token, lowercase hex (32 characters) - an opaque single-use value compared
+    /// for exact equality against the acknowledgement tell's carried value (protocol/constants.json
+    /// `proofDigest`), never used as a content-integrity hash, so generating it directly from random bytes
+    /// (rather than hashing them) loses nothing.
+    public static string RandomProofDigestHex() => Convert.ToHexStringLower(RandomBytes(16));
 
     private static byte[] FixedLength32(BigInteger value) => BigIntegers.AsUnsignedByteArray(32, value);
 

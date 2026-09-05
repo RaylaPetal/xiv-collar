@@ -124,7 +124,7 @@ export async function acceptInvitation(invitationId: string, receiver: KeyPair, 
     invitationId,
     accepterDeviceKeyId: receiverId,
     accepterPublicKey: receiver.publicKeyJwk,
-    proofDigest: proofDigest ?? hex(await crypto.subtle.digest("SHA-256", crypto.getRandomValues(new Uint8Array(32)))),
+    proofDigest: proofDigest ?? hex(crypto.getRandomValues(new Uint8Array(16)).buffer),
     createdAt: now,
     expiresAt: now + 900,
   };

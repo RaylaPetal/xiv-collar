@@ -58,7 +58,7 @@ describe("invitation/acceptance envelope signatures", () => {
       invitationId,
       accepterDeviceKeyId: receiverId,
       accepterPublicKey: receiver.publicKeyJwk,
-      proofDigest: "b".repeat(64),
+      proofDigest: "b".repeat(32),
       role: "sub",
       triggerPhrase: "pet",
       createdAt: now,

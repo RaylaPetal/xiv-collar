@@ -11,6 +11,7 @@ import {
   asRecord,
   isEcPublicKeyJwk,
   isHex64,
+  isProofDigestHex,
   isRole,
   isSignature,
   isUnixSeconds,
@@ -198,7 +199,7 @@ export async function acceptInvitation(request: Request, env: Env, invitationId:
     invitationId: requireField(body, "invitationId", (v): v is string => v === invitationId),
     accepterDeviceKeyId: requireField(body, "accepterDeviceKeyId", isHex64),
     accepterPublicKey: requireField(body, "accepterPublicKey", isEcPublicKeyJwk),
-    proofDigest: requireField(body, "proofDigest", isHex64),
+    proofDigest: requireField(body, "proofDigest", isProofDigestHex),
     role: isRole(body.role) ? body.role : undefined,
     triggerPhrase: typeof body.triggerPhrase === "string" && body.triggerPhrase.trim().length > 0 && body.triggerPhrase.length <= 32
       ? body.triggerPhrase.trim()

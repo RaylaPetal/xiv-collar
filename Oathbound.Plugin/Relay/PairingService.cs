@@ -10,6 +10,11 @@ namespace Oathbound.Plugin.Relay;
 /// target, and expiry are persisted so a matching acknowledgement can still complete after a restart.
 public readonly record struct OutgoingInvitation(string InvitationId, PluginRole DeclaredRole, string Target, long ExpiresAt);
 
+/// What `CreateAndSendInvitationAsync` would silently replace if called right now - surfaced so the UI can
+/// ask for explicit confirmation instead of orphaning an invitation the peer might still accept (see
+/// "Sending a new invite while one is already outstanding" in collar/pairing).
+public readonly record struct OutstandingInvitation(string Target, long ExpiresAt);
+
 /// Mirrors the old `PendingPairingRequest`/`PeerUnpairedNotice` shape ChatCommandListener/CollarWindow/
 /// SettingsWindow already know how to render, but populated from a fetched-and-verified relay invitation
 /// instead of a code match.
@@ -78,13 +83,30 @@ public sealed class PairingService
         LastErrorChanged?.Invoke();
     }
 
+    /// Query-only: what an immediate call to `CreateAndSendInvitationAsync` would replace, if anything.
+    /// Never mutates state - the UI calls this first so it can ask for explicit confirmation before an
+    /// unconfirmed, unexpired invitation is silently discarded (collar/pairing "Sending a new invite while
+    /// one is already outstanding").
+    public OutstandingInvitation? DescribeOutstandingInvitation()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return outgoingInvitation is { } o && o.ExpiresAt > now ? new OutstandingInvitation(o.Target, o.ExpiresAt) : null;
+    }
+
     /// Inviter side, step 1: create a single-use invitation via the relay and send its reference in one
-    /// tell. One click, one invitation, one tell (task 4.1).
+    /// tell. One click, one invitation, one tell (task 4.1). Callers should check
+    /// `DescribeOutstandingInvitation()` first and get explicit confirmation before calling through if it
+    /// returns non-null, since this always replaces any prior outgoing invitation without asking.
     public async Task<bool> CreateAndSendInvitationAsync(string targetTellAddress, CancellationToken ct)
     {
         if (config.Pairing.IsPaired)
         {
             SetError("Already paired. Release the current pairing (Owner) or use /oathboundpanic (Sub) before sending another invitation.");
+            return false;
+        }
+        if (!ChatComposer.TryValidateTellTarget(targetTellAddress, out var targetError))
+        {
+            SetError(targetError);
             return false;
         }
         try
@@ -93,7 +115,7 @@ public sealed class PairingService
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var envelope = new InvitationEnvelope
             {
-                InvitationId = RelayCrypto.RandomCapabilityId(),
+                InvitationId = RelayCrypto.RandomInvitationId(),
                 InviterDeviceKeyId = identity.DeviceKeyId!,
                 InviterPublicKey = identity.GetPublicKeyJwk(),
                 Role = config.Role == PluginRole.Owner ? "owner" : "sub",
@@ -197,7 +219,7 @@ public sealed class PairingService
         {
             identity.EnsureIdentity();
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var proofDigest = RelayCrypto.Sha256Hex(RelayCrypto.RandomBytes(32));
+            var proofDigest = RelayCrypto.RandomProofDigestHex();
             var envelope = new AcceptanceEnvelope
             {
                 InvitationId = request.InvitationId,
@@ -285,38 +307,60 @@ public sealed class PairingService
         }
     }
 
+    /// Bounded retry/backoff for a transient relay hiccup while processing an acknowledgement tell (seconds
+    /// to wait after each failed attempt) - mirrors the intent behind AwaitActivationAsync's poll loop on
+    /// the accepter side, which the original relay design called for here too ("[Tell acknowledgement is
+    /// lost] -> allow a bounded resend/recheck") but never implemented. Total worst case (~46s) stays well
+    /// inside the invitation/acceptance's own 15-minute expiry.
+    private static readonly int[] AcknowledgementRetryDelaysSeconds = [2, 4, 8, 16, 16];
+
     /// Inviter side, step 2: a `collarpairack <invitationId> <proofDigest>` tell arrived from a
     /// server-verified sender. Activates the pairing only when the fetched invitation's acceptance proof
     /// digest matches exactly what this tell carries - the tell's verified sender is what binds the relay's
     /// claimed acceptance to an actual character; relay state alone is never sufficient (collar/pairing
-    /// "Relay acceptance lacks matching game identity").
+    /// "Relay acceptance lacks matching game identity"). A transient relay failure while fetching or
+    /// consuming is retried a bounded number of times before giving up and surfacing an error - previously
+    /// this failed silently into a log line with no way for the user to ever learn pairing didn't complete.
     public async Task HandleAcknowledgementTellAsync(string invitationId, string proofDigestHex, string senderName, string senderWorld, CancellationToken ct)
     {
         if (outgoingInvitation is not { } outgoing || outgoing.InvitationId != invitationId)
             return; // Not an invitation we created (or already consumed) - ignore, never activate from claims.
 
-        try
+        for (var attempt = 0; ; attempt++)
         {
-            var invitation = await relay.FetchInvitationAsync(invitationId, ct).ConfigureAwait(false);
-            if (invitation.Acceptance is not { } acceptance) return;
-            if (acceptance.Role is { } acceptedRole &&
-                acceptedRole != (config.Role == PluginRole.Owner ? "sub" : "owner")) return;
-            if (!string.Equals(acceptance.ProofDigest, proofDigestHex, StringComparison.OrdinalIgnoreCase)) return;
-            if (!RelayCrypto.VerifyRaw(acceptance.AccepterPublicKey, acceptance.Signature ?? "", EnvelopeCanonical.SerializeExcludingSignature(acceptance)))
+            try
             {
-                Plugin.Log.Warning("Relay acknowledgement tell ignored: acceptance signature did not verify.");
+                var invitation = await relay.FetchInvitationAsync(invitationId, ct).ConfigureAwait(false);
+                if (invitation.Acceptance is not { } acceptance) return;
+                if (acceptance.Role is { } acceptedRole &&
+                    acceptedRole != (config.Role == PluginRole.Owner ? "sub" : "owner")) return;
+                if (!string.Equals(acceptance.ProofDigest, proofDigestHex, StringComparison.OrdinalIgnoreCase)) return;
+                if (!RelayCrypto.VerifyRaw(acceptance.AccepterPublicKey, acceptance.Signature ?? "", EnvelopeCanonical.SerializeExcludingSignature(acceptance)))
+                {
+                    Plugin.Log.Warning("Relay acknowledgement tell ignored: acceptance signature did not verify.");
+                    return;
+                }
+
+                var pair = await relay.ConsumeInvitationAsync(invitationId, ct).ConfigureAwait(false);
+                outgoingInvitation = null;
+                config.PendingRelayOperations.RemoveAll(o => o.Kind == "pair-invite" && o.OperationId == invitationId);
+
+                ActivateLocally(pair, senderName, senderWorld, acceptance.AccepterDeviceKeyId, acceptance.AccepterPublicKey, acceptance.TriggerPhrase);
+                SetError(null);
                 return;
             }
-
-            var pair = await relay.ConsumeInvitationAsync(invitationId, ct).ConfigureAwait(false);
-            outgoingInvitation = null;
-            config.PendingRelayOperations.RemoveAll(o => o.Kind == "pair-invite" && o.OperationId == invitationId);
-
-            ActivateLocally(pair, senderName, senderWorld, acceptance.AccepterDeviceKeyId, acceptance.AccepterPublicKey, acceptance.TriggerPhrase);
-        }
-        catch (RelayException ex)
-        {
-            Plugin.Log.Information($"Relay pairing activation failed: {DescribeError(ex)}");
+            catch (RelayException ex) when (ex.Code is "network" or "service_unavailable" or "rate_limited" && attempt < AcknowledgementRetryDelaysSeconds.Length)
+            {
+                Plugin.Log.Information($"Relay pairing activation attempt {attempt + 1} failed transiently ({ex.Code}); retrying.");
+                try { await Task.Delay(TimeSpan.FromSeconds(AcknowledgementRetryDelaysSeconds[attempt]), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+            }
+            catch (RelayException ex)
+            {
+                Plugin.Log.Information($"Relay pairing activation failed: {DescribeError(ex)}");
+                SetError($"Could not finish pairing after your peer accepted: {DescribeError(ex)}");
+                return;
+            }
         }
     }
 

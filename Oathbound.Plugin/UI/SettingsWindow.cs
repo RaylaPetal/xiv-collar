@@ -28,6 +28,7 @@ public class SettingsWindow : Window, IDisposable
     private bool sendingInvitation;
     private bool acceptingInvitation;
     private bool confirmingIdentityReset;
+    private bool confirmingInviteReplace;
     private string triggerPhraseInput = "";
     private string gestureModSearch = "";
     private string penumbraFolderSearch = "";
@@ -218,15 +219,37 @@ public class SettingsWindow : Window, IDisposable
         using (ImRaii.Disabled(pairingLocked || sendingInvitation))
         {
             ImGui.InputTextWithHint("Pair with", "Name Surname@World", ref inviteTargetInput, 64);
-            using (ImRaii.Disabled(inviteTargetInput.Trim().Length == 0))
+            using (ImRaii.Disabled(inviteTargetInput.Trim().Length == 0 || confirmingInviteReplace))
             {
                 if (ImGui.Button(sendingInvitation ? "Sending..." : "Send Invitation"))
                 {
-                    sendingInvitation = true;
-                    var target = inviteTargetInput.Trim();
-                    Plugin.FireAndForget(SendInvitationAsync(target));
+                    if (plugin.PairingService.DescribeOutstandingInvitation() is { } outstanding)
+                        confirmingInviteReplace = true;
+                    else
+                    {
+                        sendingInvitation = true;
+                        Plugin.FireAndForget(SendInvitationAsync(inviteTargetInput.Trim()));
+                    }
                 }
             }
+        }
+        if (confirmingInviteReplace && plugin.PairingService.DescribeOutstandingInvitation() is { } outstandingInvite)
+        {
+            IconGlyph.WrappedColored(Theme.Danger, $"You already have an unconfirmed invitation outstanding to {outstandingInvite.Target}. Sending a new one abandons it - if they accept it later, nothing will happen on your side.");
+            if (ImGui.Button("Send new invitation anyway"))
+            {
+                confirmingInviteReplace = false;
+                sendingInvitation = true;
+                Plugin.FireAndForget(SendInvitationAsync(inviteTargetInput.Trim()));
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel"))
+                confirmingInviteReplace = false;
+        }
+        else if (confirmingInviteReplace)
+        {
+            // The outstanding invitation expired/completed on its own while this prompt was open.
+            confirmingInviteReplace = false;
         }
         IconGlyph.HelpMarker("Creates a single-use relay invitation (expires in 15 minutes) and sends its reference in one tell. They accept it, an acknowledgement tell comes back automatically, and you're both paired.");
 

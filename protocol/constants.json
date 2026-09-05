@@ -21,7 +21,13 @@
   "capabilitySecrets": {
     "sizeBits": 256,
     "encoding": "base64url without padding (43 characters) when transmitted; server stores only SHA-256(secretBytes) as capabilityId's paired hash.",
-    "comparison": "Constant-time hash comparison; the relay never logs or echoes the raw secret."
+    "comparison": "Constant-time hash comparison; the relay never logs or echoes the raw secret.",
+    "invitationIdException": "invitationId specifically uses 128 bits (base64url without padding, 22 characters) instead of the 256-bit default - it is single-use, short-lived (invitationExpirySeconds), and already bounded by the deviceInvitationCreate rate limit, so the smaller size still leaves guessing infeasible. Every other capability id (e.g. catalog requestId) keeps the 256-bit default."
+  },
+  "proofDigest": {
+    "description": "The acceptance envelope's proofDigest is an opaque, single-use, exact-match token (compared for equality against the acknowledgement tell's carried value, never used as a content-integrity hash) - not a SHA-256 digest despite the name.",
+    "sizeBits": 128,
+    "encoding": "lowercase hex, 32 characters"
   },
   "pairEpoch": {
     "type": "non-negative integer, starts at 0 for a pair's first activation",

@@ -11,6 +11,7 @@ import { RelayError } from "./errors";
  */
 
 const HEX64 = /^[0-9a-f]{64}$/;
+const PROOF_DIGEST_HEX = /^[0-9a-f]{32}$/;
 const BASE64URL_43 = /^[A-Za-z0-9_-]{43}$/;
 const BASE64URL_86 = /^[A-Za-z0-9_-]{86}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,64}$/;
@@ -19,6 +20,10 @@ const AEAD_NONCE_16 = /^[A-Za-z0-9_-]{16}$/;
 
 export function isHex64(value: unknown): value is string {
   return typeof value === "string" && HEX64.test(value);
+}
+/** protocol/constants.json `proofDigest` - a 128-bit opaque token, not a SHA-256 digest despite the name. */
+export function isProofDigestHex(value: unknown): value is string {
+  return typeof value === "string" && PROOF_DIGEST_HEX.test(value);
 }
 export function isCapabilityId(value: unknown): value is string {
   return typeof value === "string" && CAPABILITY.test(value);
