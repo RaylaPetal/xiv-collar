@@ -22,6 +22,17 @@ migrations_dir = "migrations"
 binding = "RELAY_CATALOG_BUCKET"
 bucket_name = "oathbound-relay-catalog-local"
 
+[env.local.observability]
+[env.local.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+[env.local.observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
 [env.staging]
 vars = { RELAY_ENVIRONMENT = "staging", CIRCUIT_BREAKER_FORCE_OPEN = "false" }
 
@@ -38,6 +49,17 @@ bucket_name = "oathbound-relay-catalog-staging"
 [env.staging.triggers]
 crons = ["*/15 * * * *"]
 
+[env.staging.observability]
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+[env.staging.observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
 [env.production]
 vars = { RELAY_ENVIRONMENT = "production", CIRCUIT_BREAKER_FORCE_OPEN = "false" }
 
@@ -53,3 +75,14 @@ bucket_name = "oathbound-relay-catalog-production"
 
 [env.production.triggers]
 crons = ["*/15 * * * *"]
+
+[env.production.observability]
+[env.production.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+[env.production.observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
