@@ -184,7 +184,8 @@ public class SettingsWindow : Window, IDisposable
         var pairingService = plugin.PairingService;
         var pending = pairingService.Pending;
         var sameRoleWarning = pending is { } pendingCheck && pendingCheck.SenderRole == config.Role;
-        var subLocked = config.Role == PluginRole.Sub && config.Pairing.IsPaired;
+        var pairingLocked = config.Pairing.IsPaired;
+        var subLocked = config.Role == PluginRole.Sub && pairingLocked;
 
         IconGlyph.Text(FontAwesomeIcon.UserShield, "Identity & Pairing");
         ImGui.Separator();
@@ -214,7 +215,7 @@ public class SettingsWindow : Window, IDisposable
                 reachable ? "Relay connection verified." : "Relay was unreachable on the last attempt; existing pairing and panic remain local-first.");
         ImGui.Spacing();
         ImGui.TextWrapped("Send an invitation: enter who to pair with, exactly as you'd address a tell, then click Send.");
-        using (ImRaii.Disabled(subLocked || sendingInvitation))
+        using (ImRaii.Disabled(pairingLocked || sendingInvitation))
         {
             ImGui.InputTextWithHint("Pair with", "Name Surname@World", ref inviteTargetInput, 64);
             using (ImRaii.Disabled(inviteTargetInput.Trim().Length == 0))
@@ -239,7 +240,7 @@ public class SettingsWindow : Window, IDisposable
         }
         IconGlyph.HelpMarker("The word that must start every ongoing command tell, e.g. \"command strip\".");
 
-        if (subLocked)
+        if (pairingLocked)
             IconGlyph.WrappedColored(Theme.TextMuted, "Locked while paired - trigger /oathboundpanic to release pairing and change these again.");
 
         if (pairingService.LastError is { Length: > 0 } lastError)
@@ -253,7 +254,25 @@ public class SettingsWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        if (pending is { } request)
+        if (config.Pairing.IsPaired)
+        {
+            IconGlyph.WrappedColored(Theme.Success, $"Paired with {config.Pairing.PeerName}@{config.Pairing.PeerWorld}.");
+            if (config.Pairing.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
+                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{peerPhrase}\" (from your paired peer).");
+            else
+                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
+            if (config.Role == PluginRole.Owner)
+            {
+                if (ImGui.Button("Release pairing"))
+                    pairingService.ReleasePeer();
+                IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your Sub's plugin at all. Fixes a stale/wrong pairing or frees them up to pair with someone else.");
+            }
+            else
+            {
+                IconGlyph.WrappedDisabled("Locked - only /oathboundpanic (your safeword, below) unpairs, not this screen.");
+            }
+        }
+        else if (pending is { } request)
         {
             var roleLabel = request.SenderRole == PluginRole.Owner ? "your Owner" : "your Sub";
             var expiresIn = TimeSpan.FromSeconds(Math.Max(0, request.ExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
@@ -280,24 +299,6 @@ public class SettingsWindow : Window, IDisposable
         else if (pairingService.AwaitingActivation)
         {
             IconGlyph.WrappedColored(Theme.Warning, "Waiting for the other side to confirm...");
-        }
-        else if (config.Pairing.IsPaired)
-        {
-            IconGlyph.WrappedColored(Theme.Success, $"Paired with {config.Pairing.PeerName}@{config.Pairing.PeerWorld}.");
-            if (config.Pairing.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
-                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{peerPhrase}\" (from your paired peer).");
-            else
-                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
-            if (config.Role == PluginRole.Owner)
-            {
-                if (ImGui.Button("Release pairing"))
-                    pairingService.ReleasePeer();
-                IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your Sub's plugin at all. Fixes a stale/wrong pairing or frees them up to pair with someone else.");
-            }
-            else
-            {
-                IconGlyph.WrappedDisabled("Locked - only /oathboundpanic (your safeword, below) unpairs, not this screen.");
-            }
         }
         else
         {
