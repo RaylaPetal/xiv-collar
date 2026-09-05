@@ -59,9 +59,14 @@ public sealed class Plugin : IDalamudPlugin
     public readonly FileDialogManager FileDialogManager = new();
     private CollarWindow CollarWindow { get; }
     private SettingsWindow SettingsWindow { get; }
+    private WelcomeWindow WelcomeWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
     public ItemPickerWindow ItemPickerWindow { get; }
     public FavoritesBarButton FavoritesBarButton { get; }
+
+    /// collar/onboarding: owns the guided-tutorial sequence and step index; CollarWindow only reads
+    /// `CurrentStep` each frame and exposes `SetActiveModuleForTutorial` for this to call.
+    public TutorialDriver TutorialDriver { get; }
 
     public SubRuntimeState RuntimeState { get; }
 
@@ -161,14 +166,22 @@ public sealed class Plugin : IDalamudPlugin
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
+        TutorialDriver = new TutorialDriver(this, CollarWindow);
+        WelcomeWindow = new WelcomeWindow(this);
         AnimationPickerWindow = new AnimationPickerWindow(this);
         ItemPickerWindow = new ItemPickerWindow(this);
         FavoritesBarButton = new FavoritesBarButton(this);
         WindowSystem.AddWindow(CollarWindow);
         WindowSystem.AddWindow(SettingsWindow);
+        WindowSystem.AddWindow(WelcomeWindow);
         WindowSystem.AddWindow(AnimationPickerWindow);
         WindowSystem.AddWindow(ItemPickerWindow);
         WindowSystem.AddWindow(FavoritesBarButton);
+
+        // collar/onboarding "Welcome window appears once on first plugin load": shown before CollarWindow
+        // is ever opened for the first time, and never again once completed/dismissed.
+        if (!Configuration.HasCompletedWelcome)
+            WelcomeWindow.IsOpen = true;
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -259,6 +272,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.RemoveAllWindows();
         CollarWindow.Dispose();
         SettingsWindow.Dispose();
+        WelcomeWindow.Dispose();
         AnimationPickerWindow.Dispose();
         ItemPickerWindow.Dispose();
         FavoritesBarButton.Dispose();
@@ -304,10 +318,6 @@ public sealed class Plugin : IDalamudPlugin
     public void ToggleSettingsUi() => SettingsWindow.Toggle();
 
     private void ToggleMainUi() => CollarWindow.Toggle();
-
-    /// collar/ui-organization: lets QuickAccessMenu (or anything else outside CollarWindow) bring the main
-    /// window forward already on the Owner tab, without making CollarWindow itself public.
-    public void OpenOwnerCommands() => CollarWindow.OpenOwnerTab();
 
     /// collar/ui-organization "A movable on-screen button opens the quick-access favorites menu": the
     /// menu's "Open main window" control.
@@ -364,6 +374,18 @@ public sealed class Plugin : IDalamudPlugin
         {
             Configuration.MigrateFolderScopes();
             Configuration.Version = 3;
+            changed = true;
+        }
+        // collar/onboarding: an install that predates the Welcome window/guided tutorial is treated as
+        // already welcomed - it must never pop Welcome or auto-launch a tutorial in front of a user who is
+        // already mid-session with a paired, configured setup (design.md's "Existing installs are treated
+        // as already welcomed").
+        if (Configuration.Version < 4)
+        {
+            Configuration.HasCompletedWelcome = true;
+            Configuration.HasSeenOwnerTutorial = true;
+            Configuration.HasSeenSubTutorial = true;
+            Configuration.Version = 4;
             changed = true;
         }
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();

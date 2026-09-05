@@ -489,6 +489,12 @@ public sealed class CatalogSyncService
         var restraintCatalogRefreshed = sections.TryGetValue(RestraintsHeader, out var r) &&
             r.Any(line => line.StartsWith("OATHBOUND-RESTRAINT-V1|", StringComparison.Ordinal) ||
                           line.StartsWith("OATHBOUND-RESTRAINT-CONFIG-V1|", StringComparison.Ordinal));
+        // Mirrors gestureCatalogRefreshed's Clear() above - without it, re-importing (e.g. from the Sync
+        // tab's "Import commands") only ever adds to stagedRestraintCatalog, never removing entries the
+        // new export no longer carries, so a mod whose stable id changed (or was simply re-scanned) shows
+        // up as a second, stale row alongside the current one instead of replacing it.
+        if (restraintCatalogRefreshed)
+            stagedRestraintCatalog.Clear();
         var restraintsAdded = sections.TryGetValue(RestraintsHeader, out r)
             ? ImportRestraintLines(r, stagedRestraints, usedCommands, ref duplicates, stagedRestraintCatalog)
             : 0;
