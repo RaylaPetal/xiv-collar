@@ -110,10 +110,6 @@ public static class QuickAccessMenu
                     ImGui.EndMenu();
                 }
             }
-
-            ImGui.Separator();
-            if (ImGui.MenuItem("Open Owner commands"))
-                plugin.OpenOwnerCommands();
         }
 
         if (ImGui.MenuItem("Open main window"))
@@ -130,7 +126,7 @@ public static class QuickAccessMenu
         [
             ("Title", quick.Titles),
             ("Outfit", quick.Outfits),
-            ("Gesture", quick.Gestures),
+            ("Animation", quick.Gestures),
             ("Follow", quick.Follow),
             ("Moodles", quick.Moodles),
             ("Restraints", quick.Restraints),

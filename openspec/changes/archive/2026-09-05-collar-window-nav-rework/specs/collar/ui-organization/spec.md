@@ -1,10 +1,18 @@
-# collar/ui-organization Specification
+## REMOVED Requirements
 
-## Purpose
+### Requirement: Owner navigation is separated from Sub modules
+**Reason**: Replaced by the shared, role-aware category-tab model - there is no longer a single dedicated Owner destination to separate from Sub modules, since Owner and Sub now share the same tab per category.
+**Migration**: See the new "Category tabs present role-aware content" requirement.
 
-Keeps Sub configuration and Owner command controls visually distinct, compact, and discoverable as the collar system gains more modules and settings.
+### Requirement: Owner command categories are independently collapsible
+**Reason**: The Owner command surface (one collapsible accordion holding every category) is replaced by one tab per category, matching the Sub-side tab-per-category model. Each category's existing add, import, compose, copy, and send operations are preserved, just relocated to that category's own tab instead of a collapsible section of a shared accordion.
+**Migration**: See the new "Category tabs present role-aware content" requirement.
 
-## Requirements
+### Requirement: Owner Gesture quick-command list is grouped and searchable
+**Reason**: Renamed to Animation (see "Animation category naming avoids ambiguity with vanilla gestures") and relocated from the Owner accordion to the shared Animation tab's Owner-role view.
+**Migration**: See the new "Owner Animation quick-command list is grouped and searchable" requirement.
+
+## ADDED Requirements
 
 ### Requirement: Category tabs present role-aware content
 The main module navigation SHALL present one tab per shared gameplay category - Title, Outfit, Animation, Moodles, Restraints, Custom Trigger Bundles, Collar, and Follow / Leash - visible regardless of Role. Each shared category tab SHALL show that category's Sub-side alias-authoring controls when the local Role is Sub, and that category's Owner-side browse/send controls (preserving each category's existing add, import, compose, copy, and send operations) when the local Role is Owner. Switching Role SHALL change only which view a shared category tab renders - not which tab is currently selected, the saved data underlying either view, or any other tab's expanded/collapsed state. Each shared category's icon SHALL be the same regardless of which role's view is currently rendered.
@@ -37,26 +45,26 @@ The system SHALL present Collar and Follow / Leash as two independent tabs rathe
 - **THEN** collar lock/unlock quick commands appear on the Collar tab and leash quick commands appear on the Follow / Leash tab, each independent of the other
 
 ### Requirement: Sync tab holds catalog relay sync and import/reset
-The system SHALL present a Sync tab, visible regardless of Role, holding the catalog relay sync controls and the import/reset controls. When the local Role is Owner, these controls SHALL function as an Owner's catalog sync always has. When the local Role is Sub, the tab SHALL present every catalog-related action end to end: an explanation that relay sync itself is the Owner's action with nothing to click for it here; the per-category scanning controls (Wardrobe, Animation, Moodles, Restraints) and a "Scan all" convenience button; and the offline/manual catalog export action. Settings SHALL NOT hold a scanning section of its own - the "Catalog sync (relay)" Permissions toggle is a separate, unaffected control.
+The system SHALL present a Sync tab, visible regardless of Role, holding the catalog relay sync controls and the import/reset controls previously found at the top of the Owner accordion. When the local Role is Owner, these controls SHALL function exactly as they did before this change. When the local Role is Sub, the tab SHALL present every catalog-related action end to end: an explanation that relay sync itself is the Owner's action with nothing to click for it here; the per-category scanning controls (Wardrobe, Animation, Moodles, Restraints) and the "Scan all" convenience button, previously in Settings' "Scan & Export" card; and the offline/manual catalog export action, also previously in that card. Settings SHALL NOT retain a scanning section of its own once this moves - the "Catalog sync (relay)" Permissions toggle SHALL remain unaffected by this change.
 
 #### Scenario: Owner uses the Sync tab
 - **WHEN** the local Role is Owner and the Owner selects the Sync tab
-- **THEN** catalog relay sync and import/reset are available there
+- **THEN** catalog relay sync and import/reset behave exactly as they did in the former Owner accordion
 
 #### Scenario: Sub scans and exports their catalog from the Sync tab
 - **WHEN** the local Role is Sub and the Sub selects the Sync tab
-- **THEN** the tab explains that relay sync is the Owner's action, offers the per-category scan controls and "Scan all" button, and offers an "Export..." control (disabled until at least one category has been scanned or a Restraints device tagged) that writes a catalog file to send the Owner
+- **THEN** the tab explains that relay sync is the Owner's action, offers the same per-category scan controls and "Scan all" button previously found in Settings, and offers an "Export..." control (disabled until at least one category has been scanned or a Restraints device tagged) that writes the same file Settings used to export
 
-#### Scenario: Settings has no scanning section
-- **WHEN** a user opens Settings
-- **THEN** no scanning controls appear there - scanning lives entirely on the Sync tab
+#### Scenario: Settings no longer has a scanning section
+- **WHEN** a user opens Settings after this change
+- **THEN** no "Scanning" tab or scan controls remain there - Identity & Pairing and ToS are the tabs that remain
 
 #### Scenario: Reset imports also clears the browsable mod catalogs
 - **WHEN** the Owner uses "Reset imports" on the Sync tab
 - **THEN** the imported Animation and Restraints mod catalogs are cleared in addition to the imported quick-command lists, so a stale or duplicate entry from an earlier import cannot linger until the next one
 
 ### Requirement: An empty Owner quick-command list points to the Sync tab
-When the local Role is Owner and a shared category's quick-command list is empty because nothing has been imported yet, the system SHALL offer a control that switches directly to the Sync tab, rather than only naming it in text.
+When the local Role is Owner and a shared category's quick-command list is empty because nothing has been imported yet, the system SHALL offer a control that switches directly to the Sync tab, rather than only naming it in text - since Import commands no longer sits on the same tab the empty list is shown on.
 
 #### Scenario: Owner follows the prompt from an empty category
 - **WHEN** the local Role is Owner and the Outfit, Animation, or Moodles tab's quick-command list is empty
@@ -88,17 +96,6 @@ The system SHALL label the Sub-side Outfit category tab as "Outfit", matching it
 - **WHEN** a user views Settings' Scan & Export section
 - **THEN** its "Wardrobe design allowlist & scan" wording is unchanged by this rename
 
-### Requirement: Safeword has one canonical configuration surface
-The main character header SHALL be the sole visible safeword configuration surface. Settings SHALL continue to explain how `/oathboundpanic` (aliased as `/collarpanic`) works when relevant but SHALL NOT display a second safeword input.
-
-#### Scenario: User opens Settings
-- **WHEN** the safeword editor is available in the main character header
-- **THEN** Settings does not render a duplicate safeword input or a conflicting editable value
-
-#### Scenario: User needs to configure safety
-- **WHEN** the user views the main character header in any pairing state
-- **THEN** the existing safeword editor remains available there
-
 ### Requirement: Owner Animation quick-command list is grouped and searchable
 The Owner-role view of the Animation tab's quick-command list SHALL present its entries grouped by their source mod and option group, with a text search control that filters visible entries by mod, group, animation, or trigger name - the same grouped/searchable presentation the Sub's animation picker window already provides. A flat, ungrouped scroll of every entry SHALL NOT be the list's only presentation once the list exceeds a small number of entries.
 
@@ -114,6 +111,8 @@ The Owner-role view of the Animation tab's quick-command list SHALL present its 
 - **WHEN** the Owner clears the search text
 - **THEN** every Animation quick-command entry becomes visible again, grouped as before
 
+## MODIFIED Requirements
+
 ### Requirement: Clear all sits at the far right of its section's title row
 Each quick-command section that offers a "Clear all" control (Outfit, Animation, Moodles, Restraints) SHALL place that control on the same row as the section's title, aligned to the far right, matching the placement already used elsewhere for a section title row.
 
@@ -127,39 +126,6 @@ The Sync tab SHALL show a "Reset imports" control next to the existing "Import c
 #### Scenario: Owner locates the reset-imports control
 - **WHEN** the Owner views the Sync tab's import controls
 - **THEN** "Reset imports" is visible immediately next to "Import commands"
-
-### Requirement: Settings' top cards never scroll internally
-Settings' Identity & Pairing card, Automation risk acknowledgement card, and "Test an Owner command" card SHALL render directly into the window's own content flow rather than as fixed-height scrolling regions, so their content is never clipped or hidden behind an internal scrollbar regardless of pairing state or window size - the same layout already used for the Scan & Export section.
-
-#### Scenario: Identity & Pairing shows a pending request without scrolling
-- **WHEN** a pairing request is pending and the same-role warning is also showing
-- **THEN** every line of the Identity & Pairing card, including the Accept/Reject buttons, is visible without an internal scrollbar
-
-#### Scenario: Automation risk acknowledgement is never clipped
-- **WHEN** the Settings window is at its minimum supported size
-- **THEN** the Automation risk acknowledgement checkbox and its explanatory text are fully visible without an internal scrollbar
-
-#### Scenario: Test-an-Owner-command card is never clipped
-- **WHEN** the Settings window is at its minimum supported size
-- **THEN** the test input, run button, and result are fully visible without an internal scrollbar
-
-### Requirement: Automation risk acknowledgement is visible near the top of Settings
-The Automation risk acknowledgement card SHALL render immediately after the Identity & Pairing card, before Scan & Export, so it is visible without scrolling to the bottom of the window in the common case.
-
-#### Scenario: Settings opens at its default size
-- **WHEN** a user opens Settings at its default window size
-- **THEN** the Automation risk acknowledgement card is visible without scrolling past Scan & Export
-
-### Requirement: Restraint rule checkboxes are laid out two per row
-Every restraint restriction-rule checkbox editor (the Sub's device-capture editor, the Owner's per-quick-command editor, and the Owner's ad-hoc device editor) SHALL arrange its checkboxes (forced pose, walk-only, action block, Gagged, Arms Cuffed, Legs Cuffed, Full Body Cuffed) two per row instead of one per row, reducing the editor's vertical footprint. Each bound-animation rule's "Choose..." control and chosen-animation label SHALL remain attached to its own checkbox regardless of row position.
-
-#### Scenario: Rule editor renders two checkboxes per row
-- **WHEN** any restraint rule checkbox editor is drawn
-- **THEN** its seven rule checkboxes appear across four rows of two (the last row holding one), rather than seven separate rows
-
-#### Scenario: Bound-animation controls stay attached to their own checkbox
-- **WHEN** Arms Cuffed, Legs Cuffed, or Full Body Cuffed is checked in the two-per-row layout
-- **THEN** that rule's own "Choose..." button and chosen-animation label appear associated with that checkbox, not the one sharing its row
 
 ### Requirement: Owner can favorite quick commands for quick access
 The system SHALL let the Owner mark any saved quick command, in any of the seven categories (Title, Outfit, Animation, Follow, Moodles, Restraints, Custom Trigger Bundles), as a favorite via a toggle shown next to that entry in its normal quick-command list. Favorite state SHALL persist with the quick command and SHALL NOT affect its normal Send/Copy/Remove behavior in its own category's list.
@@ -202,18 +168,3 @@ The system SHALL provide a quick-access dropdown menu (not an ImGui window). Whe
 #### Scenario: Sub sees only the plain open-window shortcuts
 - **WHEN** the Role is Sub and the Sub opens the quick-access menu
 - **THEN** the menu shows only "Open main window" and "Open settings" - no favorites list
-
-### Requirement: A movable on-screen button opens the quick-access favorites menu
-The system SHALL show a compact, movable on-screen button - styled to sit unobtrusively over the game UI rather than as a native ImGui window titlebar/frame - that opens the quick-access favorites menu, and is the sole surface for doing so (no server-info-bar entry). Its position SHALL default to the bottom-right of the screen and SHALL be configurable via a Settings control, persisting across sessions.
-
-#### Scenario: On-screen button opens the quick-access menu
-- **WHEN** the Owner clicks the on-screen favorites button
-- **THEN** the quick-access favorites menu opens at the button's location, or closes if it was already open
-
-#### Scenario: Button position is repositionable
-- **WHEN** the Owner changes the favorites button's position in Settings
-- **THEN** the button renders at the new position and continues doing so across subsequent plugin sessions
-
-#### Scenario: Button defaults to bottom-right
-- **WHEN** the Owner has never configured a favorites button position
-- **THEN** the button renders at the bottom-right of the screen

@@ -436,9 +436,24 @@ public class RestraintCatalogExportEntry
 [Serializable]
 public class PluginConfig : IPluginConfiguration
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
 
     public PluginRole Role { get; set; } = PluginRole.Sub;
+
+    /// collar/onboarding: whether the first-run Welcome window (Role + trigger phrase setup) has been
+    /// completed or dismissed. An install that predates this field is migrated to `true` on load (see
+    /// Plugin.MigrateConfiguration) - it must never pop the Welcome window in front of an already-configured
+    /// install.
+    public bool HasCompletedWelcome { get; set; }
+
+    /// collar/onboarding: tracked independently per Role - the Owner guided tutorial runs automatically the
+    /// first time Role is ever set to Owner (including via the Welcome window itself), and never again
+    /// automatically once true. Settings' "Rerun Tutorial" replays it without touching this flag.
+    public bool HasSeenOwnerTutorial { get; set; }
+
+    /// collar/onboarding: the Sub-side equivalent of HasSeenOwnerTutorial - independent of it, since a user
+    /// who has seen one Role's tutorial has not necessarily seen the other's.
+    public bool HasSeenSubTutorial { get; set; }
 
     public PairingState Pairing { get; set; } = new();
     public DeviceIdentityState DeviceIdentity { get; set; } = new();

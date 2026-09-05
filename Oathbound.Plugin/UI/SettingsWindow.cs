@@ -16,8 +16,8 @@ namespace Oathbound.Plugin.UI;
 
 /// Role, pairing identity, trigger phrase, scan scopes, and scanning live here - the "infrastructure"
 /// side of setup, shared regardless of which alias you're about to define. What each alias actually maps
-/// to (title text, which scanned design/gesture, follow words) lives in CollarWindow's own Title/Wardrobe/
-/// Gesture/Collar tabs instead. Safeword configuration stays in the always-visible character header.
+/// to (title text, which scanned design/animation, follow words) lives in CollarWindow's own Title/Outfit/
+/// Animation/Collar tabs instead. Safeword configuration stays in the always-visible character header.
 /// Everything here stays
 /// visible regardless of Role, same as CollarWindow's tabs - you can scan/configure before ever flipping
 /// to Sub. Opened via the plugin installer's gear icon (OpenConfigUi) and the `/oathboundsettings` command.
@@ -30,10 +30,6 @@ public class SettingsWindow : Window, IDisposable
     private bool confirmingIdentityReset;
     private bool confirmingInviteReplace;
     private string triggerPhraseInput = "";
-    private string gestureModSearch = "";
-    private string penumbraFolderSearch = "";
-    private string newWardrobeAllowlistFolder = "";
-    private string? scanAndExportResult;
     private string testCommandInput = "";
     private int testCustomTriggerIndex;
 
@@ -65,13 +61,14 @@ public class SettingsWindow : Window, IDisposable
         triggerPhraseInput = config.TriggerPhrase;
     }
 
-    /// Split into tabs (previously one long vertically-stacked flow) once Scan & Export's own growth made
-    /// the whole window too tall to comfortably navigate in one scroll region - each tab now scrolls
-    /// independently within the window's remaining space. Grouped by what they're for, not just by prior
-    /// visual order: Identity & Pairing is setup you do once; Scanning is catalog upkeep you repeat as your
-    /// designs/mods/statuses change; ToS bundles every risk acknowledgement together with the one local
+    /// Split into tabs (previously one long vertically-stacked flow) once this window's growth made it too
+    /// tall to comfortably navigate in one scroll region - each tab now scrolls independently within the
+    /// window's remaining space. Grouped by what they're for, not just by prior visual order: Identity &
+    /// Pairing is setup you do once; ToS bundles every risk acknowledgement together with the one local
     /// testing tool, since testing a command is usually the next thing you do right after enabling a
-    /// permission those acknowledgements gate.
+    /// permission those acknowledgements gate. Scanning itself moved to the main window's Sync tab
+    /// (collar/ui-organization) - it's catalog upkeep, grouped with the rest of catalog sync now rather
+    /// than living here.
     public override void Draw()
     {
         var config = plugin.Configuration;
@@ -84,12 +81,8 @@ public class SettingsWindow : Window, IDisposable
             DrawIdentityCard(config);
             ImGui.Spacing();
             DrawFavoritesButtonCard(config);
-            ImGui.EndTabItem();
-        }
-
-        if (ImGui.BeginTabItem("Scanning"))
-        {
-            DrawScanAndExportCard(config);
+            ImGui.Spacing();
+            DrawTutorialCard(config);
             ImGui.EndTabItem();
         }
 
@@ -122,7 +115,7 @@ public class SettingsWindow : Window, IDisposable
         var savedTriggers = new List<(string Label, string Command)>
         {
             ($"Title · Clear", aliases.ClearTitleAlias),
-            ("Wardrobe · Unlock", "unlock"),
+            ("Outfit · Unlock", "unlock"),
             ($"Follow · Engage", aliases.Follow.EngageAlias),
             ($"Follow · Release", aliases.Follow.ReleaseAlias),
             ($"Moodle · Clear", aliases.ClearMoodleAlias),
@@ -131,8 +124,8 @@ public class SettingsWindow : Window, IDisposable
             ("Restraints · Unlock all", "restraint unlock"),
         };
         savedTriggers.AddRange(aliases.Titles.Select(a => ($"Title · {a.Alias}", a.Alias)));
-        savedTriggers.AddRange(aliases.Outfits.Select(a => ($"Wardrobe · {a.Alias}", a.Alias)));
-        savedTriggers.AddRange(aliases.Gestures.Select(a => ($"Gesture · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(aliases.Outfits.Select(a => ($"Outfit · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(aliases.Gestures.Select(a => ($"Animation · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.Moodles.Select(a => ($"Moodle · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.Restraints.Select(a => ($"Restraint · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.CustomTriggers.Select(a => ($"Custom Trigger · {a.Alias}", a.Alias)));
@@ -196,7 +189,7 @@ public class SettingsWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextWrapped("Role determines which side of the pairing you are - it doesn't hide anything in the main window, so you can set up aliases or use the Owner tab regardless.");
+        ImGui.TextWrapped("Role determines which side of the pairing you are - every shared category tab in the main window shows its Sub or Owner view based on this, so nothing here is hidden by Role.");
         using (ImRaii.Disabled(subLocked))
         {
             var roleIndex = config.Role == PluginRole.Owner ? 1 : 0;
@@ -204,6 +197,10 @@ public class SettingsWindow : Window, IDisposable
             {
                 config.Role = roleIndex == 1 ? PluginRole.Owner : PluginRole.Sub;
                 config.Save();
+                // collar/onboarding "Tutorial completion is tracked independently per Role": the shared
+                // path (also used by the Welcome window) for launching a Role's guided tutorial the first
+                // time that Role is ever selected on this install.
+                plugin.TutorialDriver.StartIfUnseen(config.Role);
             }
         }
         IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only Sub actually gates anything. Owner is mostly informational. Either role can send the invitation first - whoever does, the other side just needs to Accept.");
@@ -427,306 +424,18 @@ public class SettingsWindow : Window, IDisposable
         IconGlyph.HelpMarker("How far the button sits from the chosen screen corner, in pixels.");
     }
 
-    /// collar/catalog-sync: one section replacing the former separate Wardrobe/Gesture/Moodles scan cards
-    /// - each category's own scope controls and feedback are unchanged, just grouped here with a "Scan
-    /// all" action and the unified file export on top. Restraints scans independently of Wardrobe, with
-    /// its own folder allowlist - bondage/restriction-themed designs and everyday outfits live in
-    /// different Glamourer folders in practice, so they need different filters.
-    ///
-    /// Deliberately NOT wrapped in a Card (unlike every other section here) - a Card is a fixed-height
-    /// BeginChild, and this section's content has grown every time a category was added to it (most
-    /// recently Restraints) and will again. A hand-guessed fixed height drifts out of sync with actual
-    /// content and creates a second, nested scroll region on top of the Settings window's own - the
-    /// "can't reach the bottom" bug this replaces. Rendering directly into the window's own flow means
-    /// there's exactly one scrollbar (the window's), which already grows/shrinks correctly with content.
-    private void DrawScanAndExportCard(PluginConfig config)
+    /// collar/onboarding "Settings offers a control to rerun the current Role's tutorial": its own card at
+    /// the bottom of Identity & Pairing, below the quick-access button card - a deliberate on-demand action
+    /// rather than one more control folded into the pairing/identity card above it.
+    private void DrawTutorialCard(PluginConfig config)
     {
-        IconGlyph.Text(FontAwesomeIcon.Search, "Scan & Export");
+        IconGlyph.Text(FontAwesomeIcon.GraduationCap, "Guided tutorial");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Scan every catalog at once below, then export one file to send your Owner - they fill every quick-command list from it in one action via the Owner tab's \"Import commands\" button.");
+        ImGui.TextWrapped("Replays the guided tour of each tab for your current Role, even if you've already seen it.");
 
-        if (ImGui.Button("Scan all"))
-        {
-            plugin.OutfitCommand.Rescan();
-            plugin.GestureCommand.Rescan();
-            plugin.MoodlesCommand.Rescan();
-            plugin.RestraintCommand.RescanCatalog();
-            scanAndExportResult = null;
-        }
-        IconGlyph.HelpMarker("Rescans Wardrobe, Gesture, Moodles, and the explicitly shared Penumbra restraint folders. Captured item devices are left untouched.");
-
-        ImGui.SameLine();
-        var hasAnythingToExport = plugin.OutfitCommand.LastScanTotalDesigns is not null || plugin.GestureCommand.LastScanTotalMods is not null ||
-            plugin.MoodlesCommand.LastScanTotalStatuses is not null || config.RestraintMapping.Devices.Count > 0;
-        using (ImRaii.Disabled(!hasAnythingToExport))
-        {
-            if (ImGui.Button("Export..."))
-            {
-                plugin.FileDialogManager.SaveFileDialog("Export Collar catalog", ".txt", "collar-export", ".txt", (ok, path) =>
-                {
-                    if (!ok)
-                        return;
-                    try
-                    {
-                        System.IO.File.WriteAllText(path, plugin.CatalogSyncService.BuildExport());
-                        scanAndExportResult = $"Exported to {path} - send this file to your Owner.";
-                    }
-                    catch (Exception ex)
-                    {
-                        scanAndExportResult = $"Export failed: {ex.Message}";
-                    }
-                });
-            }
-        }
-        if (!hasAnythingToExport)
-            IconGlyph.HelpMarker("Scan at least one category, or tag a Restraints device, before exporting.");
-        if (scanAndExportResult is not null)
-            IconGlyph.WrappedColored(scanAndExportResult.StartsWith("Export failed", StringComparison.Ordinal) ? Theme.Danger : Theme.Success, scanAndExportResult);
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        DrawWardrobeScanBody(config);
-        ImGui.Spacing();
-        DrawGestureScanBody(config);
-        ImGui.Spacing();
-        DrawRestraintScanBody(config);
-        ImGui.Spacing();
-        DrawMoodlesScanBody(config);
-        ImGui.Spacing();
-        ImGui.Separator();
-    }
-
-    private void DrawWardrobeScanBody(PluginConfig config)
-    {
-        IconGlyph.Text(FontAwesomeIcon.Tshirt, "Wardrobe design allowlist & scan");
-        ImGui.Separator();
-        IconGlyph.WrappedDisabled("No folders = all saved designs. Add folders only when you want to restrict the catalog. Outfit aliases live in the main window's Wardrobe tab.");
-        IconGlyph.HelpMarker("With folders configured, only designs inside those Glamourer design-browser folder prefixes are scanned. Clear every folder to scan all saved designs.");
-
-        DrawAllowlistBody(config.WardrobeFolderAllowlist, ref newWardrobeAllowlistFolder, "wardrobe");
-
-        ImGui.Spacing();
-        if (ImGui.Button("Rescan wardrobe"))
-            plugin.OutfitCommand.Rescan();
-        IconGlyph.HelpMarker("Re-reads your saved Glamourer designs. An empty folder list includes all designs; otherwise only matching folders are included.");
-
-        DrawWardrobeScanFeedback();
-    }
-
-    private void DrawWardrobeScanFeedback()
-    {
-        var wardrobe = plugin.Configuration.WardrobeMapping;
-        var lastScanTotal = plugin.OutfitCommand.LastScanTotalDesigns;
-
-        if (lastScanTotal is null)
-        {
-            IconGlyph.WrappedDisabled("Not scanned yet this session.");
-            return;
-        }
-
-        var matched = wardrobe.LocalDesigns.Count;
-        var color = matched > 0 ? Theme.Success : Theme.Warning;
-        var scope = plugin.Configuration.WardrobeFolderAllowlist.Count == 0 ? "all-design mode" : "folder-filtered mode";
-        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved design(s); {matched} available ({scope}).");
-
-        if (matched == 0)
-            return;
-
-        if (ImGui.SmallButton("Copy names##wardrobe"))
-            ImGui.SetClipboardText(string.Join("\n", wardrobe.LocalDesigns.Values.Select(d => d.Name)));
-        IconGlyph.HelpMarker("Copies the list below as plain text, one design per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with a direct override (\"outfit lock <name>\").");
-
-        using var _ = ImRaii.Child("wardrobeCatalog", new Vector2(0, 80), true);
-        foreach (var entry in wardrobe.LocalDesigns.Values)
-            ImGui.BulletText(entry.Name);
-    }
-
-    private void DrawGestureScanBody(PluginConfig config)
-    {
-        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation mods to scan");
-        ImGui.Separator();
-        IconGlyph.WrappedDisabled("No folders and no selected mods scans everything. Folders select a union; explicit mods narrow that union.");
-        DrawPenumbraFolderPicker("Animation folders", config.SelectedGestureFolders, config);
-        ImGui.InputTextWithHint("##gestureModSearch", "Search mod names...", ref gestureModSearch, 128);
-        var installed = plugin.GestureCommand.GetInstalledMods();
-        using (ImRaii.Child("gestureModPicker", new Vector2(0, 180), true))
-        {
-            foreach (var mod in installed.Where(m =>
-                         (config.SelectedGestureFolders.Count == 0 || (m.SortPath is { } path && config.SelectedGestureFolders.Any(f =>
-                             path.Equals(f, StringComparison.OrdinalIgnoreCase) || path.StartsWith(f + "/", StringComparison.OrdinalIgnoreCase)))) &&
-                         (string.IsNullOrWhiteSpace(gestureModSearch) || m.Name.Contains(gestureModSearch.Trim(), StringComparison.OrdinalIgnoreCase))))
-            {
-                var selected = config.SelectedGestureMods.Contains(mod.Directory);
-                if (ImGui.Checkbox($"{mod.Name}##gestureMod_{mod.Directory}", ref selected))
-                {
-                    if (selected) config.SelectedGestureMods.Add(mod.Directory); else config.SelectedGestureMods.Remove(mod.Directory);
-                    config.Save();
-                }
-                if (mod.SortPath != null) { ImGui.SameLine(); IconGlyph.WrappedDisabled(mod.SortPath); }
-            }
-        }
-
-        ImGui.Spacing();
-        if (ImGui.Button("Rescan gestures"))
-            plugin.GestureCommand.Rescan();
-        IconGlyph.HelpMarker("Reads every installed mod when none are selected, or only explicit selections otherwise. Disabled mods remain eligible and are enabled temporarily when played.");
-
-        DrawGestureScanFeedback();
-    }
-
-    private void DrawRestraintScanBody(PluginConfig config)
-    {
-        IconGlyph.Text(FontAwesomeIcon.Lock, "Shared Penumbra restraints");
-        ImGui.Separator();
-        IconGlyph.WrappedDisabled("Only options below folders selected here are shared with your Owner. No folders means no Penumbra restraints are shared.");
-        DrawPenumbraFolderPicker("Restraint folders", config.SelectedRestraintFolders, config);
-        if (ImGui.Button("Rescan restraints")) plugin.RestraintCommand.RescanCatalog();
-        var command = plugin.RestraintCommand;
-        if (command.LastScanError is { } error) IconGlyph.WrappedColored(Theme.Danger, error);
-        else if (command.LastScanTotalMods is not null)
-            IconGlyph.WrappedColored(config.RestraintMapping.LocalCatalog.Count > 0 ? Theme.Success : Theme.Warning,
-                $"Matched {command.LastScanMatchedMods} mod(s); found {config.RestraintMapping.LocalCatalog.Count} restraint option(s).");
-        if (config.SelectedRestraintFolders.Count == 0)
-            IconGlyph.WrappedColored(Theme.Warning, "No folders selected: the shared Penumbra restraint catalog is empty.");
-        using var child = ImRaii.Child("restraintCatalogPreview", new Vector2(0, 100), true);
-        foreach (var entry in config.RestraintMapping.LocalCatalog.Values.OrderBy(x => x.ModName))
-            ImGui.BulletText(entry.ModName);
-    }
-
-    private void DrawPenumbraFolderPicker(string label, List<string> selected, PluginConfig config)
-    {
-        var installed = plugin.GestureCommand.GetInstalledMods();
-        var folders = installed.Select(x => x.SortPath).Where(x => !string.IsNullOrWhiteSpace(x))
-            .SelectMany(x => ParentFolders(x!)).Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
-        var preview = selected.Count == 0 ? "None" : $"{selected.Count} selected";
-        if (ImGui.BeginCombo($"{label}##{label}", preview))
-        {
-            ImGui.InputTextWithHint($"##folderSearch{label}", "Search folders...", ref penumbraFolderSearch, 128);
-            foreach (var folder in folders.Where(x => string.IsNullOrWhiteSpace(penumbraFolderSearch) || x.Contains(penumbraFolderSearch, StringComparison.OrdinalIgnoreCase)))
-            {
-                var chosen = selected.Contains(folder, StringComparer.OrdinalIgnoreCase);
-                if (ImGui.Selectable(folder, chosen, ImGuiSelectableFlags.DontClosePopups))
-                {
-                    if (chosen) selected.RemoveAll(x => x.Equals(folder, StringComparison.OrdinalIgnoreCase)); else selected.Add(folder);
-                    config.Save();
-                }
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip(folder);
-            }
-            ImGui.EndCombo();
-        }
-        foreach (var folder in selected.ToList())
-        {
-            var missing = !folders.Contains(folder, StringComparer.OrdinalIgnoreCase);
-            ImGui.TextUnformatted(missing ? $"{folder} (missing)" : folder);
-            ImGui.SameLine();
-            if (ImGui.SmallButton($"Remove##{label}{folder}")) { selected.Remove(folder); config.Save(); }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(folder);
-        }
-    }
-
-    private static IEnumerable<string> ParentFolders(string path)
-    {
-        var normalized = path.Replace('\\', '/').Trim('/');
-        var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        for (var i = 1; i < parts.Length; i++) yield return string.Join('/', parts.Take(i));
-    }
-
-    private void DrawGestureScanFeedback()
-    {
-        var gestureMapping = plugin.Configuration.GestureMapping;
-        var lastScanTotal = plugin.GestureCommand.LastScanTotalMods;
-
-        if (lastScanTotal is null)
-        {
-            IconGlyph.WrappedDisabled("Not scanned yet this session.");
-            return;
-        }
-
-        if (plugin.GestureCommand.LastScanError is { } error)
-        {
-            IconGlyph.WrappedColored(Theme.Danger, error);
-            return;
-        }
-        var matched = gestureMapping.LocalCatalog.Count;
-        var color = matched > 0 ? Theme.Success : Theme.Warning;
-        var selectionCount = plugin.Configuration.SelectedGestureMods.Count;
-        var scope = selectionCount == 0 ? "all-mod mode" : $"{selectionCount} explicitly selected";
-        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} installed mod(s); {scope}; {matched} animation trigger(s) discovered.");
-
-        if (matched == 0 && lastScanTotal > 0)
-        {
-            ImGui.TextWrapped("No playable animation options were found in the current scan scope.");
-            return;
-        }
-
-        if (matched == 0)
-            return;
-
-        if (ImGui.SmallButton("Copy names##gesture"))
-        {
-            ImGui.SetClipboardText(plugin.GestureCommand.ExportCatalog());
-        }
-        IconGlyph.HelpMarker("Copies versioned entries containing the mod, animation option, tied trigger, and selections for the Owner's Add from clipboard action.");
-
-        using var _ = ImRaii.Child("gestureCatalog", new Vector2(0, 80), true);
-        foreach (var entry in gestureMapping.LocalCatalog.Values)
-        {
-            ImGui.BulletText(entry.Label);
-        }
-    }
-
-    /// collar/moodles: no folder allowlist, unlike Wardrobe/Gesture - Moodles statuses have no folder-
-    /// organization concept, every registered status is eligible (design.md's decision). Reads individual
-    /// statuses (buffs/debuffs) rather than bundled presets, so the Owner can command a single status.
-    private void DrawMoodlesScanBody(PluginConfig config)
-    {
-        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles status scan");
-        ImGui.Separator();
-        IconGlyph.WrappedDisabled("Reads your own registered Moodles statuses (buffs/debuffs) directly - nothing to allowlist. Moodles apply/clear commands live in the main window's Owner tab.");
-
-        if (ImGui.Button("Rescan Moodles statuses"))
-            plugin.MoodlesCommand.Rescan();
-        IconGlyph.HelpMarker("Re-reads your registered statuses from your own Moodles plugin - run this after adding a new status before it'll show up for your Owner to reference.");
-
-        DrawMoodlesScanFeedback();
-    }
-
-    private void DrawMoodlesScanFeedback()
-    {
-        var moodlesMapping = plugin.Configuration.MoodlesMapping;
-        var lastScanTotal = plugin.MoodlesCommand.LastScanTotalStatuses;
-
-        if (plugin.MoodlesCommand.LastScanStatus is MoodlesScanStatus.Unavailable or MoodlesScanStatus.Failed)
-        {
-            IconGlyph.WrappedColored(Theme.Danger, plugin.MoodlesCommand.LastScanError ?? "Moodles status scan failed.");
-            if (moodlesMapping.LocalCatalog.Count > 0)
-                IconGlyph.WrappedDisabled($"Keeping {moodlesMapping.LocalCatalog.Count} status(es) from the last successful scan.");
-            return;
-        }
-
-        if (lastScanTotal is null)
-        {
-            IconGlyph.WrappedDisabled("Not scanned yet this session.");
-            return;
-        }
-
-        IconGlyph.WrappedColored(Theme.Success, $"Scan succeeded: found {lastScanTotal} registered status(es).");
-
-        if (lastScanTotal == 0)
-            return;
-
-        if (ImGui.SmallButton("Copy names##moodles"))
-            ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(s => s.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x)));
-        IconGlyph.HelpMarker("Copies the list below as plain text, one status per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
-
-        using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);
-        foreach (var entry in moodlesMapping.LocalCatalog.Values)
-        {
-            ImGui.PushID(entry.StatusId);
-            ImGui.BulletText(entry.Name);
-            ImGui.PopID();
-        }
+        if (ImGui.Button("Rerun Tutorial"))
+            plugin.TutorialDriver.Start(config.Role);
+        IconGlyph.HelpMarker("Doesn't affect the other Role's own first-time tutorial.");
     }
 
     /// Backs Settings' "Test an Owner command" control (`collar/chat-transport`'s "An Owner-style command
@@ -751,46 +460,18 @@ public class SettingsWindow : Window, IDisposable
         }
     }
 
-    /// Wardrobe folder scopes use "empty = all" semantics and prefix matching when narrowed.
-    private void DrawAllowlistBody(List<string> allowlist, ref string newFolderInput, string idSuffix)
-    {
-        for (var i = 0; i < allowlist.Count; i++)
-        {
-            ImGui.PushID(i);
-            ImGui.BulletText(allowlist[i]);
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Remove"))
-            {
-                allowlist.RemoveAt(i);
-                plugin.Configuration.Save();
-                ImGui.PopID();
-                break;
-            }
-            ImGui.PopID();
-        }
-
-        ImGui.InputText($"##newFolder_{idSuffix}", ref newFolderInput, 128);
-        ImGui.SameLine();
-        if (ImGui.Button($"Add folder##{idSuffix}") && newFolderInput.Length > 0)
-        {
-            allowlist.Add(newFolderInput);
-            plugin.Configuration.Save();
-            newFolderInput = "";
-        }
-    }
-
     private void DrawTosCard(PluginConfig config)
     {
         IconGlyph.Text(FontAwesomeIcon.ExclamationTriangle, "Automation risk acknowledgement");
         ImGui.Separator();
-        ImGui.TextWrapped("Required before the Gesture/Follow permission toggles can be enabled - see the README.");
+        ImGui.TextWrapped("Required before the Animation/Follow permission toggles can be enabled - see the README.");
 
         if (ImGuiCheckbox("I understand the automation-risk caveat (input blocking; sending is always your own click)", config.TosAcknowledged, out var newTos))
         {
             config.TosAcknowledged = newTos;
             config.Save();
         }
-        IconGlyph.HelpMarker("Required once before the Gesture and Follow permission toggles (in the Sub window's Permissions tab) can be enabled at all - Title and Outfit don't need it.");
+        IconGlyph.HelpMarker("Required once before the Animation and Follow permission toggles (in the Sub window's Permissions tab) can be enabled at all - Title and Outfit don't need it.");
     }
 
     /// collar/custom-triggers "Sending a chat message requires its own dedicated permission and
@@ -802,7 +483,7 @@ public class SettingsWindow : Window, IDisposable
     {
         IconGlyph.Text(FontAwesomeIcon.Comments, "Custom Trigger chat messages");
         ImGui.Separator();
-        IconGlyph.WrappedColored(Theme.Danger, "A Custom Trigger's chat action can send ANY text to ANY channel (including public party/say/yell chat), as your own character, triggered remotely by your Owner - unlike Gesture, which only ever fires a closed set of self-targeting pose/emote commands. Required before the \"Custom chat messages\" permission (Permissions tab) can be enabled at all.");
+        IconGlyph.WrappedColored(Theme.Danger, "A Custom Trigger's chat action can send ANY text to ANY channel (including public party/say/yell chat), as your own character, triggered remotely by your Owner - unlike Animation, which only ever fires a closed set of self-targeting pose/emote commands. Required before the \"Custom chat messages\" permission (Permissions tab) can be enabled at all.");
 
         if (ImGuiCheckbox("I understand a Custom Trigger's chat action can send arbitrary text to any channel, visible to other players, as my own character", config.CustomChatAcknowledged, out var newAck))
         {

@@ -13,33 +13,29 @@ using Glamourer.Api.Enums;
 
 namespace Oathbound.Plugin.UI;
 
-/// One window for both roles - Role (Settings) only changes what a few tabs say and whether incoming
-/// tells apply locally (ChatCommandListener), it no longer decides which window opens. Title/Wardrobe/
-/// Gesture/Permissions are "what I've set up for someone who might command me" and stay available
-/// regardless of Role (you might configure your own aliases before ever flipping to Sub); Owner is "what
-/// I need to command someone else" and is the one tab that's actually role-specific in spirit, even though
-/// nothing stops using it while set to Sub. Pairing status stays permanently above the nav bar. There is
-/// deliberately no panic button here - panic is the /oathboundpanic safeword (Settings), typed rather than
-/// clicked, so it can't be hit by accident or spotted by someone watching over a shoulder.
+/// One window for both roles (collar/ui-organization's shared, role-aware category-tab model) - Role
+/// (Settings) decides which view each shared tab (Title/Outfit/Animation/Moodles/Restraints/Custom
+/// Triggers/Collar/Follow) renders: Sub-side alias-authoring, or Owner-side browse/send. Permissions
+/// (Sub-only) and Sync (catalog relay sync/import/reset/export, role-aware content of its own) round out
+/// the nav bar; there is no separate Owner-only destination anymore. Pairing status stays permanently
+/// above the nav bar. There is deliberately no panic button here - panic is the /oathboundpanic safeword
+/// (Settings), typed rather than clicked, so it can't be hit by accident or spotted by someone watching
+/// over a shoulder.
 public class CollarWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
     private string activeModule = "title";
 
-    /// collar/ui-organization: lets the quick-access menu (or anything else outside this class) bring the
-    /// main window forward already on the Owner tab, instead of leaving it wherever it last was. A no-op
-    /// The Owner surface is also available as a read-only preview while configured as Sub so catalog/UI
-    /// development can be inspected without changing roles or disturbing an active pairing.
-    public void OpenOwnerTab()
-    {
-        activeModule = "owner";
-        IsOpen = true;
-    }
-
     /// collar/ui-organization "A movable on-screen button opens the quick-access favorites menu": the
-    /// menu's "Open main window" control - opens the window wherever it last was, unlike OpenOwnerTab
-    /// which forces the Owner tab.
+    /// menu's "Open main window" control - opens the window wherever it last was. There is no separate
+    /// "open to Owner tab" control anymore: every shared category tab already renders its Owner-role view
+    /// whenever Role is Owner, so this alone suffices to reach Owner content directly.
     public void OpenMainWindow() => IsOpen = true;
+
+    /// collar/onboarding: the one point of entry `TutorialDriver` uses to switch tabs from outside this
+    /// window - kept separate from the plain `activeModule` field so the driver never needs its own copy of
+    /// tab-switching logic.
+    public void SetActiveModuleForTutorial(string moduleId) => activeModule = moduleId;
 
     private string newTitleAlias = "";
     private string newTitleText = "";
@@ -117,6 +113,10 @@ public class CollarWindow : Window, IDisposable
     private string newFollowQuickText = "";
     private string? importResult;
     private string? resetImportsResult;
+    private string? subExportResult;
+    private string gestureModSearch = "";
+    private string penumbraFolderSearch = "";
+    private string newWardrobeAllowlistFolder = "";
     private bool revealSafeword;
     private int newCollarMoodleStatusIndex;
 
@@ -157,17 +157,22 @@ public class CollarWindow : Window, IDisposable
         public string? FullBodyCuffedAnimationId;
     }
 
+    /// collar/ui-organization "Category tabs present role-aware content": one tab per shared category
+    /// (each shows the Sub alias-authoring view or the Owner browse/send view depending on Role), plus
+    /// Permissions (Sub-only) and Sync (catalog relay sync/import/reset, no Sub-side counterpart). No tab
+    /// is visually separated from the rest anymore - see the "" trailingId passed to NavBar.Draw below.
     private static readonly (string Id, FontAwesomeIcon Icon, string Tooltip)[] NavItems =
     [
         ("title", FontAwesomeIcon.Heading, "Title"),
-        ("wardrobe", FontAwesomeIcon.Tshirt, "Wardrobe"),
-        ("gesture", FontAwesomeIcon.TheaterMasks, "Gesture"),
+        ("outfit", FontAwesomeIcon.Tshirt, "Outfit"),
+        ("animation", FontAwesomeIcon.TheaterMasks, "Animation"),
         ("moodles", FontAwesomeIcon.Smile, "Moodles"),
         ("restraints", FontAwesomeIcon.Handcuffs, "Restraints"),
         ("customtriggers", FontAwesomeIcon.BoltLightning, "Custom Triggers"),
         ("collar", FontAwesomeIcon.Lock, "Collar"),
+        ("follow", FontAwesomeIcon.Link, "Follow / Leash"),
         ("permissions", FontAwesomeIcon.ShieldAlt, "Permissions"),
-        ("owner", FontAwesomeIcon.Crown, "Owner"),
+        ("sync", FontAwesomeIcon.CloudDownloadAlt, "Sync"),
     ];
 
     public CollarWindow(Plugin plugin) : base("Oathbound###CollarWindow")
@@ -190,42 +195,477 @@ public class CollarWindow : Window, IDisposable
         DrawCharacterHeader();
         ImGui.Spacing();
 
-        if (NavBar.Draw(activeModule, "owner", NavItems) is { } clicked)
+        // collar/ui-organization: Permissions is Sub-only (what a Sub accepts from a paired Owner) - an
+        // Owner has nothing to configure there, so it's dropped from the nav bar entirely under that Role
+        // rather than shown with content that doesn't apply to them.
+        var isOwnerRole = plugin.Configuration.Role == PluginRole.Owner;
+        var visibleNavItems = isOwnerRole ? NavItems.Where(item => item.Id != "permissions").ToArray() : NavItems;
+        if (isOwnerRole && activeModule == "permissions")
+            activeModule = "title";
+
+        // "" never matches a real tab id, so nothing is drawn as a visually-separated trailing entry -
+        // collar/ui-organization no longer separates one tab from the rest (see NavItems).
+        if (NavBar.Draw(activeModule, "", visibleNavItems) is { } clicked)
             activeModule = clicked;
 
         ImGui.Spacing();
+        DrawTutorialCallout();
         using var card = Card.Begin("moduleCard");
+        var isOwner = plugin.Configuration.Role == PluginRole.Owner;
         switch (activeModule)
         {
             case "title":
-                DrawTitleModule();
+                if (isOwner) DrawTitleQuickSection(DrawOwnerCanSendBanner());
+                else DrawTitleModule();
                 break;
-            case "wardrobe":
-                DrawWardrobeModule();
+            case "outfit":
+                if (isOwner) DrawOutfitQuickSection(DrawOwnerCanSendBanner());
+                else DrawWardrobeModule();
                 break;
-            case "gesture":
-                DrawGestureModule();
+            case "animation":
+                if (isOwner) DrawGestureQuickSection(DrawOwnerCanSendBanner());
+                else DrawGestureModule();
                 break;
             case "moodles":
-                DrawMoodlesModule();
+                if (isOwner) DrawMoodlesQuickSection(DrawOwnerCanSendBanner());
+                else DrawMoodlesModule();
                 break;
             case "restraints":
-                DrawRestraintsModule();
+                if (isOwner) DrawRestraintQuickSection(DrawOwnerCanSendBanner());
+                else DrawRestraintsModule();
                 break;
             case "customtriggers":
-                DrawCustomTriggersModule();
+                if (isOwner)
+                {
+                    var canSend = DrawOwnerCanSendBanner();
+                    DrawCustomTriggerQuickSection(canSend);
+                    ImGui.Spacing();
+                    ImGui.Separator();
+                    IconGlyph.WrappedDisabled("Saved bundles and one-off commands");
+                    DrawFreeformComposer(canSend);
+                }
+                else
+                    DrawCustomTriggersModule();
                 break;
             case "collar":
-                DrawCollarModule();
+                if (isOwner) DrawCollarQuickSection(DrawOwnerCanSendBanner());
+                else DrawCollarModule();
                 break;
-            case "owner":
-                DrawOwnerModule();
+            case "follow":
+                if (isOwner) DrawFollowQuickSection(DrawOwnerCanSendBanner());
+                else DrawFollowLeashModule();
                 break;
             case "permissions":
                 DrawPermissionsCard();
                 break;
+            case "sync":
+                DrawSyncTab(isOwner);
+                break;
         }
         DrawQuickCommandEditor();
+    }
+
+    /// collar/onboarding: renders the current guided-tutorial step's explanation and Next/Exit controls
+    /// above the module card, driven entirely by `plugin.TutorialDriver` (see design.md's "Tutorial driver
+    /// lives outside CollarWindow" decision) - this window only reads the driver's current step each frame,
+    /// it never owns tutorial state itself.
+    private void DrawTutorialCallout()
+    {
+        var driver = plugin.TutorialDriver;
+        if (driver.CurrentStep is not { } step)
+            return;
+
+        var text = plugin.Configuration.Role == PluginRole.Owner ? step.OwnerText : step.SubText;
+        // Fixed, compact height + noScroll: Card.Begin's default (0,0) size fills all remaining window
+        // space in ImGui, which left no room for the module card below and forced the whole window to
+        // scroll - matching the nav bar's own fixed-height, noScroll card for the same reason.
+        using var card = Card.Begin("tutorialCallout", new Vector2(0, 130), noScroll: true);
+        IconGlyph.Text(FontAwesomeIcon.GraduationCap, $"Tutorial ({driver.CurrentStepNumber}/{driver.TotalSteps}): {step.TabLabel}");
+        ImGui.Separator();
+        ImGui.TextWrapped(text ?? "");
+        if (ImGui.Button(driver.IsLastStep ? "Finish" : "Next"))
+            driver.Advance();
+        ImGui.SameLine();
+        if (ImGui.Button("Exit tutorial"))
+            driver.ExitEarly();
+    }
+
+    /// collar/ui-organization "Category tabs present role-aware content": the "no /tell target yet"
+    /// warning DrawOwnerModule used to show once for the whole accordion, now shown at the top of every
+    /// shared category tab's Owner-role view instead. Returns whether Send should be enabled on that tab.
+    private bool DrawOwnerCanSendBanner()
+    {
+        var canSend = plugin.Configuration.Pairing.IsPaired;
+        if (!canSend)
+            IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until pairing captures your Sub's name (Settings' handshake), or is re-enabled after a panic/unpair. Copy still works any time.");
+        return canSend;
+    }
+
+    /// collar/ui-organization: replaces the stale "use \"Import commands\" above" message these
+    /// quick-command sections used to show back when Import commands lived in the same accordion just
+    /// above them - it's on its own Sync tab now, so this jumps there directly instead of naming a
+    /// location that's no longer nearby.
+    private void DrawGoToSyncTabPrompt(string message)
+    {
+        IconGlyph.WrappedDisabled(message);
+        if (ImGui.SmallButton("Go to Sync tab"))
+            activeModule = "sync";
+    }
+
+    /// collar/ui-organization "Sync tab holds catalog relay sync and import/reset": Owner gets the
+    /// existing catalog relay sync + offline file fallback controls; Sub gets the offline/manual export
+    /// action (see DrawSubExportSection) plus a note about the Permissions "Catalog sync (relay)" toggle -
+    /// scanning itself stays in Settings, since that's about this client's own local mod setup.
+    private void DrawSyncTab(bool ownerMode)
+    {
+        if (!ownerMode)
+        {
+            DrawSubExportSection();
+            return;
+        }
+
+        DrawCatalogRelaySection();
+        ImGui.Spacing();
+        if (ImGui.CollapsingHeader("Offline / legacy file fallback##catalogFileFallback"))
+        {
+            ImGui.Indent();
+            IconGlyph.WrappedDisabled("Use this only when relay sync is unavailable or when importing an older catalog file. Normal paired catalog updates use Cloudflare automatically.");
+            DrawImportCommandsButton();
+            ImGui.Unindent();
+        }
+    }
+
+    /// collar/ui-organization: the Sub-role view of the Sync tab. Relay sync itself is entirely the
+    /// Owner's action (request refresh) with nothing for the Sub to click - what the Sub actually does is
+    /// export a file for the offline/manual fallback, previously Settings' "Scan & Export" card, moved
+    /// here so a Sub has one real action on their own Sync tab instead of a purely informational message.
+    /// Scanning itself (rescanning designs/animations/moodles/restraint mods) stays in Settings, since
+    /// that's about this client's own local Penumbra/Glamourer/Moodles setup, not catalog sync.
+    /// collar/ui-organization: the Sub-role Sync tab now owns everything catalog-related end to end -
+    /// relay sync explanation, scanning (moved here from Settings' former "Scanning" tab), and the
+    /// offline/manual export action - rather than splitting scanning into Settings and sync/export here.
+    private void DrawSubExportSection()
+    {
+        var config = plugin.Configuration;
+        IconGlyph.Text(FontAwesomeIcon.CloudDownloadAlt, "Cloud catalog sync");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Your paired Owner refreshes your shared catalog through the Oathbound Cloudflare relay automatically - there's nothing to click for that here. Whether they're allowed to is the \"Catalog sync (relay)\" toggle in Permissions.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        IconGlyph.Text(FontAwesomeIcon.Search, "Scan");
+        IconGlyph.WrappedDisabled("Scan every catalog at once below, then export your resulting catalog for your Owner.");
+
+        if (ImGui.Button("Scan all"))
+        {
+            plugin.OutfitCommand.Rescan();
+            plugin.GestureCommand.Rescan();
+            plugin.MoodlesCommand.Rescan();
+            plugin.RestraintCommand.RescanCatalog();
+        }
+        IconGlyph.HelpMarker("Rescans Wardrobe, Animation, Moodles, and the explicitly shared Penumbra restraint folders. Captured item devices are left untouched.");
+
+        ImGui.Spacing();
+        DrawWardrobeScanBody(config);
+        ImGui.Spacing();
+        DrawGestureScanBody(config);
+        ImGui.Spacing();
+        DrawRestraintScanBody(config);
+        ImGui.Spacing();
+        DrawMoodlesScanBody(config);
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        IconGlyph.Text(FontAwesomeIcon.FileExport, "Offline / manual export");
+        IconGlyph.WrappedDisabled("Only needed if relay sync is unavailable. Export one file here to send your Owner manually.");
+
+        var hasAnythingToExport = plugin.OutfitCommand.LastScanTotalDesigns is not null || plugin.GestureCommand.LastScanTotalMods is not null ||
+            plugin.MoodlesCommand.LastScanTotalStatuses is not null || config.RestraintMapping.Devices.Count > 0;
+        using (ImRaii.Disabled(!hasAnythingToExport))
+        {
+            if (ImGui.Button("Export..."))
+            {
+                plugin.FileDialogManager.SaveFileDialog("Export Collar catalog", ".txt", "collar-export", ".txt", (ok, path) =>
+                {
+                    if (!ok)
+                        return;
+                    try
+                    {
+                        System.IO.File.WriteAllText(path, plugin.CatalogSyncService.BuildExport());
+                        subExportResult = $"Exported to {path} - send this file to your Owner.";
+                    }
+                    catch (Exception ex)
+                    {
+                        subExportResult = $"Export failed: {ex.Message}";
+                    }
+                });
+            }
+        }
+        if (!hasAnythingToExport)
+            IconGlyph.HelpMarker("Scan at least one category above, or tag a Restraints device, before exporting.");
+        if (subExportResult is not null)
+            IconGlyph.WrappedColored(subExportResult.StartsWith("Export failed", StringComparison.Ordinal) ? Theme.Danger : Theme.Success, subExportResult);
+    }
+
+    private void DrawWardrobeScanBody(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Tshirt, "Wardrobe design allowlist & scan");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("No folders = all saved designs. Add folders only when you want to restrict the catalog. Outfit aliases live in the main window's Outfit tab.");
+        IconGlyph.HelpMarker("With folders configured, only designs inside those Glamourer design-browser folder prefixes are scanned. Clear every folder to scan all saved designs.");
+
+        DrawAllowlistBody(config.WardrobeFolderAllowlist, ref newWardrobeAllowlistFolder, "wardrobe");
+
+        ImGui.Spacing();
+        if (ImGui.Button("Rescan wardrobe"))
+            plugin.OutfitCommand.Rescan();
+        IconGlyph.HelpMarker("Re-reads your saved Glamourer designs. An empty folder list includes all designs; otherwise only matching folders are included.");
+
+        DrawWardrobeScanFeedback();
+    }
+
+    private void DrawWardrobeScanFeedback()
+    {
+        var wardrobe = plugin.Configuration.WardrobeMapping;
+        var lastScanTotal = plugin.OutfitCommand.LastScanTotalDesigns;
+
+        if (lastScanTotal is null)
+        {
+            IconGlyph.WrappedDisabled("Not scanned yet this session.");
+            return;
+        }
+
+        var matched = wardrobe.LocalDesigns.Count;
+        var color = matched > 0 ? Theme.Success : Theme.Warning;
+        var scope = plugin.Configuration.WardrobeFolderAllowlist.Count == 0 ? "all-design mode" : "folder-filtered mode";
+        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} saved design(s); {matched} available ({scope}).");
+
+        if (matched == 0)
+            return;
+
+        if (ImGui.SmallButton("Copy names##wardrobe"))
+            ImGui.SetClipboardText(string.Join("\n", wardrobe.LocalDesigns.Values.Select(d => d.Name)));
+        IconGlyph.HelpMarker("Copies the list below as plain text, one design per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with a direct override (\"outfit lock <name>\").");
+
+        using var _ = ImRaii.Child("wardrobeCatalog", new Vector2(0, 80), true);
+        foreach (var entry in wardrobe.LocalDesigns.Values)
+            ImGui.BulletText(entry.Name);
+    }
+
+    private void DrawGestureScanBody(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation mods to scan");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("No folders and no selected mods scans everything. Folders select a union; explicit mods narrow that union.");
+        DrawPenumbraFolderPicker("Animation folders", config.SelectedGestureFolders, config);
+        ImGui.InputTextWithHint("##gestureModSearch", "Search mod names...", ref gestureModSearch, 128);
+        var installed = plugin.GestureCommand.GetInstalledMods();
+        using (ImRaii.Child("gestureModPicker", new Vector2(0, 180), true))
+        {
+            foreach (var mod in installed.Where(m =>
+                         (config.SelectedGestureFolders.Count == 0 || (m.SortPath is { } path && config.SelectedGestureFolders.Any(f =>
+                             path.Equals(f, StringComparison.OrdinalIgnoreCase) || path.StartsWith(f + "/", StringComparison.OrdinalIgnoreCase)))) &&
+                         (string.IsNullOrWhiteSpace(gestureModSearch) || m.Name.Contains(gestureModSearch.Trim(), StringComparison.OrdinalIgnoreCase))))
+            {
+                var selected = config.SelectedGestureMods.Contains(mod.Directory);
+                if (ImGui.Checkbox($"{mod.Name}##gestureMod_{mod.Directory}", ref selected))
+                {
+                    if (selected) config.SelectedGestureMods.Add(mod.Directory); else config.SelectedGestureMods.Remove(mod.Directory);
+                    config.Save();
+                }
+                if (mod.SortPath != null) { ImGui.SameLine(); IconGlyph.WrappedDisabled(mod.SortPath); }
+            }
+        }
+
+        ImGui.Spacing();
+        if (ImGui.Button("Rescan animations"))
+            plugin.GestureCommand.Rescan();
+        IconGlyph.HelpMarker("Reads every installed mod when none are selected, or only explicit selections otherwise. Disabled mods remain eligible and are enabled temporarily when played.");
+
+        DrawGestureScanFeedback();
+    }
+
+    private void DrawRestraintScanBody(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Lock, "Shared Penumbra restraints");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Only options below folders selected here are shared with your Owner. No folders means no Penumbra restraints are shared.");
+        DrawPenumbraFolderPicker("Restraint folders", config.SelectedRestraintFolders, config);
+        if (ImGui.Button("Rescan restraints")) plugin.RestraintCommand.RescanCatalog();
+        var command = plugin.RestraintCommand;
+        if (command.LastScanError is { } error) IconGlyph.WrappedColored(Theme.Danger, error);
+        else if (command.LastScanTotalMods is not null)
+            IconGlyph.WrappedColored(config.RestraintMapping.LocalCatalog.Count > 0 ? Theme.Success : Theme.Warning,
+                $"Matched {command.LastScanMatchedMods} mod(s); found {config.RestraintMapping.LocalCatalog.Count} restraint option(s).");
+        if (config.SelectedRestraintFolders.Count == 0)
+            IconGlyph.WrappedColored(Theme.Warning, "No folders selected: the shared Penumbra restraint catalog is empty.");
+        using var child = ImRaii.Child("restraintCatalogPreview", new Vector2(0, 100), true);
+        foreach (var entry in config.RestraintMapping.LocalCatalog.Values.OrderBy(x => x.ModName))
+            ImGui.BulletText(entry.ModName);
+    }
+
+    private void DrawPenumbraFolderPicker(string label, List<string> selected, PluginConfig config)
+    {
+        var installed = plugin.GestureCommand.GetInstalledMods();
+        var folders = installed.Select(x => x.SortPath).Where(x => !string.IsNullOrWhiteSpace(x))
+            .SelectMany(x => ParentFolders(x!)).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+        var preview = selected.Count == 0 ? "None" : $"{selected.Count} selected";
+        if (ImGui.BeginCombo($"{label}##{label}", preview))
+        {
+            ImGui.InputTextWithHint($"##folderSearch{label}", "Search folders...", ref penumbraFolderSearch, 128);
+            foreach (var folder in folders.Where(x => string.IsNullOrWhiteSpace(penumbraFolderSearch) || x.Contains(penumbraFolderSearch, StringComparison.OrdinalIgnoreCase)))
+            {
+                var chosen = selected.Contains(folder, StringComparer.OrdinalIgnoreCase);
+                if (ImGui.Selectable(folder, chosen, ImGuiSelectableFlags.DontClosePopups))
+                {
+                    if (chosen) selected.RemoveAll(x => x.Equals(folder, StringComparison.OrdinalIgnoreCase)); else selected.Add(folder);
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(folder);
+            }
+            ImGui.EndCombo();
+        }
+        foreach (var folder in selected.ToList())
+        {
+            var missing = !folders.Contains(folder, StringComparer.OrdinalIgnoreCase);
+            ImGui.TextUnformatted(missing ? $"{folder} (missing)" : folder);
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Remove##{label}{folder}")) { selected.Remove(folder); config.Save(); }
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(folder);
+        }
+    }
+
+    private static IEnumerable<string> ParentFolders(string path)
+    {
+        var normalized = path.Replace('\\', '/').Trim('/');
+        var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 1; i < parts.Length; i++) yield return string.Join('/', parts.Take(i));
+    }
+
+    private void DrawGestureScanFeedback()
+    {
+        var gestureMapping = plugin.Configuration.GestureMapping;
+        var lastScanTotal = plugin.GestureCommand.LastScanTotalMods;
+
+        if (lastScanTotal is null)
+        {
+            IconGlyph.WrappedDisabled("Not scanned yet this session.");
+            return;
+        }
+
+        if (plugin.GestureCommand.LastScanError is { } error)
+        {
+            IconGlyph.WrappedColored(Theme.Danger, error);
+            return;
+        }
+        var matched = gestureMapping.LocalCatalog.Count;
+        var color = matched > 0 ? Theme.Success : Theme.Warning;
+        var selectionCount = plugin.Configuration.SelectedGestureMods.Count;
+        var scope = selectionCount == 0 ? "all-mod mode" : $"{selectionCount} explicitly selected";
+        IconGlyph.WrappedColored(color, $"Found {lastScanTotal} installed mod(s); {scope}; {matched} animation trigger(s) discovered.");
+
+        if (matched == 0 && lastScanTotal > 0)
+        {
+            ImGui.TextWrapped("No playable animation options were found in the current scan scope.");
+            return;
+        }
+
+        if (matched == 0)
+            return;
+
+        if (ImGui.SmallButton("Copy names##gesture"))
+        {
+            ImGui.SetClipboardText(plugin.GestureCommand.ExportCatalog());
+        }
+        IconGlyph.HelpMarker("Copies versioned entries containing the mod, animation option, tied trigger, and selections for the Owner's Add from clipboard action.");
+
+        using var _ = ImRaii.Child("gestureCatalog", new Vector2(0, 80), true);
+        foreach (var entry in gestureMapping.LocalCatalog.Values)
+        {
+            ImGui.BulletText(entry.Label);
+        }
+    }
+
+    /// collar/moodles: no folder allowlist, unlike Wardrobe/Gesture - Moodles statuses have no folder-
+    /// organization concept, every registered status is eligible (design.md's decision). Reads individual
+    /// statuses (buffs/debuffs) rather than bundled presets, so the Owner can command a single status.
+    private void DrawMoodlesScanBody(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Moodles status scan");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Reads your own registered Moodles statuses (buffs/debuffs) directly - nothing to allowlist. Moodles apply/clear commands live in the main window's Moodles tab.");
+
+        if (ImGui.Button("Rescan Moodles statuses"))
+            plugin.MoodlesCommand.Rescan();
+        IconGlyph.HelpMarker("Re-reads your registered statuses from your own Moodles plugin - run this after adding a new status before it'll show up for your Owner to reference.");
+
+        DrawMoodlesScanFeedback();
+    }
+
+    private void DrawMoodlesScanFeedback()
+    {
+        var moodlesMapping = plugin.Configuration.MoodlesMapping;
+        var lastScanTotal = plugin.MoodlesCommand.LastScanTotalStatuses;
+
+        if (plugin.MoodlesCommand.LastScanStatus is MoodlesScanStatus.Unavailable or MoodlesScanStatus.Failed)
+        {
+            IconGlyph.WrappedColored(Theme.Danger, plugin.MoodlesCommand.LastScanError ?? "Moodles status scan failed.");
+            if (moodlesMapping.LocalCatalog.Count > 0)
+                IconGlyph.WrappedDisabled($"Keeping {moodlesMapping.LocalCatalog.Count} status(es) from the last successful scan.");
+            return;
+        }
+
+        if (lastScanTotal is null)
+        {
+            IconGlyph.WrappedDisabled("Not scanned yet this session.");
+            return;
+        }
+
+        IconGlyph.WrappedColored(Theme.Success, $"Scan succeeded: found {lastScanTotal} registered status(es).");
+
+        if (lastScanTotal == 0)
+            return;
+
+        if (ImGui.SmallButton("Copy names##moodles"))
+            ImGui.SetClipboardText(string.Join("\n", moodlesMapping.LocalCatalog.Values.Select(s => s.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x)));
+        IconGlyph.HelpMarker("Copies the list below as plain text, one status per line - paste it to your Owner (Discord, voice-to-text, etc) so they know exactly what names they can reference with \"moodle apply <name>\".");
+
+        using var _ = ImRaii.Child("moodlesCatalog", new Vector2(0, 80), true);
+        foreach (var entry in moodlesMapping.LocalCatalog.Values)
+        {
+            ImGui.PushID(entry.StatusId);
+            ImGui.BulletText(entry.Name);
+            ImGui.PopID();
+        }
+    }
+
+    /// Wardrobe folder scopes use "empty = all" semantics and prefix matching when narrowed.
+    private void DrawAllowlistBody(List<string> allowlist, ref string newFolderInput, string idSuffix)
+    {
+        for (var i = 0; i < allowlist.Count; i++)
+        {
+            ImGui.PushID(i);
+            ImGui.BulletText(allowlist[i]);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Remove"))
+            {
+                allowlist.RemoveAt(i);
+                plugin.Configuration.Save();
+                ImGui.PopID();
+                break;
+            }
+            ImGui.PopID();
+        }
+
+        ImGui.InputText($"##newFolder_{idSuffix}", ref newFolderInput, 128);
+        ImGui.SameLine();
+        if (ImGui.Button($"Add folder##{idSuffix}") && newFolderInput.Length > 0)
+        {
+            allowlist.Add(newFolderInput);
+            plugin.Configuration.Save();
+            newFolderInput = "";
+        }
     }
 
     /// Both roles can receive a Pending handshake now (collarpair's role token - see
@@ -352,11 +792,11 @@ public class CollarWindow : Window, IDisposable
         ImGui.Spacing();
         var config = plugin.Configuration;
         if (!config.TosAcknowledged)
-            IconGlyph.WrappedColored(Theme.Warning, "Gesture/Follow/Restraints require the ToS acknowledgement in Settings (gear icon) first.");
+            IconGlyph.WrappedColored(Theme.Warning, "Animation/Follow/Restraints require the ToS acknowledgement in Settings (gear icon) first.");
 
         using (ImRaii.Disabled(!config.TosAcknowledged))
         {
-            if (ImGuiCheckbox("Gesture", permissions.Gesture, out var newGesture))
+            if (ImGuiCheckbox("Animation", permissions.Gesture, out var newGesture))
                 SavePermission(() => permissions.Gesture = newGesture);
             IconGlyph.HelpMarker("Lets a paired Owner temporarily enable a selected animation mod and immediately play its tied gesture. Disable this permission at any time to reject commands.");
 
@@ -391,7 +831,7 @@ public class CollarWindow : Window, IDisposable
         {
             if (ImGuiCheckbox("Custom chat messages", permissions.CustomChatMessages, out var newCustomChat))
                 SavePermission(() => permissions.CustomChatMessages = newCustomChat);
-            IconGlyph.HelpMarker("Lets a Custom Trigger's chat action send arbitrary text to any channel (including public chat) as your own character. A materially broader automation surface than Gesture's closed set of self-targeting commands - see the README's Automation risk section.");
+            IconGlyph.HelpMarker("Lets a Custom Trigger's chat action send arbitrary text to any channel (including public chat) as your own character. A materially broader automation surface than Animation's closed set of self-targeting commands - see the README's Automation risk section.");
         }
     }
 
@@ -444,7 +884,7 @@ public class CollarWindow : Window, IDisposable
     private void DrawWardrobeModule()
     {
         var config = plugin.Configuration;
-        IconGlyph.Text(FontAwesomeIcon.Tshirt, "Wardrobe");
+        IconGlyph.Text(FontAwesomeIcon.Tshirt, "Outfit");
         ImGui.Separator();
         IconGlyph.WrappedDisabled("Design folder allowlist and scanning live in Settings (gear icon). Define your outfit aliases below.");
 
@@ -850,7 +1290,7 @@ public class CollarWindow : Window, IDisposable
     private void DrawGestureModule()
     {
         var config = plugin.Configuration;
-        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Gesture");
+        IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation");
         ImGui.Separator();
         IconGlyph.WrappedDisabled("Select animation mods and scan them in Settings, then define aliases from their named options here.");
 
@@ -892,7 +1332,7 @@ public class CollarWindow : Window, IDisposable
         }
 
         ImGui.InputText("Alias##newGesture", ref newGestureAlias, 32);
-        IconGlyph.HelpMarker("Short word the Owner types. With Gesture permission enabled, this immediately enables the chosen animation temporarily and plays its tied trigger.");
+        IconGlyph.HelpMarker("Short word the Owner types. With Animation permission enabled, this immediately enables the chosen animation temporarily and plays its tied trigger.");
         DrawReservedWordWarning(newGestureAlias);
 
         if (ImGui.Button(selectedAliasGesture is null ? "Add animation..." : "Change animation..."))
@@ -1004,7 +1444,7 @@ public class CollarWindow : Window, IDisposable
         var config = plugin.Configuration;
         IconGlyph.Text(FontAwesomeIcon.BoltLightning, "Custom Triggers");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Bundle multiple actions - title, outfit, gesture, moodle, restraint, chat - behind one alias. Each action still needs its own category permission (Chat also needs the dedicated Custom chat messages acknowledgement in Settings) or it's skipped when the trigger fires.");
+        IconGlyph.WrappedDisabled("Bundle multiple actions - title, outfit, animation, moodle, restraint, chat - behind one alias. Each action still needs its own category permission (Chat also needs the dedicated Custom chat messages acknowledgement in Settings) or it's skipped when the trigger fires.");
 
         var triggers = config.Aliases.CustomTriggers;
         for (var i = 0; i < triggers.Count; i++)
@@ -1437,9 +1877,16 @@ public class CollarWindow : Window, IDisposable
             }
         }
 
-        ImGui.Spacing();
-        ImGui.Separator();
+    }
+
+    /// collar/ui-organization: split out of DrawCollarModule so Collar and Follow / Leash can be
+    /// independent tabs, matching the Owner side's existing separate Collar/Leash sections and the
+    /// separate Follow permission toggle - no change to either section's own controls.
+    private void DrawFollowLeashModule()
+    {
+        var config = plugin.Configuration;
         IconGlyph.Text(FontAwesomeIcon.Link, "Leash triggers");
+        ImGui.Separator();
         IconGlyph.WrappedDisabled("The words your Owner sends to engage or release the movement lock. Defaults: leash / unleash.");
         var follow = config.Aliases.Follow;
         var engage = follow.EngageAlias;
@@ -1469,56 +1916,6 @@ public class CollarWindow : Window, IDisposable
         return string.IsNullOrWhiteSpace(name) ? $"Item #{itemId}" : name;
     }
 
-    /// The Owner-facing tab. Title/Outfit/Gesture/Moodles/Restraints each get a one-click QuickCommand
-    /// list - Outfit/Gesture/Moodles/Restraints are populated in one action by the "Import commands" button
-    /// at the top (collar/catalog-sync - a Sub-exported catalog file fills every one of them at once);
-    /// Title is built one at a time since there's nothing to bulk-import for freeform text. Every button
-    /// offers Send (ChatSender - one click, one /tell, disabled until pairing has captured a peer to
-    /// address it to) alongside Copy (always available). The freeform box at the bottom covers a plain
-    /// alias or a one-off not worth saving.
-    private void DrawOwnerModule()
-    {
-        IconGlyph.Text(FontAwesomeIcon.Crown, "Owner - commands");
-        ImGui.Separator();
-
-        var ownerMode = plugin.Configuration.Role == PluginRole.Owner;
-        if (!ownerMode)
-            IconGlyph.WrappedColored(Theme.Warning, "Owner UI preview: you are configured as Sub. Editing and browsing are available for debugging, but Send is disabled and your pairing role is unchanged.");
-
-        DrawCatalogRelaySection(ownerMode);
-        ImGui.Spacing();
-        if (ImGui.CollapsingHeader("Offline / legacy file fallback##catalogFileFallback"))
-        {
-            ImGui.Indent();
-            IconGlyph.WrappedDisabled("Use this only when relay sync is unavailable or when importing an older catalog file. Normal paired catalog updates use Cloudflare automatically.");
-            DrawImportCommandsButton();
-            ImGui.Unindent();
-        }
-        ImGui.Spacing();
-
-        var pairing = plugin.Configuration.Pairing;
-        var canSend = ownerMode && pairing.IsPaired;
-        if (!canSend)
-            IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until pairing captures your Sub's name (Settings' handshake), or is re-enabled after a panic/unpair. Copy still works any time.");
-
-        var quick = plugin.Configuration.QuickCommands;
-        DrawOwnerSection($"Title ({quick.Titles.Count} saved)##ownerTitle", () => DrawTitleQuickSection(canSend), defaultOpen: true);
-        DrawOwnerSection($"Outfit ({quick.Outfits.Count} imported)##ownerOutfit", () => DrawOutfitQuickSection(canSend));
-        DrawOwnerSection($"Gesture ({quick.Gestures.Count} imported)##ownerGesture", () => DrawGestureQuickSection(canSend));
-        DrawOwnerSection($"Leash ({quick.Follow.Count} saved)##ownerLeash", () => DrawFollowQuickSection(canSend));
-        DrawOwnerSection("Collar (2 actions)##ownerCollar", () => DrawCollarQuickSection(canSend));
-        DrawOwnerSection($"Moodles ({quick.Moodles.Count} imported)##ownerMoodles", () => DrawMoodlesQuickSection(canSend));
-        DrawOwnerSection($"Restraints ({quick.Restraints.Count} imported)##ownerRestraints", () => DrawRestraintQuickSection(canSend));
-        DrawOwnerSection($"Custom Triggers ({quick.Aliases.Count} saved)##ownerCustomTriggers", () =>
-        {
-            DrawCustomTriggerQuickSection(canSend);
-            ImGui.Spacing();
-            ImGui.Separator();
-            IconGlyph.WrappedDisabled("Saved bundles and one-off commands");
-            DrawFreeformComposer(canSend);
-        }, forceOpen: editingOwnerBundle is not null);
-    }
-
     /// collar/catalog-sync: the single Owner-side entry point that replaces the three former per-category
     /// "Add from clipboard" buttons - opens a native file picker for a Sub-exported catalog file and fills
     /// every category's quick-command list from it in one action (CatalogSyncService.ParseImport).
@@ -1546,7 +1943,7 @@ public class CollarWindow : Window, IDisposable
                     var duplicateNote = result.Duplicates > 0 ? $" {result.Duplicates} duplicate(s) skipped." : "";
                     importResult = result.Error ?? (result.TotalAdded == 0
                         ? $"Nothing new - everything in that file was already imported or a duplicate.{duplicateNote}"
-                        : $"Imported {result.TotalAdded} new command(s): {result.Title} title, {result.Wardrobe} outfit, {result.Gesture} gesture, {result.Moodles} moodles, {result.Restraints} restraint, {result.Bundles} bundle.{duplicateNote}");
+                        : $"Imported {result.TotalAdded} new command(s): {result.Title} title, {result.Wardrobe} outfit, {result.Gesture} animation, {result.Moodles} moodles, {result.Restraints} restraint, {result.Bundles} bundle.{duplicateNote}");
                     resetImportsResult = null;
                 }
                 catch (Exception ex)
@@ -1575,13 +1972,15 @@ public class CollarWindow : Window, IDisposable
             RemoveImportedEntries(quick.Moodles);
             RemoveImportedEntries(quick.Restraints);
             quick.Aliases.Clear();
+            plugin.Configuration.GestureMapping.ImportedPeerCatalog.Clear();
+            plugin.Configuration.RestraintMapping.ImportedPeerCatalog.Clear();
             plugin.Configuration.Save();
             expandedRestraintRuleEditors.Clear();
             restraintRuleEdits.Clear();
             resetImportsResult = "All imports reset to a blank slate.";
             importResult = null;
         }
-        IconGlyph.HelpMarker("Clears every import-sourced quick command (Title, Outfit, Gesture, Moodles, Restraints) back out, leaving anything you added or scanned yourself in those same lists untouched, and clears the entire Custom Trigger Bundle list - including any one-off commands you typed by hand, since imported bundles share that same list.");
+        IconGlyph.HelpMarker("Clears every import-sourced quick command (Title, Outfit, Animation, Moodles, Restraints) back out, leaving anything you added or scanned yourself in those same lists untouched; clears the entire Custom Trigger Bundle list - including any one-off commands you typed by hand, since imported bundles share that same list; and clears the browsable Animation/Restraints mod catalogs imported from your Sub, so a stale or duplicate entry from an earlier import can't linger until the next one.");
 
         if (importResult is not null)
         {
@@ -1597,18 +1996,15 @@ public class CollarWindow : Window, IDisposable
 
     /// collar/catalog-sync "Owner refresh controls": shows current phase, last successful snapshot/counts,
     /// next allowed time, and actionable failure text; the button itself is disabled during an active
-    /// request or cooldown so it can never be double-clicked into a second one (task 7.3).
-    private void DrawCatalogRelaySection(bool ownerMode)
+    /// request or cooldown so it can never be double-clicked into a second one (task 7.3). Only ever
+    /// called from the Sync tab's Owner-role view (DrawSyncTab) - the Sub-role view is a separate,
+    /// dedicated explanation instead of a disabled preview of this one.
+    private void DrawCatalogRelaySection()
     {
         var relayService = plugin.CatalogSyncRelayService;
         var pairing = plugin.Configuration.Pairing;
         IconGlyph.Text(FontAwesomeIcon.CloudDownloadAlt, "Cloud catalog sync");
         IconGlyph.WrappedDisabled("Securely requests the latest catalog from your paired Sub through the Oathbound Cloudflare relay. No file transfer is needed.");
-        if (!ownerMode)
-        {
-            IconGlyph.WrappedDisabled("Preview mode: switch this client to Owner to request a catalog refresh. The lists below remain available for UI inspection.");
-            return;
-        }
         if (!pairing.IsPaired)
         {
             IconGlyph.WrappedDisabled("Not paired - pair from Settings first. The offline file fallback remains available below.");
@@ -1684,20 +2080,6 @@ public class CollarWindow : Window, IDisposable
             ImGui.NewLine();
     }
 
-    private static void DrawOwnerSection(string label, Action draw, bool defaultOpen = false, bool forceOpen = false)
-    {
-        if (forceOpen)
-            ImGui.SetNextItemOpen(true, ImGuiCond.Always);
-        var flags = defaultOpen ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
-        if (ImGui.CollapsingHeader(label, flags))
-        {
-            ImGui.Indent();
-            draw();
-            ImGui.Unindent();
-        }
-        ImGui.Spacing();
-    }
-
     /// Collar only ever has one override verb - `collar unlock` - since the collar itself only ever
     /// applies as a side effect of pairing acceptance, never through a chat command (see
     /// ChatCommandListener.HandleForceCollar). No "Add Command" builder needed, just the fixed release row.
@@ -1714,7 +2096,7 @@ public class CollarWindow : Window, IDisposable
     private void DrawMoodlesQuickSection(bool canSend)
     {
         var quick = plugin.Configuration.QuickCommands.Moodles;
-        DrawSectionTitleRow(FontAwesomeIcon.TheaterMasks, "Moodles", quick.Count > 0, "moodlesQuick", () =>
+        DrawSectionTitleRow(FontAwesomeIcon.Smile, "Moodles", quick.Count > 0, "moodlesQuick", () =>
         {
             quick.Clear();
             plugin.Configuration.Save();
@@ -1724,11 +2106,14 @@ public class CollarWindow : Window, IDisposable
 
         if (quick.Count == 0)
         {
-            IconGlyph.WrappedDisabled("No Moodles statuses imported yet - use \"Import commands\" above.");
+            DrawGoToSyncTabPrompt("No Moodles statuses imported yet.");
             return;
         }
 
-        using var _ = ImRaii.Child("moodlesQuickList", new Vector2(0, 120), true);
+        // Fills the rest of the tab instead of a fixed 120px box - this used to share a window with seven
+        // other collapsible sections (collar/ui-organization's old Owner accordion), where a small fixed
+        // height made sense; now Moodles has the whole tab to itself, so there's usually plenty of room.
+        using var _ = ImRaii.Child("moodlesQuickList", new Vector2(0, Math.Max(120, ImGui.GetContentRegionAvail().Y)), true);
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend, MoodlesTextFormat.StripMarkup);
     }
@@ -1745,9 +2130,10 @@ public class CollarWindow : Window, IDisposable
             plugin.Configuration.Save();
         });
 
-        var catalog = plugin.Configuration.Role == PluginRole.Owner
-            ? plugin.Configuration.RestraintMapping.ImportedPeerCatalog.Values.ToList()
-            : plugin.Configuration.RestraintMapping.LocalCatalog.Values.Select(RestraintCatalogExportEntry.From).ToList();
+        // Only ever called from the Owner-role dispatch now (collar/ui-organization's shared category
+        // tabs), so this always reads the imported peer catalog - the Sub-role branch this used to need
+        // when both lived in one shared method is gone.
+        var catalog = plugin.Configuration.RestraintMapping.ImportedPeerCatalog.Values.ToList();
         ImGui.InputTextWithHint("##ownerRestraintSearch", "Search available restraint mods...", ref ownerRestraintSearch, 128);
         IconGlyph.WrappedDisabled("Choose a mod to create one restraint command. Its Penumbra options stay exactly as your Sub configured them; enabling and locking are temporary until the global restraint unlock.");
         using (ImRaii.Child("restraintModBrowser", new Vector2(0, 150), true))
@@ -1940,8 +2326,8 @@ public class CollarWindow : Window, IDisposable
 
             case CustomTriggerActionKind.Gesture:
                 ImGui.SetNextItemWidth(220);
-                ImGui.InputText("Gesture name##ctqGesture", ref ctqGestureName, 32);
-                IconGlyph.HelpMarker("Type the exact gesture/animation name your Sub told you.");
+                ImGui.InputText("Animation name##ctqGesture", ref ctqGestureName, 32);
+                IconGlyph.HelpMarker("Type the exact animation name your Sub told you.");
                 using (ImRaii.Disabled(ctqGestureName.Trim().Length == 0))
                 {
                     if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqGestureBtn"))
@@ -2256,11 +2642,12 @@ public class CollarWindow : Window, IDisposable
 
         if (quick.Count == 0)
         {
-            IconGlyph.WrappedDisabled("No outfits imported yet - use \"Import commands\" above.");
+            DrawGoToSyncTabPrompt("No outfits imported yet.");
             return;
         }
 
-        using var _ = ImRaii.Child("outfitQuickList", new Vector2(0, 120), true);
+        // Same reasoning as Moodles' list above: fills the rest of the tab instead of a fixed 120px box.
+        using var _ = ImRaii.Child("outfitQuickList", new Vector2(0, Math.Max(120, ImGui.GetContentRegionAvail().Y)), true);
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend);
     }
@@ -2272,7 +2659,7 @@ public class CollarWindow : Window, IDisposable
     private void DrawGestureQuickSection(bool canSend)
     {
         var quick = plugin.Configuration.QuickCommands.Gestures;
-        DrawSectionTitleRow(FontAwesomeIcon.TheaterMasks, "Gesture", quick.Count > 0, "gestureQuick", () =>
+        DrawSectionTitleRow(FontAwesomeIcon.TheaterMasks, "Animation", quick.Count > 0, "gestureQuick", () =>
         {
             quick.Clear();
             plugin.Configuration.Save();
@@ -2280,7 +2667,7 @@ public class CollarWindow : Window, IDisposable
 
         if (quick.Count == 0)
         {
-            IconGlyph.WrappedDisabled("No gestures imported yet - use \"Import commands\" above.");
+            DrawGoToSyncTabPrompt("No animations imported yet.");
             return;
         }
 
@@ -2299,7 +2686,7 @@ public class CollarWindow : Window, IDisposable
         using var _ = ImRaii.Child("gestureQuickList", new Vector2(0, 260), true);
         if (visible.Count == 0)
         {
-            IconGlyph.WrappedDisabled("No gestures match this search.");
+            IconGlyph.WrappedDisabled("No animations match this search.");
             return;
         }
 
@@ -2601,9 +2988,9 @@ public class CollarWindow : Window, IDisposable
             .ThenBy(g => g.GroupOrder).ThenBy(g => g.OptionOrder).ToList();
         var preview = plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(editingQuickTarget, out var selected)
             ? CommandSelector.GestureSelector(selected, catalog)
-            : "Choose an imported gesture...";
+            : "Choose an imported animation...";
         ImGui.SetNextItemWidth(-1);
-        if (!ImGui.BeginCombo("Gesture##quickEdit", preview)) return;
+        if (!ImGui.BeginCombo("Animation##quickEdit", preview)) return;
         foreach (var entry in catalog)
         {
             var label = CommandSelector.GestureSelector(entry, catalog);
