@@ -12,6 +12,7 @@ namespace Oathbound.Plugin.Relay;
 /// synchronously, before this is ever called) and never re-enables a pairing.
 public sealed class RevocationService
 {
+    public event Action? PairingRevoked;
     private readonly PluginConfig config;
     private readonly RelayClient relay;
     private readonly DeviceIdentityService identity;
@@ -193,6 +194,7 @@ public sealed class RevocationService
 
         pairing.IncomingRevocationSequence = revocation.Sequence;
         pairing.Paired = false;
+        PairingRevoked?.Invoke();
         config.Save();
         Plugin.Log.Information($"Pairing ended locally: a valid signed revocation (sequence {revocation.Sequence}, reason \"{revocation.Reason}\") was observed from the paired peer.");
         return false;

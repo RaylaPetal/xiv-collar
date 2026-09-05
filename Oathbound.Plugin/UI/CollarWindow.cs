@@ -28,12 +28,11 @@ public class CollarWindow : Window, IDisposable
 
     /// collar/ui-organization: lets the quick-access menu (or anything else outside this class) bring the
     /// main window forward already on the Owner tab, instead of leaving it wherever it last was. A no-op
-    /// for the tab switch specifically when Role is Sub, matching the tab's own hidden state in Draw() -
-    /// still opens the window itself, just without landing on a tab that isn't there to land on.
+    /// The Owner surface is also available as a read-only preview while configured as Sub so catalog/UI
+    /// development can be inspected without changing roles or disturbing an active pairing.
     public void OpenOwnerTab()
     {
-        if (plugin.Configuration.Role == PluginRole.Owner)
-            activeModule = "owner";
+        activeModule = "owner";
         IsOpen = true;
     }
 
@@ -98,6 +97,8 @@ public class CollarWindow : Window, IDisposable
     private string? editingDeviceId;
 
     private string newRestraintAlias = "";
+    private string ownerRestraintSearch = "";
+    private string subRestraintSearch = "";
     private int newRestraintDeviceIndex;
 
     /// Owner-side ad-hoc device draft (collar/restraints "Owner-authored ad-hoc restraint device") - a
@@ -114,7 +115,6 @@ public class CollarWindow : Window, IDisposable
     private bool newTitleQuickIsPrefix;
     private Vector3 newTitleQuickColor = new(1, 1, 1);
     private string newFollowQuickText = "";
-    private string newRestraintQuickText = "";
     private string? importResult;
     private string? resetImportsResult;
     private bool revealSafeword;
@@ -190,17 +190,7 @@ public class CollarWindow : Window, IDisposable
         DrawCharacterHeader();
         ImGui.Spacing();
 
-        // The Owner tab sends commands meant to apply to a *different*, paired Sub - a character
-        // currently configured as Sub has no use for it (their own client never reacts to anything it
-        // sends, per ChatCommandListener.OnChatMessage's Role check), and its presence was misleading Subs
-        // into thinking sending themselves a command through it was a supported way to test their own
-        // aliases. Hidden outright rather than merely disabled, so there's nothing there to misread.
-        var isOwner = plugin.Configuration.Role == PluginRole.Owner;
-        var visibleNavItems = isOwner ? NavItems : NavItems.Where(item => item.Id != "owner").ToArray();
-        if (!isOwner && activeModule == "owner")
-            activeModule = "title";
-
-        if (NavBar.Draw(activeModule, "owner", visibleNavItems) is { } clicked)
+        if (NavBar.Draw(activeModule, "owner", NavItems) is { } clicked)
             activeModule = clicked;
 
         ImGui.Spacing();
@@ -519,8 +509,13 @@ public class CollarWindow : Window, IDisposable
         var config = plugin.Configuration;
         IconGlyph.Text(FontAwesomeIcon.Handcuffs, "Restraints");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("Pick a slot and an item below to capture it as a named restraint device carrying restriction rules, then alias it so an Owner - or your own alias - can apply/release it. The item doesn't need to be equipped or owned.");
+        IconGlyph.WrappedDisabled("Choose scanned Penumbra mods and configure the restraints you want to share. Your Owner receives both these ready-made restraints and the complete scanned mod library for creating their own.");
         IconGlyph.WrappedDisabled("Owner force-release is always `restraint unlock`. Individual restraint aliases toggle their own device on and off.");
+
+        DrawSubModRestraints(config);
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextUnformatted("Direct slot / item restraint");
 
         var devices = config.RestraintMapping.Devices.Values.ToList();
         if (devices.Count > 0)
@@ -652,6 +647,92 @@ public class CollarWindow : Window, IDisposable
                 aliases.Add(new RestraintAliasDefinition { Alias = newRestraintAlias, DeviceId = device.Id, DeviceName = device.Name });
                 config.Save();
                 newRestraintAlias = "";
+            }
+        }
+    }
+
+    private void DrawSubModRestraints(PluginConfig config)
+    {
+        var configured = config.RestraintMapping.ConfiguredMods;
+        ImGui.TextUnformatted("Detected restraint mods");
+        ImGui.InputTextWithHint("##subRestraintSearch", "Search scanned restraint mods...", ref subRestraintSearch, 128);
+        using (ImRaii.Child("subRestraintModBrowser", new Vector2(0, 130), true))
+        {
+            foreach (var entry in config.RestraintMapping.LocalCatalog.Values
+                         .Where(x => string.IsNullOrWhiteSpace(subRestraintSearch) || x.ModName.Contains(subRestraintSearch.Trim(), StringComparison.OrdinalIgnoreCase))
+                         .OrderBy(x => x.ModName))
+            {
+                ImGui.TextUnformatted(entry.ModName);
+                ImGui.SameLine();
+                var chosen = configured.Any(x => x.CatalogId == entry.Id);
+                using (ImRaii.Disabled(chosen))
+                if (ImGui.SmallButton($"{(chosen ? "Chosen" : "Choose")}##subRestraint_{entry.Id}"))
+                {
+                    var created = new ConfiguredModRestraint { CatalogId = entry.Id, Name = entry.ModName };
+                    configured.Add(created);
+                    var key = $"submod:{created.Id}";
+                    expandedRestraintRuleEditors.Add(key);
+                    restraintRuleEdits[key] = new RestraintRuleEditState();
+                    config.Save();
+                }
+            }
+        }
+
+        ImGui.TextUnformatted("My configured mod restraints");
+        if (configured.Count == 0)
+        {
+            IconGlyph.WrappedDisabled("Choose a detected mod above, then assign its restriction rules.");
+            return;
+        }
+        foreach (var created in configured.ToArray())
+        {
+            var key = $"submod:{created.Id}";
+            var missing = !config.RestraintMapping.LocalCatalog.ContainsKey(created.CatalogId);
+            ImGui.TextUnformatted(created.Name);
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"{(expandedRestraintRuleEditors.Contains(key) ? "Close" : "Configure")}##{key}"))
+            {
+                if (!expandedRestraintRuleEditors.Remove(key))
+                {
+                    expandedRestraintRuleEditors.Add(key);
+                    restraintRuleEdits[key] = FromRules(created.Rules);
+                }
+            }
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Remove##{key}"))
+            {
+                configured.Remove(created);
+                expandedRestraintRuleEditors.Remove(key);
+                restraintRuleEdits.Remove(key);
+                config.Save();
+                continue;
+            }
+            if (missing) IconGlyph.WrappedColored(Theme.Warning, "This mod is outside the latest scan and will not be exported.");
+            if (expandedRestraintRuleEditors.Contains(key) && restraintRuleEdits.TryGetValue(key, out var edit))
+            {
+                ImGui.Indent();
+                ImGui.TextUnformatted($"Glamourer item: {(created.ItemId is { } equippedItem ? GetItemName(equippedItem) : "(none chosen)")}");
+                ImGui.SameLine();
+                if (ImGui.SmallButton($"Choose item...##{key}"))
+                {
+                    var catalogEntry = config.RestraintMapping.LocalCatalog.GetValueOrDefault(created.CatalogId);
+                    plugin.ItemPickerWindow.OpenForItemIds(created.Name, catalogEntry?.ChangedItemIds.ToHashSet() ?? [], (chosenId, _) =>
+                    {
+                        created.ItemId = chosenId;
+                        config.Save();
+                    });
+                }
+                DrawRestraintRuleCheckboxes(edit, key);
+                var valid = created.ItemId > 0 && GlamourerIpc.GetItemSlot((uint)created.ItemId.Value) is not null && HasAnyRule(edit) && BoundAnimationsConfigured(edit);
+                using (ImRaii.Disabled(!valid || missing))
+                if (ImGui.SmallButton($"Save restraint##{key}"))
+                {
+                    created.Rules = ToRules(edit);
+                    config.Save();
+                    expandedRestraintRuleEditors.Remove(key);
+                    restraintRuleEdits.Remove(key);
+                }
+                ImGui.Unindent();
             }
         }
     }
@@ -1396,13 +1477,23 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.Text(FontAwesomeIcon.Crown, "Owner - commands");
         ImGui.Separator();
 
-        DrawImportCommandsButton();
+        var ownerMode = plugin.Configuration.Role == PluginRole.Owner;
+        if (!ownerMode)
+            IconGlyph.WrappedColored(Theme.Warning, "Owner UI preview: you are configured as Sub. Editing and browsing are available for debugging, but Send is disabled and your pairing role is unchanged.");
+
+        DrawCatalogRelaySection(ownerMode);
         ImGui.Spacing();
-        DrawCatalogRelaySection();
+        if (ImGui.CollapsingHeader("Offline / legacy file fallback##catalogFileFallback"))
+        {
+            ImGui.Indent();
+            IconGlyph.WrappedDisabled("Use this only when relay sync is unavailable or when importing an older catalog file. Normal paired catalog updates use Cloudflare automatically.");
+            DrawImportCommandsButton();
+            ImGui.Unindent();
+        }
         ImGui.Spacing();
 
         var pairing = plugin.Configuration.Pairing;
-        var canSend = pairing.IsPaired;
+        var canSend = ownerMode && pairing.IsPaired;
         if (!canSend)
             IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until pairing captures your Sub's name (Settings' handshake), or is re-enabled after a panic/unpair. Copy still works any time.");
 
@@ -1414,8 +1505,14 @@ public class CollarWindow : Window, IDisposable
         DrawOwnerSection("Collar (2 actions)##ownerCollar", () => DrawCollarQuickSection(canSend));
         DrawOwnerSection($"Moodles ({quick.Moodles.Count} imported)##ownerMoodles", () => DrawMoodlesQuickSection(canSend));
         DrawOwnerSection($"Restraints ({quick.Restraints.Count} imported)##ownerRestraints", () => DrawRestraintQuickSection(canSend));
-        DrawOwnerSection("Custom Trigger (ad-hoc)##ownerCustomTrigger", () => DrawCustomTriggerQuickSection(canSend), forceOpen: editingOwnerBundle is not null);
-        DrawOwnerSection($"Custom Trigger Bundles / one-off ({quick.Aliases.Count} saved)##ownerAlias", () => DrawFreeformComposer(canSend));
+        DrawOwnerSection($"Custom Triggers ({quick.Aliases.Count} saved)##ownerCustomTriggers", () =>
+        {
+            DrawCustomTriggerQuickSection(canSend);
+            ImGui.Spacing();
+            ImGui.Separator();
+            IconGlyph.WrappedDisabled("Saved bundles and one-off commands");
+            DrawFreeformComposer(canSend);
+        }, forceOpen: editingOwnerBundle is not null);
     }
 
     /// collar/catalog-sync: the single Owner-side entry point that replaces the three former per-category
@@ -1497,14 +1594,20 @@ public class CollarWindow : Window, IDisposable
     /// collar/catalog-sync "Owner refresh controls": shows current phase, last successful snapshot/counts,
     /// next allowed time, and actionable failure text; the button itself is disabled during an active
     /// request or cooldown so it can never be double-clicked into a second one (task 7.3).
-    private void DrawCatalogRelaySection()
+    private void DrawCatalogRelaySection(bool ownerMode)
     {
         var relayService = plugin.CatalogSyncRelayService;
         var pairing = plugin.Configuration.Pairing;
-        IconGlyph.Text(FontAwesomeIcon.CloudDownloadAlt, "Automatic sync (relay)");
+        IconGlyph.Text(FontAwesomeIcon.CloudDownloadAlt, "Cloud catalog sync");
+        IconGlyph.WrappedDisabled("Securely requests the latest catalog from your paired Sub through the Oathbound Cloudflare relay. No file transfer is needed.");
+        if (!ownerMode)
+        {
+            IconGlyph.WrappedDisabled("Preview mode: switch this client to Owner to request a catalog refresh. The lists below remain available for UI inspection.");
+            return;
+        }
         if (!pairing.IsPaired)
         {
-            IconGlyph.WrappedDisabled("Not paired - use manual Import above, or pair from Settings first.");
+            IconGlyph.WrappedDisabled("Not paired - pair from Settings first. The offline file fallback remains available below.");
             return;
         }
 
@@ -1626,13 +1729,9 @@ public class CollarWindow : Window, IDisposable
             DrawSavedQuickRow(cmd, quick, canSend, MoodlesTextFormat.StripMarkup);
     }
 
-    /// collar/restraints: Owner-tab quick commands - no per-category import button here (collar/catalog-
-    /// sync's unified "Import commands" is the only way to populate this list, or the Owner can add one
-    /// manually below (collar/restraints "Owner can add a restraint quick command by name") by typing a
-    /// device name the Sub told them, the same freeform pattern DrawTitleQuickSection uses. Every entry
-    /// starts with no rules assigned, so each row exposes a "Configure rules" editor - the same rule set
-    /// DrawRestraintsModule's device-capture section uses - and Send/Copy stay disabled until at least one
-    /// rule is assigned (collar/restraints "Owner quick command with no rules assigned yet").
+    /// Owner restraint authoring: browse the Sub's shared Penumbra mods first, explicitly choose only the
+    /// ones that should become commands, configure their rules, then optionally build a direct slot/item
+    /// restraint at the bottom. The former free-text legacy device-name creator is intentionally absent.
     private void DrawRestraintQuickSection(bool canSend)
     {
         var quick = plugin.Configuration.QuickCommands.Restraints;
@@ -1642,34 +1741,58 @@ public class CollarWindow : Window, IDisposable
             plugin.Configuration.Save();
         });
 
-        ImGui.SetNextItemWidth(220);
-        ImGui.InputText("##newQuickRestraint", ref newRestraintQuickText, 32);
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Add Command##quickRestraint") && newRestraintQuickText.Trim().Length > 0)
+        var catalog = plugin.Configuration.Role == PluginRole.Owner
+            ? plugin.Configuration.RestraintMapping.ImportedPeerCatalog.Values.ToList()
+            : plugin.Configuration.RestraintMapping.LocalCatalog.Values.Select(RestraintCatalogExportEntry.From).ToList();
+        ImGui.InputTextWithHint("##ownerRestraintSearch", "Search available restraint mods...", ref ownerRestraintSearch, 128);
+        IconGlyph.WrappedDisabled("Choose a mod to create one restraint command. Its Penumbra options stay exactly as your Sub configured them; enabling and locking are temporary until the global restraint unlock.");
+        using (ImRaii.Child("restraintModBrowser", new Vector2(0, 150), true))
         {
-            var name = newRestraintQuickText.Trim();
-            quick.Add(new QuickCommand { Label = name, Command = $"restraint lock \"{name}\"" });
-            plugin.Configuration.Save();
-            newRestraintQuickText = "";
+            foreach (var entry in catalog.Where(x => string.IsNullOrWhiteSpace(ownerRestraintSearch) || x.ModName.Contains(ownerRestraintSearch.Trim(), StringComparison.OrdinalIgnoreCase)).OrderBy(x => x.ModName))
+            {
+                ImGui.TextUnformatted(entry.ModName);
+                ImGui.SameLine();
+                var alreadyChosen = quick.Any(x => x.RestraintCatalogId == entry.Id);
+                using (ImRaii.Disabled(alreadyChosen))
+                {
+                    if (ImGui.SmallButton($"{(alreadyChosen ? "Chosen" : "Choose")}##restraintMod_{entry.Id}"))
+                    {
+                        quick.Add(new QuickCommand
+                        {
+                            Label = entry.ModName,
+                            Command = "",
+                            Source = ImportSource.Manual,
+                            Target = entry.Id,
+                            RestraintCatalogId = entry.Id,
+                        });
+                        plugin.Configuration.Save();
+                        expandedRestraintRuleEditors.Add(entry.ModName);
+                        restraintRuleEdits[entry.ModName] = new RestraintRuleEditState();
+                    }
+                }
+            }
         }
-        IconGlyph.HelpMarker("Adds a restraint quick command by name - type the exact device name your Sub told you. Configure its rules below before it can be sent.");
 
         ImGui.Spacing();
-        DrawAdHocRestraintSection(canSend);
-        ImGui.Spacing();
-
+        ImGui.TextUnformatted("Configured mod restraints");
         DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend);
         IconGlyph.HelpMarker("Force-releases every active restraint device and clears the force-lock, the same as your Sub's panic would for restraints specifically.");
 
-        if (quick.Count == 0)
+        var configuredMods = quick.Where(x => x.RestraintCatalogId is not null).ToArray();
+        if (configuredMods.Length == 0)
         {
-            IconGlyph.WrappedDisabled("No restraint devices imported yet - use \"Import commands\" above.");
-            return;
+            IconGlyph.WrappedDisabled("No restraint mod has been chosen yet.");
+        }
+        else
+        {
+            using var _ = ImRaii.Child("restraintsQuickList", new Vector2(0, 260), true);
+            foreach (var cmd in configuredMods) DrawRestraintQuickRow(cmd, quick, canSend);
         }
 
-        using var _ = ImRaii.Child("restraintsQuickList", new Vector2(0, 260), true);
-        foreach (var cmd in quick.ToArray())
-            DrawRestraintQuickRow(cmd, quick, canSend);
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextUnformatted("Direct slot / item restraint");
+        DrawAdHocRestraintSection(canSend);
     }
 
     /// collar/restraints "Owner-authored ad-hoc restraint device": lets the Owner pick a slot and item
@@ -1678,7 +1801,7 @@ public class CollarWindow : Window, IDisposable
     /// added to the name-based `quick` list, since its full definition already travels in the command text.
     private void DrawAdHocRestraintSection(bool canSend)
     {
-        IconGlyph.WrappedDisabled("Or define a device's gear directly - no need to know what your Sub named anything.");
+        IconGlyph.WrappedDisabled("Optional advanced control: choose an equipment slot and item directly after configuring any detected mod restraint above.");
 
         var slotNames = LockableEquipSlots.All.Select(s => s.ToString()).ToArray();
         newAdHocSlotIndex = Math.Clamp(newAdHocSlotIndex, 0, slotNames.Length - 1);
@@ -1936,17 +2059,19 @@ public class CollarWindow : Window, IDisposable
     {
         ImGui.PushID($"restraintQuick_{cmd.Label}");
         var hasRules = cmd.RestraintRules is { Count: > 0 };
+        var hasEquipment = cmd.RestraintItemId > 0 && GlamourerIpc.GetItemSlot((uint)cmd.RestraintItemId.Value) is not null;
+        var catalogAvailable = cmd.RestraintCatalogId is not { } availableCatalogId ||
+            plugin.Configuration.RestraintMapping.ImportedPeerCatalog.ContainsKey(availableCatalogId) ||
+            (plugin.Configuration.Role == PluginRole.Sub && plugin.Configuration.RestraintMapping.LocalCatalog.ContainsKey(availableCatalogId));
 
         ImGui.TextUnformatted(cmd.Label);
         ContinueRowOrWrap(ButtonWidth("Favorited"));
         DrawFavoriteToggle(cmd, cmd.Label);
-        ContinueRowOrWrap(ButtonWidth("Send"));
-        using (ImRaii.Disabled(!hasRules))
-            DrawSendCopyButtons(cmd.Command, canSend, $"{cmd.Label}_{cmd.Command}");
-        ContinueRowOrWrap(ButtonWidth("Edit"));
-        if (ImGui.SmallButton("Edit##restraintQuick"))
-            BeginQuickCommandEdit(cmd, list);
-        var configureLabel = hasRules ? "Edit rules" : "Configure rules";
+
+        ImGui.Indent();
+        using (ImRaii.Disabled(!hasRules || !hasEquipment || !catalogAvailable))
+            DrawSendOnly(cmd.Command, canSend, $"enable_{cmd.Label}", "Enable & lock");
+        var configureLabel = hasRules && hasEquipment ? "Edit setup" : "Configure setup";
         ContinueRowOrWrap(ButtonWidth(configureLabel));
         var expanded = expandedRestraintRuleEditors.Contains(cmd.Label);
         if (ImGui.SmallButton(configureLabel))
@@ -1969,18 +2094,35 @@ public class CollarWindow : Window, IDisposable
             expandedRestraintRuleEditors.Remove(cmd.Label);
             restraintRuleEdits.Remove(cmd.Label);
             plugin.Configuration.Save();
+            ImGui.Unindent();
             ImGui.PopID();
             return;
         }
+        ImGui.Unindent();
 
         if (!hasRules)
         {
-            IconGlyph.WrappedColored(Theme.Warning, "No rules assigned yet - configure rules before this can be sent.");
+            IconGlyph.WrappedColored(Theme.Warning, "No rules assigned yet—configure this restraint before enabling it.");
         }
+        if (!hasEquipment)
+            IconGlyph.WrappedColored(Theme.Warning, "Choose the Glamourer slot and item this mod should equip and lock.");
+        if (!catalogAvailable)
+            IconGlyph.WrappedColored(Theme.Warning, "This restraint mod is no longer present in the latest shared catalog. Choose it again after the Sub shares it.");
 
         if (expanded && restraintRuleEdits.TryGetValue(cmd.Label, out var edit))
         {
             ImGui.Indent();
+            ImGui.TextUnformatted($"Glamourer item: {(cmd.RestraintItemId is { } equippedItem ? GetItemName(equippedItem) : "(none chosen)")}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Choose item...##restraintQuick"))
+            {
+                var catalogEntry = plugin.Configuration.RestraintMapping.ImportedPeerCatalog.GetValueOrDefault(cmd.RestraintCatalogId ?? "");
+                plugin.ItemPickerWindow.OpenForItemIds(cmd.Label, catalogEntry?.ChangedItemIds.ToHashSet() ?? [], (chosenId, _) =>
+                {
+                    cmd.RestraintItemId = chosenId;
+                    plugin.Configuration.Save();
+                });
+            }
             DrawRestraintRuleCheckboxes(edit, $"restraintQuickRule_{cmd.Label}");
 
             var hasAnyRule = HasAnyRule(edit);
@@ -1988,13 +2130,15 @@ public class CollarWindow : Window, IDisposable
             if (hasAnyRule && !boundAnimationsConfigured)
                 IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before saving.");
 
-            using (ImRaii.Disabled(!hasAnyRule || !boundAnimationsConfigured))
+            using (ImRaii.Disabled(!hasAnyRule || !boundAnimationsConfigured || !hasEquipment))
             {
                 if (ImGui.SmallButton("Save rules##restraintQuickRule"))
                 {
                     var rules = ToRules(edit);
                     cmd.RestraintRules = rules;
-                    cmd.Command = RestraintCommand.BuildLockCommand(cmd.Label, rules);
+                    cmd.Command = cmd.RestraintCatalogId is { } catalogId && cmd.RestraintItemId is { } itemId
+                        ? RestraintCommand.BuildCatalogLockCommand(catalogId, cmd.Label, itemId, rules)
+                        : RestraintCommand.BuildLockCommand(cmd.Label, rules);
                     plugin.Configuration.Save();
                     expandedRestraintRuleEditors.Remove(cmd.Label);
                     restraintRuleEdits.Remove(cmd.Label);
@@ -2517,14 +2661,14 @@ public class CollarWindow : Window, IDisposable
             ImGui.SetTooltip(cmd.IsFavorite ? "Remove from favorites" : "Add to favorites");
     }
 
-    private void DrawSendCopyButtons(string command, bool canSend, string idSuffix)
+    private void DrawSendCopyButtons(string command, bool canSend, string idSuffix, string sendLabel = "Send")
     {
         var composed = plugin.ChatComposer.Compose(command);
         var fits = CommandSelector.Fits(composed);
 
         using (ImRaii.Disabled(!canSend || !fits))
         {
-            if (ImGui.SmallButton($"Send##{idSuffix}"))
+            if (ImGui.SmallButton($"{sendLabel}##{idSuffix}"))
                 plugin.ChatSender.Send(composed);
         }
         if (ImGui.IsItemHovered())
@@ -2534,6 +2678,19 @@ public class CollarWindow : Window, IDisposable
         using (ImRaii.Disabled(!fits))
         if (ImGui.SmallButton($"Copy##{idSuffix}"))
             ImGui.SetClipboardText(composed);
+    }
+
+    private void DrawSendOnly(string command, bool canSend, string idSuffix, string label)
+    {
+        var composed = plugin.ChatComposer.Compose(command);
+        var fits = CommandSelector.Fits(composed);
+        using (ImRaii.Disabled(!canSend || !fits))
+        {
+            if (ImGui.SmallButton($"{label}##{idSuffix}"))
+                plugin.ChatSender.Send(composed);
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
     }
 
     /// "title"/"outfit"/"gesture" are reserved for the Owner's direct override grammar (see

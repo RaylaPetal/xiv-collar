@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using Oathbound.Plugin.Config;
+using Oathbound.Plugin.Relay;
 
 namespace Oathbound.Plugin.Commands;
 
@@ -156,8 +157,10 @@ public sealed class CatalogSyncService
             ImportAliasLines(ma, newMoodles, usedCommandsExcludingThisPair, ref duplicates);
 
         var newRestraints = new List<QuickCommand>();
+        var stagedRestraintCatalog = new Dictionary<string, RestraintCatalogExportEntry>(config.RestraintMapping.ImportedPeerCatalog);
+        stagedRestraintCatalog.Clear();
         if (sections.TryGetValue(RestraintsHeader, out var r))
-            ImportPlainNames(r, newRestraints, name => $"restraint lock {name}", usedCommandsExcludingThisPair, targetSelector: null, ref duplicates);
+            ImportRestraintLines(r, newRestraints, usedCommandsExcludingThisPair, ref duplicates, stagedRestraintCatalog);
         if (sections.TryGetValue(RestraintsAliasesHeader, out var ra))
             ImportAliasLines(ra, newRestraints, usedCommandsExcludingThisPair, ref duplicates);
 
@@ -175,6 +178,7 @@ public sealed class CatalogSyncService
         var oldTitles = quick.Titles; var oldOutfits = quick.Outfits; var oldGestures = quick.Gestures;
         var oldMoodles = quick.Moodles; var oldRestraints = quick.Restraints; var oldAliases = quick.Aliases;
         var oldGestureCatalog = config.GestureMapping.ImportedPeerCatalog;
+        var oldRestraintCatalog = config.RestraintMapping.ImportedPeerCatalog;
         quick.Titles = ReconcileCategory(oldTitles, newTitles, sourcePairIdHash, ref added, ref updated, ref removed);
         quick.Outfits = ReconcileCategory(oldOutfits, newOutfits, sourcePairIdHash, ref added, ref updated, ref removed);
         quick.Gestures = ReconcileCategory(oldGestures, newGestures, sourcePairIdHash, ref added, ref updated, ref removed, carryForwardExtra: CarryForwardGestureFields);
@@ -183,6 +187,7 @@ public sealed class CatalogSyncService
         quick.Aliases = ReconcileCategory(oldAliases, newBundles, sourcePairIdHash, ref added, ref updated, ref removed);
         if (gestureCatalogRefreshed)
             config.GestureMapping.ImportedPeerCatalog = stagedGestureCatalog;
+        config.RestraintMapping.ImportedPeerCatalog = stagedRestraintCatalog;
 
         try { config.Save(); }
         catch (Exception ex)
@@ -190,6 +195,7 @@ public sealed class CatalogSyncService
             quick.Titles = oldTitles; quick.Outfits = oldOutfits; quick.Gestures = oldGestures;
             quick.Moodles = oldMoodles; quick.Restraints = oldRestraints; quick.Aliases = oldAliases;
             config.GestureMapping.ImportedPeerCatalog = oldGestureCatalog;
+            config.RestraintMapping.ImportedPeerCatalog = oldRestraintCatalog;
             return new CatalogSnapshotResult(0, 0, 0, duplicates, $"Could not save the imported snapshot: {ex.Message}");
         }
         return new CatalogSnapshotResult(added, updated, removed, duplicates, null);
@@ -203,7 +209,11 @@ public sealed class CatalogSyncService
         to.GestureOptionOrder = from.GestureOptionOrder;
     }
 
-    private static void CarryForwardRestraintRules(QuickCommand from, QuickCommand to) => to.RestraintRules = from.RestraintRules;
+    private static void CarryForwardRestraintRules(QuickCommand from, QuickCommand to)
+    {
+        to.RestraintRules = from.RestraintRules;
+        to.RestraintCatalogId ??= from.RestraintCatalogId;
+    }
 
     /// Matches by stable identity (Target when the category has one, else Label) against the entries this
     /// pair previously contributed to `existing`, so a matched entry keeps its favorite flag and any
@@ -297,11 +307,27 @@ public sealed class CatalogSyncService
         AppendSection(sb, GestureAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Gesture, config.Aliases.Gestures.Select(a => new AliasExportEntry(a.Alias, DescribeGestureAlias(a), a.GestureId))).Select(EncodeAliasEntry));
         AppendSection(sb, MoodlesHeader, moodles.ExportNames());
         AppendSection(sb, MoodlesAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Moodle, config.Aliases.Moodles.Select(a => new AliasExportEntry(a.Alias, DescribeMoodleAlias(a), MoodlesTextFormat.StripMarkup(a.StatusName)))).Select(EncodeAliasEntry));
-        AppendSection(sb, RestraintsHeader, restraints.ExportNames());
+        AppendSection(sb, RestraintsHeader, restraints.ExportEntries());
         AppendSection(sb, RestraintsAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Restraint, config.Aliases.Restraints.Select(a => new AliasExportEntry(a.Alias, DescribeRestraintAlias(a)))).Select(EncodeAliasEntry));
         AppendSection(sb, BundlesHeader, ExportBundleEntries().Select(EncodeAliasEntry));
         return sb.ToString();
     }
+
+    public bool TryBuildBoundedExport(out string export, out string? error)
+    {
+        export = BuildExport();
+        if (FitsPlaintextLimit(export))
+        {
+            error = null;
+            return true;
+        }
+        export = "";
+        error = "Catalog exceeds the local plaintext limit and was not uploaded.";
+        return false;
+    }
+
+    public static bool FitsPlaintextLimit(string export) =>
+        Encoding.UTF8.GetByteCount(export) <= RelayProtocolConstants.CatalogPlaintextMaxBytes;
 
     private static void AppendSection(StringBuilder sb, string header, IEnumerable<string> lines)
     {
@@ -411,6 +437,7 @@ public sealed class CatalogSyncService
         var stagedRestraints = CloneQuickList(quick.Restraints);
         var stagedAliases = CloneQuickList(quick.Aliases);
         var stagedGestureCatalog = new Dictionary<string, GestureExportEntry>(config.GestureMapping.ImportedPeerCatalog);
+        var stagedRestraintCatalog = new Dictionary<string, RestraintCatalogExportEntry>(config.RestraintMapping.ImportedPeerCatalog);
 
         // collar/catalog-sync "Import skips commands that duplicate an existing quick command": seeded
         // once, before any category import runs, from every command already saved anywhere - not just the
@@ -459,8 +486,11 @@ public sealed class CatalogSyncService
             ? ImportAliasLines(ma, stagedMoodles, usedCommands, ref duplicates)
             : 0;
 
-        var restraintsAdded = sections.TryGetValue(RestraintsHeader, out var r)
-            ? ImportPlainNames(r, stagedRestraints, name => $"restraint lock {name}", usedCommands, targetSelector: null, ref duplicates)
+        var restraintCatalogRefreshed = sections.TryGetValue(RestraintsHeader, out var r) &&
+            r.Any(line => line.StartsWith("OATHBOUND-RESTRAINT-V1|", StringComparison.Ordinal) ||
+                          line.StartsWith("OATHBOUND-RESTRAINT-CONFIG-V1|", StringComparison.Ordinal));
+        var restraintsAdded = sections.TryGetValue(RestraintsHeader, out r)
+            ? ImportRestraintLines(r, stagedRestraints, usedCommands, ref duplicates, stagedRestraintCatalog)
             : 0;
         restraintsAdded += sections.TryGetValue(RestraintsAliasesHeader, out var ra)
             ? ImportAliasLines(ra, stagedRestraints, usedCommands, ref duplicates)
@@ -473,11 +503,12 @@ public sealed class CatalogSyncService
             ? ImportAliasLines(b, stagedAliases, usedCommands, ref duplicates)
             : 0;
 
-        if (titleAdded + wardrobeAdded + gestureAdded + moodlesAdded + restraintsAdded + bundlesAdded > 0 || gestureCatalogRefreshed)
+        if (titleAdded + wardrobeAdded + gestureAdded + moodlesAdded + restraintsAdded + bundlesAdded > 0 || gestureCatalogRefreshed || restraintCatalogRefreshed)
         {
             var oldTitles = quick.Titles; var oldOutfits = quick.Outfits; var oldGestures = quick.Gestures;
             var oldMoodles = quick.Moodles; var oldRestraints = quick.Restraints; var oldAliases = quick.Aliases;
             var oldGestureCatalog = config.GestureMapping.ImportedPeerCatalog;
+            var oldRestraintCatalog = config.RestraintMapping.ImportedPeerCatalog;
             quick.Titles = stagedTitles;
             quick.Outfits = stagedOutfits;
             quick.Gestures = stagedGestures;
@@ -486,12 +517,14 @@ public sealed class CatalogSyncService
             quick.Aliases = stagedAliases;
             if (gestureCatalogRefreshed)
                 config.GestureMapping.ImportedPeerCatalog = stagedGestureCatalog;
+            config.RestraintMapping.ImportedPeerCatalog = stagedRestraintCatalog;
             try { config.Save(); }
             catch (Exception ex)
             {
                 quick.Titles = oldTitles; quick.Outfits = oldOutfits; quick.Gestures = oldGestures;
                 quick.Moodles = oldMoodles; quick.Restraints = oldRestraints; quick.Aliases = oldAliases;
                 config.GestureMapping.ImportedPeerCatalog = oldGestureCatalog;
+                config.RestraintMapping.ImportedPeerCatalog = oldRestraintCatalog;
                 return new CatalogImportResult(0, 0, 0, 0, 0, 0, duplicates, $"Import could not be saved: {ex.Message}");
             }
         }
@@ -557,7 +590,20 @@ public sealed class CatalogSyncService
             return false;
         }
 
-        foreach (var header in new[] { WardrobeHeader, MoodlesHeader, RestraintsHeader })
+        if (sections[RestraintsHeader].Any(line => line.StartsWith("OATHBOUND-RESTRAINT-CONFIG-", StringComparison.Ordinal) &&
+            (!RestraintCommand.TryParseConfiguredExport(line, out var configured) || configured is null)))
+        {
+            error = "Snapshot contained a malformed configured restraint - existing imports were left unchanged.";
+            return false;
+        }
+        if (sections[RestraintsHeader].Any(line => line.StartsWith("OATHBOUND-RESTRAINT-V1|", StringComparison.Ordinal) &&
+            (!RestraintCommand.TryParseExport(line, out var entry) || entry is null)))
+        {
+            error = "Snapshot contained a malformed restraint entry - existing imports were left unchanged.";
+            return false;
+        }
+
+        foreach (var header in new[] { WardrobeHeader, MoodlesHeader })
         {
             if (sections[header].Any(line => line.Length > 80 || line.IndexOfAny(['{', '}', ';', '<', '>', '\t']) >= 0 ||
                 line.Contains("http://", StringComparison.OrdinalIgnoreCase) || line.Contains("https://", StringComparison.OrdinalIgnoreCase)))
@@ -565,6 +611,15 @@ public sealed class CatalogSyncService
                 error = $"Snapshot contained an unsafe entry in {header} - existing imports were left unchanged.";
                 return false;
             }
+        }
+
+        if (sections[RestraintsHeader].Any(line => !line.StartsWith("OATHBOUND-RESTRAINT-V1|", StringComparison.Ordinal) &&
+            !line.StartsWith("OATHBOUND-RESTRAINT-CONFIG-V1|", StringComparison.Ordinal) &&
+            (line.Length > 80 || line.IndexOfAny(['{', '}', ';', '<', '>', '\t']) >= 0 ||
+             line.Contains("http://", StringComparison.OrdinalIgnoreCase) || line.Contains("https://", StringComparison.OrdinalIgnoreCase))))
+        {
+            error = "Snapshot contained an unsafe legacy restraint entry - existing imports were left unchanged.";
+            return false;
         }
 
         error = null;
@@ -685,6 +740,48 @@ public sealed class CatalogSyncService
 
         if (added > 0)
             target.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+        return added;
+    }
+
+
+    private int ImportRestraintLines(IEnumerable<string> lines, List<QuickCommand> target, HashSet<string> usedCommands,
+        ref int duplicates, Dictionary<string, RestraintCatalogExportEntry> importedCatalog)
+    {
+        var added = 0;
+        foreach (var line in lines)
+        {
+            if (RestraintCommand.TryParseConfiguredExport(line, out var configured) && configured is not null)
+            {
+                var command = RestraintCommand.BuildCatalogLockCommand(configured.CatalogId, configured.Name,
+                    configured.ItemId!.Value, configured.Rules);
+                if (target.Any(x => x.RestraintCatalogId == configured.CatalogId) || usedCommands.Contains(command))
+                {
+                    duplicates++;
+                    continue;
+                }
+                target.Add(new QuickCommand
+                {
+                    Label = configured.Name,
+                    Command = command,
+                    Source = ImportSource.Imported,
+                    Target = configured.CatalogId,
+                    RestraintCatalogId = configured.CatalogId,
+                    RestraintItemId = configured.ItemId,
+                    RestraintRules = configured.Rules,
+                });
+                usedCommands.Add(command);
+                added++;
+                continue;
+            }
+            if (RestraintCommand.TryParseExport(line, out var entry) && entry is not null)
+            {
+                importedCatalog[entry.Id] = entry;
+                continue;
+            }
+            // Legacy name-only restraint catalog entries are intentionally retired. The runtime parser
+            // remains tolerant of old saved commands, but new imports never recreate that UI model.
+            continue;
+        }
         return added;
     }
 }

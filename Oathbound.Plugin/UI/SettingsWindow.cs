@@ -30,6 +30,7 @@ public class SettingsWindow : Window, IDisposable
     private bool confirmingIdentityReset;
     private string triggerPhraseInput = "";
     private string gestureModSearch = "";
+    private string penumbraFolderSearch = "";
     private string newWardrobeAllowlistFolder = "";
     private string? scanAndExportResult;
     private string testCommandInput = "";
@@ -134,6 +135,11 @@ public class SettingsWindow : Window, IDisposable
         savedTriggers.AddRange(aliases.Moodles.Select(a => ($"Moodle · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.Restraints.Select(a => ($"Restraint · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.CustomTriggers.Select(a => ($"Custom Trigger · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(config.RestraintMapping.ConfiguredMods
+            .Where(x => x.ItemId > 0 && GlamourerIpc.GetItemSlot((uint)x.ItemId.Value) is not null && x.Rules.Count > 0 &&
+                        config.RestraintMapping.LocalCatalog.ContainsKey(x.CatalogId))
+            .Select(x => ($"Restraint · {x.Name}", RestraintCommand.BuildCatalogLockCommand(
+                x.CatalogId, x.Name, x.ItemId!.Value, x.Rules))));
 
         ImGui.TextUnformatted("Choose one of your triggers");
         testCustomTriggerIndex = Math.Clamp(testCustomTriggerIndex, 0, savedTriggers.Count - 1);
@@ -420,9 +426,10 @@ public class SettingsWindow : Window, IDisposable
             plugin.OutfitCommand.Rescan();
             plugin.GestureCommand.Rescan();
             plugin.MoodlesCommand.Rescan();
+            plugin.RestraintCommand.RescanCatalog();
             scanAndExportResult = null;
         }
-        IconGlyph.HelpMarker("Rescans Wardrobe, Gesture, and Moodles together, each using its own currently-configured scope below - the same result as triggering each one's own Rescan individually. Restraints has no scan step - capture devices individually in the Restraints tab.");
+        IconGlyph.HelpMarker("Rescans Wardrobe, Gesture, Moodles, and the explicitly shared Penumbra restraint folders. Captured item devices are left untouched.");
 
         ImGui.SameLine();
         var hasAnythingToExport = plugin.OutfitCommand.LastScanTotalDesigns is not null || plugin.GestureCommand.LastScanTotalMods is not null ||
@@ -457,6 +464,8 @@ public class SettingsWindow : Window, IDisposable
         DrawWardrobeScanBody(config);
         ImGui.Spacing();
         DrawGestureScanBody(config);
+        ImGui.Spacing();
+        DrawRestraintScanBody(config);
         ImGui.Spacing();
         DrawMoodlesScanBody(config);
         ImGui.Spacing();
@@ -512,22 +521,15 @@ public class SettingsWindow : Window, IDisposable
     {
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation mods to scan");
         ImGui.Separator();
-        IconGlyph.WrappedDisabled("No selected mods = scan every installed mod. Select one or more to restrict scanning. Folder and text fields only filter this list.");
-
-        var folderFilter = config.GestureModFolderFilter;
-        if (ImGui.InputTextWithHint("##gestureFolder", "Penumbra sort folder (optional)...", ref folderFilter, 128))
-        {
-            config.GestureModFolderFilter = folderFilter;
-            config.Save();
-        }
+        IconGlyph.WrappedDisabled("No folders and no selected mods scans everything. Folders select a union; explicit mods narrow that union.");
+        DrawPenumbraFolderPicker("Animation folders", config.SelectedGestureFolders, config);
         ImGui.InputTextWithHint("##gestureModSearch", "Search mod names...", ref gestureModSearch, 128);
         var installed = plugin.GestureCommand.GetInstalledMods();
         using (ImRaii.Child("gestureModPicker", new Vector2(0, 180), true))
         {
             foreach (var mod in installed.Where(m =>
-                         (string.IsNullOrWhiteSpace(config.GestureModFolderFilter) || (m.SortPath is { } path &&
-                             (path.Equals(config.GestureModFolderFilter.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase) ||
-                              path.StartsWith(config.GestureModFolderFilter.Trim().TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase)))) &&
+                         (config.SelectedGestureFolders.Count == 0 || (m.SortPath is { } path && config.SelectedGestureFolders.Any(f =>
+                             path.Equals(f, StringComparison.OrdinalIgnoreCase) || path.StartsWith(f + "/", StringComparison.OrdinalIgnoreCase)))) &&
                          (string.IsNullOrWhiteSpace(gestureModSearch) || m.Name.Contains(gestureModSearch.Trim(), StringComparison.OrdinalIgnoreCase))))
             {
                 var selected = config.SelectedGestureMods.Contains(mod.Directory);
@@ -546,6 +548,64 @@ public class SettingsWindow : Window, IDisposable
         IconGlyph.HelpMarker("Reads every installed mod when none are selected, or only explicit selections otherwise. Disabled mods remain eligible and are enabled temporarily when played.");
 
         DrawGestureScanFeedback();
+    }
+
+    private void DrawRestraintScanBody(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Lock, "Shared Penumbra restraints");
+        ImGui.Separator();
+        IconGlyph.WrappedDisabled("Only options below folders selected here are shared with your Owner. No folders means no Penumbra restraints are shared.");
+        DrawPenumbraFolderPicker("Restraint folders", config.SelectedRestraintFolders, config);
+        if (ImGui.Button("Rescan restraints")) plugin.RestraintCommand.RescanCatalog();
+        var command = plugin.RestraintCommand;
+        if (command.LastScanError is { } error) IconGlyph.WrappedColored(Theme.Danger, error);
+        else if (command.LastScanTotalMods is not null)
+            IconGlyph.WrappedColored(config.RestraintMapping.LocalCatalog.Count > 0 ? Theme.Success : Theme.Warning,
+                $"Matched {command.LastScanMatchedMods} mod(s); found {config.RestraintMapping.LocalCatalog.Count} restraint option(s).");
+        if (config.SelectedRestraintFolders.Count == 0)
+            IconGlyph.WrappedColored(Theme.Warning, "No folders selected: the shared Penumbra restraint catalog is empty.");
+        using var child = ImRaii.Child("restraintCatalogPreview", new Vector2(0, 100), true);
+        foreach (var entry in config.RestraintMapping.LocalCatalog.Values.OrderBy(x => x.ModName))
+            ImGui.BulletText(entry.ModName);
+    }
+
+    private void DrawPenumbraFolderPicker(string label, List<string> selected, PluginConfig config)
+    {
+        var installed = plugin.GestureCommand.GetInstalledMods();
+        var folders = installed.Select(x => x.SortPath).Where(x => !string.IsNullOrWhiteSpace(x))
+            .SelectMany(x => ParentFolders(x!)).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+        var preview = selected.Count == 0 ? "None" : $"{selected.Count} selected";
+        if (ImGui.BeginCombo($"{label}##{label}", preview))
+        {
+            ImGui.InputTextWithHint($"##folderSearch{label}", "Search folders...", ref penumbraFolderSearch, 128);
+            foreach (var folder in folders.Where(x => string.IsNullOrWhiteSpace(penumbraFolderSearch) || x.Contains(penumbraFolderSearch, StringComparison.OrdinalIgnoreCase)))
+            {
+                var chosen = selected.Contains(folder, StringComparer.OrdinalIgnoreCase);
+                if (ImGui.Selectable(folder, chosen, ImGuiSelectableFlags.DontClosePopups))
+                {
+                    if (chosen) selected.RemoveAll(x => x.Equals(folder, StringComparison.OrdinalIgnoreCase)); else selected.Add(folder);
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(folder);
+            }
+            ImGui.EndCombo();
+        }
+        foreach (var folder in selected.ToList())
+        {
+            var missing = !folders.Contains(folder, StringComparer.OrdinalIgnoreCase);
+            ImGui.TextUnformatted(missing ? $"{folder} (missing)" : folder);
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Remove##{label}{folder}")) { selected.Remove(folder); config.Save(); }
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(folder);
+        }
+    }
+
+    private static IEnumerable<string> ParentFolders(string path)
+    {
+        var normalized = path.Replace('\\', '/').Trim('/');
+        var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 1; i < parts.Length; i++) yield return string.Join('/', parts.Take(i));
     }
 
     private void DrawGestureScanFeedback()

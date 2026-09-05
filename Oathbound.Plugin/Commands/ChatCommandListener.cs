@@ -236,6 +236,8 @@ public sealed class ChatCommandListener : IDisposable
             return true;
 
         PeerUnpairedNotice = new PeerUnpairedNotice(peerRole);
+        if (config.Role == PluginRole.Sub)
+            restraints.ForceUnlock();
         pairing.EndFromVerifiedPeerNotice();
         PeerUnpairedNoticeChanged?.Invoke();
         return true;
@@ -482,6 +484,16 @@ public sealed class ChatCommandListener : IDisposable
             return LocalTestResult.Fail("\"restraint lock\" was given no device name.");
         }
 
+        const string catalogPrefix = "catalog ";
+        if (rest.StartsWith(catalogPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!RestraintCommand.TryParseCatalogCommand(rest[catalogPrefix.Length..], out var id, out var itemId, out var rules))
+                return LocalTestResult.Fail("The catalog restraint command was malformed.");
+            return restraints.ForceApplyCatalog(id, itemId, rules)
+                ? LocalTestResult.Ok("Shared restraint applied.")
+                : LocalTestResult.Fail(restraints.LastFailureReason ?? "The shared restraint could not be applied.");
+        }
+
         const string wearPrefix = "wear ";
         if (rest.StartsWith(wearPrefix, StringComparison.OrdinalIgnoreCase))
         {
@@ -495,7 +507,7 @@ public sealed class ChatCommandListener : IDisposable
             return LocalTestResult.Fail("\"restraint wear\" was malformed - expected \"wear <slot> <itemId> \\\"<label>\\\" rules:...\".");
         }
 
-        return LocalTestResult.Fail($"Unrecognized \"restraint\" override \"{rest}\" - expected \"lock <device name>\", \"wear <slot> <itemId> \\\"<label>\\\" rules:...\", or \"unlock\".");
+        return LocalTestResult.Fail($"Unrecognized \"restraint\" override \"{rest}\" - expected \"catalog <id> \\\"<label>\\\" rules:...\", \"disable <id>\", \"wear <slot> <itemId> \\\"<label>\\\" rules:...\", or \"unlock\".");
     }
 
     private LocalTestResult HandleForceCustomTrigger(string rest)

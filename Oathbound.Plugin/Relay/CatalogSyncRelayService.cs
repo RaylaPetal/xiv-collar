@@ -346,8 +346,13 @@ public sealed class CatalogSyncRelayService
         try
         {
             identity.EnsureIdentity();
-            var exportText = catalogSync.BuildExport();
-            var compressed = RelayCompression.Compress(System.Text.Encoding.UTF8.GetBytes(exportText));
+            if (!catalogSync.TryBuildBoundedExport(out var exportText, out var exportError))
+            {
+                Plugin.Log.Warning(exportError ?? "Catalog snapshot exceeded a local size limit.");
+                return;
+            }
+            var plaintext = System.Text.Encoding.UTF8.GetBytes(exportText);
+            var compressed = RelayCompression.Compress(plaintext);
             if (compressed.Length > RelayProtocolConstants.CatalogCiphertextMaxBytes)
             {
                 Plugin.Log.Warning("Catalog snapshot too large to upload even compressed; request left unanswered.");

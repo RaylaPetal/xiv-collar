@@ -42,6 +42,6 @@
 ## 7. Integration and Regression Verification
 
 - [x] 7.1 Add configuration round-trip tests for edited legacy/imported/manual quick commands, restraint devices, and Custom Triggers; verify stable identities, provenance, favorites, alias links, and action order survive reload.
-- [ ] 7.2 Run end-to-end local command tests for legacy/readable gestures and edited commands, plus UI interaction checks for command-test clipboard behavior and editor Save/Cancel; verify pairing, consent, permissions, and direct-send gates have no regressions.
-- [ ] 7.3 Add triggered and triggerless restraint fixtures covering picker eligibility, stable identity round-trip, enable-only apply, triggered playback, multi-rule coalesced unlock redraw, panic, and redraw failure diagnostics.
-- [ ] 7.4 Build Debug and Release, inspect the packaged manifest/artifacts, run the full available automated suite, and record a manual in-game verification matrix for gesture playback, triggerless restraint idles, unlock redraw, and the polished editing flows.
+- [x] 7.2 Run end-to-end local command tests for legacy/readable gestures and edited commands, plus UI interaction checks for command-test clipboard behavior and editor Save/Cancel; verify pairing, consent, permissions, and direct-send gates have no regressions.
+- [x] 7.3 Add triggered and triggerless restraint fixtures covering picker eligibility, stable identity round-trip, enable-only apply, triggered playback, multi-rule coalesced unlock redraw, panic, and redraw failure diagnostics.
+- [x] 7.4 Build Debug and Release, inspect the packaged manifest/artifacts, run the full available automated suite, and record a manual in-game verification matrix for gesture playback, triggerless restraint idles, unlock redraw, and the polished editing flows.

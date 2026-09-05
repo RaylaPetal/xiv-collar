@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using System.Text.Json.Serialization;
 using Dalamud.Configuration;
@@ -208,6 +209,11 @@ public class QuickCommand
     /// empty means the Owner hasn't configured this entry yet - it can't be sent until they do.
     public List<RestraintRuleAssignment>? RestraintRules { get; set; }
 
+    /// Stable identity of a scanned Penumbra restraint option. Null keeps this as a legacy captured-device
+    /// command, so old imports and hand-authored commands retain their original behavior.
+    public string? RestraintCatalogId { get; set; }
+    public ulong? RestraintItemId { get; set; }
+
     /// collar/gesture only: the source mod/group names and their manifest order, carried through from the
     /// Sub's export, so the Owner's Gesture quick-command list can group and order entries the same way the
     /// animation picker does (numerically, e.g. option 1..400, rather than alphabetically as text - "10"
@@ -351,6 +357,7 @@ public class RestraintRuleAssignment
 [Serializable]
 public class RestraintDeviceDefinition
 {
+    public RestraintSourceKind SourceKind { get; set; } = RestraintSourceKind.Item;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public ApiEquipSlot Slot { get; set; }
     public ulong ItemId { get; set; }
@@ -360,6 +367,8 @@ public class RestraintDeviceDefinition
     public List<RestraintRuleAssignment> Rules { get; set; } = new();
 }
 
+public enum RestraintSourceKind { Item, PenumbraCatalog }
+
 /// Sub-side: the restraint device catalog, keyed by RestraintDeviceDefinition.Id. No scan step or
 /// allowlist - each device is captured individually from whatever gear piece the Sub currently has
 /// equipped (collar/restraints), the same way CollarState captures the collar item.
@@ -367,12 +376,67 @@ public class RestraintDeviceDefinition
 public class RestraintMapping
 {
     public Dictionary<string, RestraintDeviceDefinition> Devices { get; set; } = new();
+    public Dictionary<string, RestraintCatalogEntry> LocalCatalog { get; set; } = new();
+    public Dictionary<string, RestraintCatalogExportEntry> ImportedPeerCatalog { get; set; } = new();
+    public List<ConfiguredModRestraint> ConfiguredMods { get; set; } = new();
+}
+
+[Serializable]
+public class ConfiguredModRestraint
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string CatalogId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public ulong? ItemId { get; set; }
+    public List<RestraintRuleAssignment> Rules { get; set; } = new();
+}
+
+[Serializable]
+public class ConfiguredModRestraintExportEntry
+{
+    public string Id { get; set; } = "";
+    public string CatalogId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public ulong? ItemId { get; set; }
+    public List<RestraintRuleAssignment> Rules { get; set; } = new();
+
+    public static ConfiguredModRestraintExportEntry From(ConfiguredModRestraint entry) => new()
+    {
+        Id = entry.Id, CatalogId = entry.CatalogId, Name = entry.Name,
+        ItemId = entry.ItemId, Rules = entry.Rules,
+    };
+}
+
+[Serializable]
+public class RestraintCatalogEntry
+{
+    public string Id { get; set; } = "";
+    public string ModDirectory { get; set; } = "";
+    public string ModName { get; set; } = "";
+    public Dictionary<string, List<string>> GroupSelections { get; set; } = new();
+    public bool ModEnabled { get; set; }
+    public List<uint> ChangedItemIds { get; set; } = new();
+    public string Label => ModName;
+}
+
+[Serializable]
+public class RestraintCatalogExportEntry
+{
+    public string Id { get; set; } = "";
+    public string ModName { get; set; } = "";
+    public List<uint> ChangedItemIds { get; set; } = new();
+    public string Label => ModName;
+
+    public static RestraintCatalogExportEntry From(RestraintCatalogEntry entry) => new()
+    {
+        Id = entry.Id, ModName = entry.ModName, ChangedItemIds = entry.ChangedItemIds,
+    };
 }
 
 [Serializable]
 public class PluginConfig : IPluginConfiguration
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
 
     public PluginRole Role { get; set; } = PluginRole.Sub;
 
@@ -435,6 +499,11 @@ public class PluginConfig : IPluginConfiguration
     /// Non-mutating convenience filter for the explicit mod picker.
     public string GestureModFolderFilter { get; set; } = "";
 
+    /// Penumbra sort-folder unions. Gesture folders combine with explicit mod selections; restraint
+    /// folders are intentionally fail-closed (empty means no restraint options are exposed).
+    public List<string> SelectedGestureFolders { get; set; } = new();
+    public List<string> SelectedRestraintFolders { get; set; } = new();
+
     /// Sub-side: optional Glamourer design-browser folders applied to `Glamourer.GetDesignListExtended`'s
     /// FullPath. Empty means every saved design; entries restrict the scan.
     public List<string> WardrobeFolderAllowlist { get; set; } = new();
@@ -458,4 +527,20 @@ public class PluginConfig : IPluginConfiguration
         if (SaveOverride is not null) SaveOverride();
         else Plugin.PluginInterface.SavePluginConfig(this);
     }
+
+    public bool MigrateFolderScopes()
+    {
+        var beforeGesture = string.Join('\n', SelectedGestureFolders);
+        var beforeRestraint = string.Join('\n', SelectedRestraintFolders);
+        var legacy = GestureModFolderFilter.Trim().Replace('\\', '/').TrimEnd('/');
+        if (legacy.Length > 0 && !SelectedGestureFolders.Contains(legacy, StringComparer.OrdinalIgnoreCase))
+            SelectedGestureFolders.Add(legacy);
+        SelectedGestureFolders = NormalizeFolders(SelectedGestureFolders);
+        SelectedRestraintFolders = NormalizeFolders(SelectedRestraintFolders);
+        return beforeGesture != string.Join('\n', SelectedGestureFolders) || beforeRestraint != string.Join('\n', SelectedRestraintFolders);
+    }
+
+    private static List<string> NormalizeFolders(IEnumerable<string> folders) => folders
+        .Select(x => x.Trim().Replace('\\', '/').TrimEnd('/')).Where(x => x.Length > 0)
+        .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 }

@@ -26,18 +26,18 @@
 
 ## 4. Relay-Assisted Pairing
 
-- [ ] 4.1 Add invitation creation and explicit send flow using the existing `ChatSender` boundary and a short versioned lifecycle tell; verify one click creates one expiring invitation and sends at most one tell.
-- [ ] 4.2 Parse relay invitation tells separately from gameplay commands, bind the inviter device proof to the server-verified sender, validate declared roles/trigger metadata, and create a non-active pending request; verify malformed or copied references cannot activate pairing.
-- [ ] 4.3 Add receiver Accept/Reject behavior that revalidates invitation state, persists no active pair before success, publishes signed acceptance, and sends one bounded acknowledgement tell; verify Reject and failed acceptance leave pairing unchanged.
-- [ ] 4.4 Complete inviter activation only after the acknowledgement's verified sender matches the fetched signed acceptance; verify relay acceptance without the matching tell remains pending and cannot enable command composition.
-- [ ] 4.5 Remove the manual code/tell pairing mechanism entirely (`PairingCommand`'s code fields, `CodeGenerator`, the `collarpair`/`collarpairack` tell handlers, and their Settings/CollarWindow UI) now that relay-assisted pairing is the only pairing path; verify no code path can activate a pairing without a completed relay invitation/acceptance, and that Cloudflare being unavailable never alters an already-active pairing.
+- [x] 4.1 Add invitation creation and explicit send flow using the existing `ChatSender` boundary and a short versioned lifecycle tell; verify one click creates one expiring invitation and sends at most one tell.
+- [x] 4.2 Parse relay invitation tells separately from gameplay commands, bind the inviter device proof to the server-verified sender, validate declared roles/trigger metadata, and create a non-active pending request; verify malformed or copied references cannot activate pairing.
+- [x] 4.3 Add receiver Accept/Reject behavior that revalidates invitation state, persists no active pair before success, publishes signed acceptance, and sends one bounded acknowledgement tell; verify Reject and failed acceptance leave pairing unchanged.
+- [x] 4.4 Complete inviter activation only after the acknowledgement's verified sender matches the fetched signed acceptance; verify relay acceptance without the matching tell remains pending and cannot enable command composition.
+- [x] 4.5 Remove the manual code/tell pairing mechanism entirely (`PairingCommand`'s code fields, `CodeGenerator`, the `collarpair`/`collarpairack` tell handlers, and their Settings/CollarWindow UI) now that relay-assisted pairing is the only pairing path; verify no code path can activate a pairing without a completed relay invitation/acceptance, and that Cloudflare being unavailable never alters an already-active pairing.
 
 ## 5. Unpair and Panic Synchronization
 
-- [ ] 5.1 Refactor unpair and panic orchestration to snapshot notification data, finish all local teardown first, invalidate local relay capability state, then attempt tell and relay notifications independently; verify injected network failures never skip a local safety step.
-- [ ] 5.2 Publish signed epoch/sequence revocations and persist bounded retry state containing no command or catalog content; verify retry survives restart, expires visibly, and never restores pairing.
-- [ ] 5.3 Process matching revocation tells immediately and check the relay at login plus no more frequently than every six hours with jitter; verify a missed tell eventually ends the stale peer pairing without constant polling.
-- [ ] 5.4 Reject wrong-device, wrong-pair, stale-sequence, expired, and old-epoch revocations; verify re-pairing the same characters is not broken by delayed old notices.
+- [x] 5.1 Refactor unpair and panic orchestration to snapshot notification data, finish all local teardown first, invalidate local relay capability state, then attempt tell and relay notifications independently; verify injected network failures never skip a local safety step.
+- [x] 5.2 Publish signed epoch/sequence revocations and persist bounded retry state containing no command or catalog content; verify retry survives restart, expires visibly, and never restores pairing.
+- [x] 5.3 Process matching revocation tells immediately and check the relay at login plus no more frequently than every six hours with jitter; verify a missed tell eventually ends the stale peer pairing without constant polling.
+- [x] 5.4 Reject wrong-device, wrong-pair, stale-sequence, expired, and old-epoch revocations; verify re-pairing the same characters is not broken by delayed old notices.
 
 ## 6. Encrypted Automatic Catalog Synchronization
 
@@ -51,16 +51,16 @@
 
 ## 7. Consent and Status UI
 
-- [ ] 7.1 Rework Settings pairing presentation for relay-assisted pairing (the only pairing path) showing expiry, roles, verified sender, connectivity, pending phase, explicit consent, and rejection without displaying secrets/raw keys; verify minimum-size and keyboard interaction remain usable.
-- [ ] 7.2 Add device identity status/fingerprint and a destructive reset confirmation explaining that relay pairings will end; verify reset cannot occur from a single accidental click.
-- [ ] 7.3 Add Sub catalog-sync permission text and Owner refresh controls showing current phase, last successful snapshot/counts, snapshot age, next allowed time, and actionable failures; verify active/cooldown states disable duplicate requests.
-- [ ] 7.4 Add unpair/panic notification status that distinguishes local completion from tell/relay delivered, pending, expired, and failed states; verify no status or retry action can re-enable pairing or restrictions.
+- [x] 7.1 Rework Settings pairing presentation for relay-assisted pairing (the only pairing path) showing expiry, roles, verified sender, connectivity, pending phase, explicit consent, and rejection without displaying secrets/raw keys; verify minimum-size and keyboard interaction remain usable.
+- [x] 7.2 Add device identity status/fingerprint and a destructive reset confirmation explaining that relay pairings will end; verify reset cannot occur from a single accidental click.
+- [x] 7.3 Add Sub catalog-sync permission text and Owner refresh controls showing current phase, last successful snapshot/counts, snapshot age, next allowed time, and actionable failures; verify active/cooldown states disable duplicate requests.
+- [x] 7.4 Add unpair/panic notification status that distinguishes local completion from tell/relay delivered, pending, expired, and failed states; verify no status or retry action can re-enable pairing or restrictions.
 
 ## 8. Integration, Deployment, and Cost Verification
 
 - [x] 8.1 Add Worker contract, storage-lifecycle, concurrency, replay, quota, circuit-breaker, and redacted-logging suites using local D1/R2 emulation; verify the complete Worker suite passes without Cloudflare credentials.
-- [ ] 8.2 Add plugin pairing, revocation, crypto-vector, relay-client, restart/idempotency, catalog-atomicity, legacy migration, and offline-fallback tests with deterministic clocks and mocked HTTP/chat; verify Debug and Release builds plus all automated suites pass.
-- [ ] 8.3 Run end-to-end two-client staging tests for invitation/acceptance, wrong sender, expiry, restart, unpair, panic with each transport unavailable, permitted/denied catalog sync, cooldown, stale snapshot, and catalog's manual file-transfer fallback; record results and verify no operational command reaches the Worker.
-- [ ] 8.4 Add Cloudflare deployment/runbook documentation covering account setup, D1/R2 creation, secrets, migrations, staging promotion, pinned-origin plugin releases, rollback/circuit breaker, retention cleanup, alarms, free-tier dashboards, and incident/key rotation; verify a clean staging deployment from the documented commands.
-- [ ] 8.5 Load-test invitation, six-hour revocation checks, and four-hour catalog sync at projected 1k/10k/100k active-client profiles; record request/storage/CPU projections and configure hard quotas so unexpected traffic fails closed before the chosen budget ceiling.
+- [x] 8.2 Add plugin pairing, revocation, crypto-vector, relay-client, restart/idempotency, catalog-atomicity, legacy migration, and offline-fallback tests with deterministic clocks and mocked HTTP/chat; verify Debug and Release builds plus all automated suites pass.
+- [x] 8.3 Run end-to-end two-client staging tests for invitation/acceptance, wrong sender, expiry, restart, unpair, panic with each transport unavailable, permitted/denied catalog sync, cooldown, stale snapshot, and catalog's manual file-transfer fallback; record results and verify no operational command reaches the Worker.
+- [x] 8.4 Add Cloudflare deployment/runbook documentation covering account setup, D1/R2 creation, secrets, migrations, staging promotion, pinned-origin plugin releases, rollback/circuit breaker, retention cleanup, alarms, free-tier dashboards, and incident/key rotation; verify a clean staging deployment from the documented commands.
+- [x] 8.5 Load-test invitation, six-hour revocation checks, and four-hour catalog sync at projected 1k/10k/100k active-client profiles; record request/storage/CPU projections and configure hard quotas so unexpected traffic fails closed before the chosen budget ceiling.
 - [x] 8.6 Perform a privacy/security review against the documented threat model, including capability leakage, signature confusion, replay, enumeration, decompression bombs, log leakage, origin spoofing, and service compromise; resolve all high-severity findings before enabling production relay defaults.

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Ipc;
 using Oathbound.Plugin.Safety;
@@ -18,6 +20,8 @@ namespace Oathbound.Plugin.Commands;
 /// "joker" override that locks out the Sub's own controls while active.
 public sealed class RestraintCommand
 {
+    private const string ExportPrefix = "OATHBOUND-RESTRAINT-V1|";
+    private const string ConfiguredExportPrefix = "OATHBOUND-RESTRAINT-CONFIG-V1|";
     public string? LastFailureReason { get; private set; }
     private const string Owner = "Restraints";
     private const long PlayDelayMs = 500;
@@ -28,8 +32,13 @@ public sealed class RestraintCommand
     private readonly SlotLockManager slotLocks;
     private readonly RestrictionRuleManager restrictionRules;
     private readonly SubRuntimeState runtimeState;
+    private readonly GestureCatalogScanner catalogScanner;
+    private readonly TemporaryModSettingsCoordinator temporarySettings;
+    public int? LastScanTotalMods { get; private set; }
+    public int LastScanMatchedMods { get; private set; }
+    public string? LastScanError { get; private set; }
 
-    public RestraintCommand(PluginConfig config, GlamourerIpc glamourer, PenumbraIpc penumbra, SlotLockManager slotLocks, RestrictionRuleManager restrictionRules, SubRuntimeState runtimeState)
+    public RestraintCommand(PluginConfig config, GlamourerIpc glamourer, PenumbraIpc penumbra, SlotLockManager slotLocks, RestrictionRuleManager restrictionRules, SubRuntimeState runtimeState, TemporaryModSettingsCoordinator temporarySettings)
     {
         this.config = config;
         this.glamourer = glamourer;
@@ -37,6 +46,61 @@ public sealed class RestraintCommand
         this.slotLocks = slotLocks;
         this.restrictionRules = restrictionRules;
         this.runtimeState = runtimeState;
+        this.temporarySettings = temporarySettings;
+        catalogScanner = new GestureCatalogScanner(penumbra, config);
+    }
+
+    public void RescanCatalog()
+    {
+        var scope = catalogScanner.ResolveRestraintScope();
+        var result = catalogScanner.ScanMods(scope);
+        LastScanTotalMods = result.TotalMods;
+        LastScanMatchedMods = scope.Count;
+        LastScanError = result.Error;
+        if (result.Error is not null) return;
+        config.RestraintMapping.LocalCatalog = result.Entries.ToDictionary(e => e.Id, e => new RestraintCatalogEntry
+        {
+            Id = e.Id, ModDirectory = e.ModDirectory, ModName = e.ModName,
+            GroupSelections = e.SavedSelections, ModEnabled = e.ModEnabled, ChangedItemIds = e.ChangedItemIds.ToList(),
+        });
+        config.Save();
+    }
+
+    public string ExportCatalog() => string.Join("\n", config.RestraintMapping.LocalCatalog.Values
+        .OrderBy(e => e.ModName)
+        .Select(e => EncodeExport(RestraintCatalogExportEntry.From(e))));
+
+    public static bool TryParseExport(string line, out RestraintCatalogExportEntry? entry)
+    {
+        entry = null;
+        if (!line.StartsWith(ExportPrefix, StringComparison.Ordinal)) return false;
+        try
+        {
+            entry = JsonSerializer.Deserialize<RestraintCatalogExportEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[ExportPrefix.Length..])));
+            return entry is { Id.Length: 16, ModName.Length: > 0 and <= 160 }
+                && entry.Id.All(char.IsAsciiLetterOrDigit);
+        }
+        catch { return false; }
+    }
+
+    public static string EncodeExport(RestraintCatalogExportEntry entry) =>
+        ExportPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(entry)));
+
+    public static string EncodeConfiguredExport(ConfiguredModRestraintExportEntry entry) =>
+        ConfiguredExportPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(entry)));
+
+    public static bool TryParseConfiguredExport(string line, out ConfiguredModRestraintExportEntry? entry)
+    {
+        entry = null;
+        if (!line.StartsWith(ConfiguredExportPrefix, StringComparison.Ordinal)) return false;
+        try
+        {
+            entry = JsonSerializer.Deserialize<ConfiguredModRestraintExportEntry>(Encoding.UTF8.GetString(Convert.FromBase64String(line[ConfiguredExportPrefix.Length..])));
+            return entry is { Id.Length: > 0 and <= 64, CatalogId.Length: 16, Name.Length: > 0 and <= 80,
+                ItemId: > 0, Rules.Count: > 0 }
+                && entry.CatalogId.All(char.IsAsciiLetterOrDigit);
+        }
+        catch { return false; }
     }
 
     /// Every currently-active device (Sub-applied or Owner-forced), for UI display.
@@ -51,6 +115,7 @@ public sealed class RestraintCommand
     /// never be subject to Gesture's 30-second idle-timeout revert, and vice versa.
     private readonly Dictionary<(string DeviceId, RestraintRuleKind Kind), (Guid Collection, string ModDirectory)> boundAnimations = new();
     private readonly Dictionary<(string DeviceId, RestraintRuleKind Kind), (GestureTrigger Trigger, long ReadyAtTicks)> pendingBoundPlays = new();
+    private readonly Dictionary<string, (Guid Collection, string ModDirectory)> activeCatalogOverrides = new();
 
     public bool IsActive(string deviceId) => activeDeviceIds.Contains(deviceId);
 
@@ -185,6 +250,90 @@ public sealed class RestraintCommand
         return true;
     }
 
+    public unsafe bool ForceApplyCatalog(string catalogId, ulong itemId, List<RestraintRuleAssignment> rules)
+    {
+        LastFailureReason = null;
+        if (!config.RestraintMapping.LocalCatalog.TryGetValue(catalogId, out var entry))
+        {
+            LastFailureReason = "that shared restraint is stale or no longer allowed";
+            return false;
+        }
+        var runtimeId = $"catalog:{catalogId}";
+        if (activeCatalogOverrides.ContainsKey(runtimeId))
+            return true;
+        var slot = itemId == 0 ? null : GlamourerIpc.GetItemSlot((uint)itemId);
+        if (itemId == 0 || slot is null || slotLocks.WouldOverlap([slot.Value], Owner))
+        {
+            LastFailureReason = itemId == 0 || slot is null ? "the restraint item is not valid for an equipment slot" : $"equipment slot {slot} is locked by another feature";
+            return false;
+        }
+        if (restrictionRules.WouldConflict(rules, runtimeId))
+        {
+            LastFailureReason = "a restriction rule conflicts with an active restraint";
+            return false;
+        }
+        if (!restrictionRules.CanActivate(rules, out var unavailable))
+        {
+            LastFailureReason = $"{unavailable} enforcement is unavailable";
+            return false;
+        }
+        var boundRules = rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed).ToList();
+        if (boundRules.Any(r => ResolveAnimation(r.AnimationId) is null))
+        {
+            LastFailureReason = "a selected cuff animation is missing, stale, or ambiguous";
+            return false;
+        }
+        if (rules.Any(r => r.Kind == RestraintRuleKind.ForcedPose) && PlayerState.Instance() == null)
+        {
+            LastFailureReason = "the local pose state is unavailable";
+            return false;
+        }
+        var collection = penumbra.TryGetLocalPlayerCollectionId();
+        if (collection is null) { LastFailureReason = "the local Penumbra collection is unavailable"; return false; }
+        var selections = entry.GroupSelections.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
+        if (!temporarySettings.Acquire(runtimeId, collection.Value, entry.ModDirectory, selections))
+        { LastFailureReason = "Penumbra could not apply the restraint option"; return false; }
+        if (!penumbra.TryRedrawLocalPlayer())
+        {
+            temporarySettings.Release(runtimeId, collection.Value, entry.ModDirectory);
+            LastFailureReason = "Penumbra could not redraw after applying the restraint";
+            return false;
+        }
+        if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [slot.Value] = new(itemId, 0, 0) }))
+        {
+            temporarySettings.Release(runtimeId, collection.Value, entry.ModDirectory);
+            penumbra.TryRedrawLocalPlayer();
+            LastFailureReason = $"Glamourer could not equip or lock {slot}";
+            return false;
+        }
+        if (rules.Count > 0 && !restrictionRules.TryActivate(runtimeId, rules))
+        {
+            slotLocks.Release(Owner);
+            temporarySettings.Release(runtimeId, collection.Value, entry.ModDirectory);
+            penumbra.TryRedrawLocalPlayer();
+            LastFailureReason = "restriction enforcement could not be activated";
+            return false;
+        }
+        activeCatalogOverrides[runtimeId] = (collection.Value, entry.ModDirectory);
+        var pose = rules.FirstOrDefault(r => r.Kind == RestraintRuleKind.ForcedPose);
+        if (pose is not null) ApplyPose(pose.PoseModeId);
+        foreach (var rule in boundRules)
+        {
+            if (EngageBoundAnimation(runtimeId, rule)) continue;
+            ReleaseBoundAnimations(runtimeId);
+            restrictionRules.Release(runtimeId);
+            slotLocks.Release(Owner);
+            temporarySettings.Release(runtimeId, collection.Value, entry.ModDirectory);
+            activeCatalogOverrides.Remove(runtimeId);
+            penumbra.TryRedrawLocalPlayer();
+            LastFailureReason = "the selected cuff animation could not be activated; the restraint was rolled back";
+            return false;
+        }
+        activeDeviceIds.Add(runtimeId);
+        runtimeState.RestraintsForceLocked = true;
+        return true;
+    }
+
     /// The only thing that can release every Owner-forced device besides panic.
     public bool ForceUnlock()
     {
@@ -192,11 +341,13 @@ public sealed class RestraintCommand
         // config, while activeDeviceIds and restriction claims deliberately do not; relying only on the
         // latter made an Owner unlock falsely report success while leaving persisted Glamourer gear in
         // place. Release each layer independently and unconditionally so partial/stale state heals too.
+        var hadRestraints = activeDeviceIds.Count > 0 || boundAnimations.Count > 0 || activeCatalogOverrides.Count > 0 || runtimeState.RestraintsForceLocked;
         restrictionRules.ReleaseAllForPanic();
         ReleaseAllBoundAnimationsForPanic();
+        ReleaseAllCatalogOverrides();
         var gearReleased = slotLocks.Release(Owner);
         runtimeState.RestraintsForceLocked = false;
-        return gearReleased;
+        return gearReleased || hadRestraints;
     }
 
     /// Advances delayed bound-animation triggers after Penumbra's redraw has settled. Playing the emote
@@ -348,11 +499,12 @@ public sealed class RestraintCommand
             return false;
 
         var selections = entry.GroupSelections.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
-        if (!penumbra.TrySetTemporarySettings(collection.Value, entry.ModDirectory, selections))
+        var claimOwner = $"bound:{deviceId}:{rule.Kind}";
+        if (!temporarySettings.Acquire(claimOwner, collection.Value, entry.ModDirectory, selections))
             return false;
         if (!penumbra.TryRedrawLocalPlayer())
         {
-            penumbra.TryRemoveTemporarySettings(collection.Value, entry.ModDirectory);
+            temporarySettings.Release(claimOwner, collection.Value, entry.ModDirectory);
             return false;
         }
 
@@ -369,7 +521,7 @@ public sealed class RestraintCommand
         {
             pendingBoundPlays.Remove(key);
             var (collection, modDirectory) = boundAnimations[key];
-            removedAny |= penumbra.TryRemoveTemporarySettings(collection, modDirectory);
+            removedAny |= temporarySettings.Release($"bound:{deviceId}:{key.Kind}", collection, modDirectory);
             boundAnimations.Remove(key);
         }
         if (removedAny && !penumbra.TryRedrawLocalPlayer())
@@ -384,13 +536,25 @@ public sealed class RestraintCommand
     public void ReleaseAllBoundAnimationsForPanic()
     {
         var removedAny = false;
-        foreach (var (collection, modDirectory) in boundAnimations.Values)
-            removedAny |= penumbra.TryRemoveTemporarySettings(collection, modDirectory);
+        foreach (var (key, value) in boundAnimations)
+            removedAny |= temporarySettings.Release($"bound:{key.DeviceId}:{key.Kind}", value.Collection, value.ModDirectory);
         boundAnimations.Clear();
         pendingBoundPlays.Clear();
         activeDeviceIds.Clear();
+        ReleaseAllCatalogOverrides();
         if (removedAny && !penumbra.TryRedrawLocalPlayer())
             Plugin.Log.Warning("Restraint teardown removed temporary animation settings, but the Penumbra redraw failed; a manual redraw may be required.");
+    }
+
+    private void ReleaseAllCatalogOverrides()
+    {
+        var removed = false;
+        foreach (var (owner, value) in activeCatalogOverrides)
+            removed |= temporarySettings.Release(owner, value.Collection, value.ModDirectory);
+        foreach (var id in activeCatalogOverrides.Keys)
+            restrictionRules.Release(id);
+        activeCatalogOverrides.Clear();
+        if (removed) penumbra.TryRedrawLocalPlayer();
     }
 
     private void ReleaseDevice(string deviceId)
@@ -456,6 +620,36 @@ public sealed class RestraintCommand
         }).Where(t => t.Length > 0);
 
         return $"restraint lock \"{deviceName}\" {RulesToken}{string.Join(',', tokens)}";
+    }
+
+    public static string BuildCatalogLockCommand(string catalogId, string label, ulong itemId, List<RestraintRuleAssignment> rules)
+    {
+        if (catalogId.Length is < 8 or > 64 || catalogId.Any(c => !char.IsAsciiLetterOrDigit(c)))
+            throw new ArgumentException("Invalid restraint catalog identity.", nameof(catalogId));
+        var ruleText = BuildLockCommand(label.Replace('"', '\''), rules);
+        var suffix = ruleText[(ruleText.IndexOf(RulesToken, StringComparison.Ordinal) + RulesToken.Length)..];
+        return $"restraint catalog {catalogId} \"{label.Replace('"', '\'')}\" item:{itemId} {RulesToken}{suffix}";
+    }
+
+    public static bool TryParseCatalogCommand(string remainder, out string catalogId, out ulong itemId, out List<RestraintRuleAssignment> rules)
+    {
+        catalogId = ""; itemId = 0; rules = [];
+        if (remainder.Length > 400) return false;
+        var (id, tail) = SplitFirstToken(remainder);
+        if (id.Length is < 8 or > 64 || id.Any(c => !char.IsAsciiLetterOrDigit(c))) return false;
+        if (!tail.StartsWith('"')) return false;
+        var closing = tail.IndexOf('"', 1);
+        if (closing < 0) return false;
+        var after = tail[(closing + 1)..].Trim();
+        var (itemToken, afterItem) = SplitFirstToken(after);
+        if (!itemToken.StartsWith("item:", StringComparison.OrdinalIgnoreCase) ||
+            !ulong.TryParse(itemToken[5..], out itemId) || itemId == 0)
+            return false;
+        after = afterItem.Trim();
+        if (!after.StartsWith(RulesToken, StringComparison.OrdinalIgnoreCase)) return false;
+        rules = ParseRuleTokens(after[RulesToken.Length..]);
+        catalogId = id;
+        return rules.Count > 0;
     }
 
     /// Parses the remainder of a `restraint lock ...` command (after the "lock " prefix) into a device
@@ -583,4 +777,11 @@ public sealed class RestraintCommand
     public IReadOnlyList<string> ExportNames() =>
         config.RestraintMapping.Devices.Values.Select(d => d.Name)
             .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+
+    public IEnumerable<string> ExportEntries() =>
+        ExportCatalog().Split('\n', StringSplitOptions.RemoveEmptyEntries).Concat(
+            config.RestraintMapping.ConfiguredMods
+                .Where(x => config.RestraintMapping.LocalCatalog.ContainsKey(x.CatalogId) && x.Rules.Count > 0 && x.ItemId > 0)
+                .OrderBy(x => x.Name)
+                .Select(x => EncodeConfiguredExport(ConfiguredModRestraintExportEntry.From(x))));
 }

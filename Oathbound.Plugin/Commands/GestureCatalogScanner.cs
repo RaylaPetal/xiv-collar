@@ -13,6 +13,12 @@ using Lumina.Excel.Sheets;
 namespace Oathbound.Plugin.Commands;
 
 public readonly record struct GestureScanResult(int TotalMods, IReadOnlyList<GestureCatalogEntry> Entries, string? Error = null);
+public readonly record struct PenumbraOptionScanResult(int TotalMods, IReadOnlyList<PenumbraOptionScanEntry> Entries, string? Error = null);
+public sealed record PenumbraOptionScanEntry(string Id, string ModDirectory, string ModName, string GroupName,
+    string OptionName, int GroupOrder, int OptionOrder, Dictionary<string, List<string>> GroupSelections,
+    bool ModEnabled, IReadOnlyList<string> Paths);
+public sealed record PenumbraModScanEntry(string Id, string ModDirectory, string ModName,
+    Dictionary<string, List<string>> SavedSelections, bool ModEnabled, IReadOnlySet<uint> ChangedItemIds);
 
 /// PoseKit-equivalent reader for Penumbra's real option manifests. It preserves author-facing option
 /// names instead of flattening an entire mod to GetChangedItems labels.
@@ -25,15 +31,40 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
 
     public GestureScanResult Scan()
     {
+        var raw = ScanOptions(ResolveGestureScope());
+        if (raw.Error is not null) return new GestureScanResult(raw.TotalMods, [], raw.Error);
+        var entries = new List<GestureCatalogEntry>();
+        foreach (var option in raw.Entries)
+        {
+            var triggers = GestureTriggerResolver.Detect(option.GroupName, option.OptionName, option.Paths);
+            var hasIdle = HasIdleHint(option.GroupName) || HasIdleHint(option.OptionName) || option.Paths.Any(HasIdleHint);
+            if (triggers.Count == 0) triggers.Add(null);
+            else if (hasIdle) triggers.Insert(0, null);
+            for (var triggerOrder = 0; triggerOrder < triggers.Count; triggerOrder++)
+            {
+                var entry = new GestureCatalogEntry
+                {
+                    ModDirectory = option.ModDirectory, ModName = option.ModName, GroupName = option.GroupName,
+                    AnimationName = option.OptionName, GroupSelections = option.GroupSelections, Trigger = triggers[triggerOrder],
+                    ModEnabled = option.ModEnabled, GroupOrder = option.GroupOrder, OptionOrder = option.OptionOrder,
+                    TriggerOrder = triggerOrder,
+                };
+                entry.Id = StableId(entry);
+                entries.Add(entry);
+            }
+        }
+        return new GestureScanResult(raw.TotalMods, entries);
+    }
+
+    public PenumbraOptionScanResult ScanOptions(IEnumerable<string> directories)
+    {
         var mods = ipc.TryGetModList();
         var root = ipc.TryGetModDirectory();
         var collection = ipc.TryGetLocalPlayerCollectionId();
         if (mods is null || root is null || collection is null)
-            return new GestureScanResult(mods?.Count ?? 0, [], "Penumbra or the local-player collection is not ready.");
+            return new PenumbraOptionScanResult(mods?.Count ?? 0, [], "Penumbra or the local-player collection is not ready.");
 
-        MigrateFolderSelection(mods);
-        var entries = new List<GestureCatalogEntry>();
-        IEnumerable<string> directories = config.SelectedGestureMods.Count == 0 ? mods.Keys : config.SelectedGestureMods;
+        var entries = new List<PenumbraOptionScanEntry>();
         foreach (var directory in directories)
         {
             if (!mods.TryGetValue(directory, out var modName)) continue;
@@ -41,7 +72,34 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
             var modPath = Path.Combine(root, directory);
             if (!Directory.Exists(modPath)) continue;
 
-            var groups = ReadGroups(modPath, modName, current);
+            entries.AddRange(ScanManifest(modPath, directory, modName, enabled, current));
+        }
+        return new PenumbraOptionScanResult(mods.Count, entries);
+    }
+
+    public (int TotalMods, IReadOnlyList<PenumbraModScanEntry> Entries, string? Error) ScanMods(IEnumerable<string> directories)
+    {
+        var mods = ipc.TryGetModList();
+        var collection = ipc.TryGetLocalPlayerCollectionId();
+        if (mods is null || collection is null)
+            return (mods?.Count ?? 0, [], "Penumbra or the local-player collection is not ready.");
+        var entries = new List<PenumbraModScanEntry>();
+        foreach (var directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!mods.TryGetValue(directory, out var name)) continue;
+            var (enabled, selections) = ipc.TryGetCurrentSettings(collection.Value, directory);
+            entries.Add(new PenumbraModScanEntry(StableModId(directory), directory, name,
+                selections ?? new Dictionary<string, List<string>>(), enabled,
+                ipc.TryGetChangedItemIds(directory, name)));
+        }
+        return (mods.Count, entries, null);
+    }
+
+    public static IReadOnlyList<PenumbraOptionScanEntry> ScanManifest(string modPath, string directory,
+        string modName, bool enabled, Dictionary<string, List<string>>? current)
+    {
+        var entries = new List<PenumbraOptionScanEntry>();
+        var groups = ReadGroups(modPath, modName, current);
             for (var groupOrder = 0; groupOrder < groups.Count; groupOrder++)
             {
                 var group = groups[groupOrder];
@@ -56,32 +114,38 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
                     var selections = new Dictionary<string, List<string>>();
                     foreach (var g in groups.Where(g => !g.Implicit))
                         selections[g.Name] = g == group ? SelectionFor(g, option.Name) : g.Selected.ToList();
-                    var triggers = GestureTriggerResolver.Detect(group.Name, option.Name, option.Paths);
-                    // A single Penumbra option can replace both a pose and the ordinary idle/walk set.
-                    // Trigger detection finds the pose path, but restraints must also be able to enable
-                    // that same option without issuing the pose. Emit an explicit enable-only catalog
-                    // entry whenever the manifest names an idle, even if other triggers were detected.
-                    var hasIdle = HasIdleHint(group.Name) || HasIdleHint(option.Name)
-                        || option.Paths.Any(HasIdleHint);
-                    if (triggers.Count == 0)
-                        triggers.Add(null);
-                    else if (hasIdle)
-                        triggers.Insert(0, null);
-                    for (var triggerOrder = 0; triggerOrder < triggers.Count; triggerOrder++)
-                    {
-                        var entry = new GestureCatalogEntry
-                        {
-                            ModDirectory = directory, ModName = modName, GroupName = group.Name,
-                            AnimationName = option.Name, GroupSelections = selections, Trigger = triggers[triggerOrder], ModEnabled = enabled,
-                            GroupOrder = groupOrder, OptionOrder = optionOrder, TriggerOrder = triggerOrder,
-                        };
-                        entry.Id = StableId(entry);
-                        entries.Add(entry);
-                    }
+                    entries.Add(new PenumbraOptionScanEntry(StableOptionId(directory, group.Name, option.Name),
+                        directory, modName, group.Name, option.Name, groupOrder, optionOrder, selections, enabled,
+                        option.Paths.ToList()));
                 }
             }
-        }
-        return new GestureScanResult(mods.Count, entries);
+        return entries;
+    }
+
+    public IReadOnlyList<string> ResolveGestureScope()
+    {
+        var mods = ipc.TryGetModList();
+        if (mods is null) return [];
+        MigrateFolderSelection(mods);
+        return SelectScope(mods.Select(x => (x.Key, ipc.TryGetModPath(x.Key, x.Value) ?? "")),
+            config.SelectedGestureFolders, config.SelectedGestureMods, emptyFoldersMeanAll: true);
+    }
+
+    public IReadOnlyList<string> ResolveRestraintScope()
+    {
+        var mods = ipc.TryGetModList();
+        if (mods is null) return [];
+        return SelectScope(mods.Select(x => (x.Key, ipc.TryGetModPath(x.Key, x.Value) ?? "")),
+            config.SelectedRestraintFolders, new HashSet<string>(), emptyFoldersMeanAll: false);
+    }
+
+    public static IReadOnlyList<string> SelectScope(IEnumerable<(string Directory, string SortPath)> mods,
+        IReadOnlyCollection<string> folders, IReadOnlySet<string> explicitMods, bool emptyFoldersMeanAll)
+    {
+        if (folders.Count == 0 && !emptyFoldersMeanAll) return [];
+        return mods.Where(x => (folders.Count == 0 || folders.Any(folder => IsUnder(x.SortPath, folder))) &&
+                (explicitMods.Count == 0 || explicitMods.Contains(x.Directory)))
+            .Select(x => x.Directory).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private void MigrateFolderSelection(Dictionary<string, string> mods)
@@ -95,7 +159,12 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
         config.Save();
     }
 
-    private static bool IsUnder(string path, string folder) => path.Equals(folder.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) || path.StartsWith(folder.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase);
+    public static bool IsUnder(string path, string folder)
+    {
+        path = path.Replace('\\', '/').TrimEnd('/');
+        folder = folder.Replace('\\', '/').TrimEnd('/');
+        return folder.Length > 0 && (path.Equals(folder, StringComparison.OrdinalIgnoreCase) || path.StartsWith(folder + "/", StringComparison.OrdinalIgnoreCase));
+    }
     private static bool HasIdleHint(string text) => Regex.IsMatch(text, @"(^|[^a-z])idle([^a-z]|$)", RegexOptions.IgnoreCase);
     private static List<string> SelectionFor(Group group, string option) => group.Multi ? group.Selected.Append(option).Distinct().ToList() : [option];
 
@@ -104,6 +173,15 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
         var raw = $"{e.ModDirectory}\n{e.GroupName}\n{e.AnimationName}\n{e.Trigger?.Kind}\n{e.Trigger?.SlashCommand}\n{e.Trigger?.EmoteModeId}\n{e.Trigger?.CPoseState}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..16].ToLowerInvariant();
     }
+
+    public static string StableOptionId(string directory, string group, string option)
+    {
+        var raw = $"{directory}\n{group}\n{option}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..16].ToLowerInvariant();
+    }
+
+    public static string StableModId(string directory) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(directory.Trim().Replace('\\', '/').ToLowerInvariant())))[..16].ToLowerInvariant();
 
     private sealed record Option(string Name, IEnumerable<string> Paths);
     private sealed record Group(string Name, bool Multi, bool Implicit, List<Option> Options, HashSet<string> Selected);

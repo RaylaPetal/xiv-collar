@@ -20,6 +20,7 @@ namespace Oathbound.Plugin;
 
 public sealed class Plugin : IDalamudPlugin
 {
+    private int pendingRestraintCleanup;
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
@@ -140,16 +141,19 @@ public sealed class Plugin : IDalamudPlugin
 
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
-        GestureCommand = new GestureCommand(Configuration, PenumbraIpc);
+        var temporaryModSettings = new TemporaryModSettingsCoordinator(PenumbraIpc);
+        GestureCommand = new GestureCommand(Configuration, PenumbraIpc, temporaryModSettings);
         FollowCommand = new FollowCommand(Configuration, MovementLockService, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
-        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState);
+        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings);
         CustomTriggerCommand = new CustomTriggerCommand(Configuration, TitleCommand, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
         PairingService = new PairingService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CollarCommand, RevocationService);
+        PairingService.PairingEnded += QueueRestraintCleanup;
+        RevocationService.PairingRevoked += QueueRestraintCleanup;
         CatalogSyncRelayService = new CatalogSyncRelayService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CatalogSyncService);
         ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, CustomTriggerCommand);
 
@@ -225,6 +229,8 @@ public sealed class Plugin : IDalamudPlugin
     /// work and starts a fresh token source so work resumed after the next login isn't pre-cancelled.
     private void OnLogout(int type, int code)
     {
+        RestraintCommand.ReleaseAllBoundAnimationsForPanic();
+        RestrictionRuleManager.ReleaseAllForPanic();
         RelayClient.CancelPendingRequests();
         relayBackgroundWorkCts.Cancel();
         relayBackgroundWorkCts.Dispose();
@@ -233,6 +239,9 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        PairingService.PairingEnded -= QueueRestraintCleanup;
+        RevocationService.PairingRevoked -= QueueRestraintCleanup;
+        RestraintCommand.ReleaseAllBoundAnimationsForPanic();
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
         ClientState.Logout -= OnLogout;
@@ -306,6 +315,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        if (Interlocked.Exchange(ref pendingRestraintCleanup, 0) != 0)
+            RestraintCommand.ForceUnlock();
         // The panic hotkey is a plain edge-detected key check - deliberately simple so it keeps working
         // even if everything else about the plugin (chat parsing, IPC) is broken.
         if (Configuration.PanicHotkey != VirtualKey.NO_KEY)
@@ -338,6 +349,8 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private void QueueRestraintCleanup() => Interlocked.Exchange(ref pendingRestraintCleanup, 1);
+
     private void MigrateConfiguration()
     {
         var follow = Configuration.Aliases.Follow;
@@ -345,6 +358,12 @@ public sealed class Plugin : IDalamudPlugin
         if (Configuration.Version < 2)
         {
             Configuration.Version = 2;
+            changed = true;
+        }
+        if (Configuration.Version < 3)
+        {
+            Configuration.MigrateFolderScopes();
+            Configuration.Version = 3;
             changed = true;
         }
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -379,7 +398,9 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var rule in cmd.RestraintRules!.Where(r => r.AnimationId is not null && r.AnimationLabel is null))
                 if (Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(rule.AnimationId!, out var entry))
                     rule.AnimationLabel = CommandSelector.GestureSelector(entry, Configuration.GestureMapping.ImportedPeerCatalog.Values);
-            var readable = RestraintCommand.BuildLockCommand(cmd.Label, cmd.RestraintRules!);
+            var readable = cmd.RestraintCatalogId is { } catalogId && cmd.RestraintItemId is { } itemId
+                ? RestraintCommand.BuildCatalogLockCommand(catalogId, cmd.Label, itemId, cmd.RestraintRules!)
+                : RestraintCommand.BuildLockCommand(cmd.Label, cmd.RestraintRules!);
             if (cmd.Command == readable) continue;
             cmd.Command = readable;
             changed = true;

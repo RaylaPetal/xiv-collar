@@ -12,6 +12,7 @@ public sealed class PenumbraIpc
     private readonly GetModList getModList = new(Plugin.PluginInterface);
     private readonly GetModPath getModPath = new(Plugin.PluginInterface);
     private readonly GetModDirectory getModDirectory = new(Plugin.PluginInterface);
+    private readonly GetChangedItems getChangedItems = new(Plugin.PluginInterface);
     private readonly GetCollectionForObject getCollectionForObject = new(Plugin.PluginInterface);
     private readonly GetCurrentModSettings getCurrentModSettings = new(Plugin.PluginInterface);
     private readonly SetTemporaryModSettings setTemporaryModSettings = new(Plugin.PluginInterface);
@@ -24,6 +25,34 @@ public sealed class PenumbraIpc
     {
         try { var (ec, path, _, _) = getModPath.Invoke(directory, name); return ec == PenumbraApiEc.Success ? path : null; }
         catch { return null; }
+    }
+    public IReadOnlySet<uint> TryGetChangedItemIds(string directory, string name)
+    {
+        try
+        {
+            var raw = getChangedItems.Invoke(directory, name);
+            var json = System.Text.Json.JsonSerializer.Serialize(raw);
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var result = new HashSet<uint>();
+            CollectItemIds(document.RootElement, result);
+            return result;
+        }
+        catch { return new HashSet<uint>(); }
+    }
+
+    private static void CollectItemIds(System.Text.Json.JsonElement element, HashSet<uint> result)
+    {
+        if (element.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.NameEquals("ItemId") || property.NameEquals("itemId"))
+                    if (property.Value.TryGetUInt32(out var id) && id > 0) result.Add(id);
+                CollectItemIds(property.Value, result);
+            }
+        }
+        else if (element.ValueKind == System.Text.Json.JsonValueKind.Array)
+            foreach (var child in element.EnumerateArray()) CollectItemIds(child, result);
     }
     public Guid? TryGetLocalPlayerCollectionId()
     {

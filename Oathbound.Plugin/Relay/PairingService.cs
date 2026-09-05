@@ -43,6 +43,7 @@ public sealed class PairingService
     /// re-pairing with the same person after they panicked - but that notice lives in ChatCommandListener,
     /// not here, so this is an event rather than a direct call.
     public event Action? PairingActivated;
+    public event Action? PairingEnded;
 
     /// Set after CreateAndSendInvitationAsync/AcceptPendingAsync/HandleAcknowledgementTellAsync fail, so
     /// Settings can show *why* without the caller needing its own try/catch around every button click.
@@ -335,6 +336,7 @@ public sealed class PairingService
         config.Pairing.Paired = false;
         config.PendingRelayOperations.RemoveAll(o => o.Kind.StartsWith("pair-", StringComparison.Ordinal));
         config.Save();
+        PairingEnded?.Invoke();
     }
 
     public void EndFromVerifiedPeerNotice()
@@ -343,6 +345,7 @@ public sealed class PairingService
         config.Pairing.Paired = false;
         config.PendingRelayOperations.Clear();
         config.Save();
+        PairingEnded?.Invoke();
         PairingActivated?.Invoke();
     }
 
@@ -384,6 +387,7 @@ public sealed class PairingService
         config.Pairing.PairIdHash = null;
         config.Pairing.Paired = false;
         config.Save();
+        PairingEnded?.Invoke();
 
         if (!string.IsNullOrWhiteSpace(peerName) && !string.IsNullOrWhiteSpace(peerWorld))
         {

@@ -31,6 +31,7 @@ public sealed class GestureCommand
     private readonly PluginConfig config;
     private readonly PenumbraIpc penumbra;
     private readonly GestureCatalogScanner scanner;
+    private readonly TemporaryModSettingsCoordinator temporarySettings;
 
     private (GestureTrigger Trigger, long ReadyAtTicks)? pendingPlay;
     private (Guid Collection, string ModDirectory, long IdleUntilTicks)? activeTemporary;
@@ -42,10 +43,11 @@ public sealed class GestureCommand
     /// manual Reset control enable/disable itself.
     public bool HasActiveTemporary => activeTemporary is not null;
 
-    public GestureCommand(PluginConfig config, PenumbraIpc penumbra)
+    public GestureCommand(PluginConfig config, PenumbraIpc penumbra, TemporaryModSettingsCoordinator temporarySettings)
     {
         this.config = config;
         this.penumbra = penumbra;
+        this.temporarySettings = temporarySettings;
         scanner = new GestureCatalogScanner(penumbra, config);
     }
 
@@ -74,7 +76,7 @@ public sealed class GestureCommand
         if (activeTemporary is not { } active)
             return;
 
-        penumbra.TryRemoveTemporarySettings(active.Collection, active.ModDirectory);
+        temporarySettings.Release("gesture", active.Collection, active.ModDirectory);
         activeTemporary = null;
     }
 
@@ -162,11 +164,11 @@ public sealed class GestureCommand
             ResetActiveTemporary();
 
         var selections = entry.GroupSelections.ToDictionary(x => x.Key, x => (IReadOnlyList<string>)x.Value);
-        if (!penumbra.TrySetTemporarySettings(collection.Value, entry.ModDirectory, selections))
+        if (!temporarySettings.Acquire("gesture", collection.Value, entry.ModDirectory, selections))
             return new ApplyResult(ApplyStatus.TemporarySettingsFailed, entry.AnimationName);
         if (!penumbra.TryRedrawLocalPlayer())
         {
-            penumbra.TryRemoveTemporarySettings(collection.Value, entry.ModDirectory);
+            temporarySettings.Release("gesture", collection.Value, entry.ModDirectory);
             return new ApplyResult(ApplyStatus.RedrawFailed, entry.AnimationName);
         }
 

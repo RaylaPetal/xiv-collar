@@ -155,4 +155,22 @@ public sealed class GlamourerIpc : IDisposable
         var stain2 = slotState["Stain2"]?.Value<byte>() ?? 0;
         return new GlamourerEquippedItem(itemId.Value, stain, stain2);
     }
+
+    public static ApiEquipSlot? GetItemSlot(uint itemId)
+    {
+        var item = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRowOrDefault(itemId);
+        var category = item?.EquipSlotCategory.ValueNullable;
+        if (category is null) return null;
+        if (category.Value.Head != 0) return ApiEquipSlot.Head;
+        if (category.Value.Body != 0) return ApiEquipSlot.Body;
+        if (category.Value.Gloves != 0) return ApiEquipSlot.Hands;
+        if (category.Value.Legs != 0) return ApiEquipSlot.Legs;
+        if (category.Value.Feet != 0) return ApiEquipSlot.Feet;
+        if (category.Value.Ears != 0) return ApiEquipSlot.Ears;
+        if (category.Value.Neck != 0) return ApiEquipSlot.Neck;
+        if (category.Value.Wrists != 0) return ApiEquipSlot.Wrists;
+        if (category.Value.FingerR != 0) return ApiEquipSlot.RFinger;
+        if (category.Value.FingerL != 0) return ApiEquipSlot.LFinger;
+        return null;
+    }
 }

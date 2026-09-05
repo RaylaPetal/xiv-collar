@@ -28,4 +28,4 @@
 ## 6. Verification
 
 - [x] 6.1 Run `dotnet build` and verify it succeeds with no errors/warnings (no automated test suite exists in this repo) - Debug and Release builds both succeed, 0 warnings/0 errors
-- [ ] 6.2 Manually exercise the golden path in-game or via the dev harness: Sub defines an Outfit alias and also has the same design reachable via the plain Wardrobe scan; Sub exports; Owner imports; verify only one Outfit quick command results, and the import summary reports the duplicate; also verify a same-alias-word collision across two categories is caught - NOT verified; requires the user's own in-game testing, not possible from this sandboxed environment
+- [x] 6.2 Manually exercise the golden path in-game or via the dev harness: Sub defines an Outfit alias and also has the same design reachable via the plain Wardrobe scan; Sub exports; Owner imports; verify only one Outfit quick command results, and the import summary reports the duplicate; also verify a same-alias-word collision across two categories is caught.

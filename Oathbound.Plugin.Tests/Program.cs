@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
+using Glamourer.Api.Enums;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Relay;
@@ -84,6 +85,15 @@ config.PendingRelayOperations.Add(new PendingRelayOperationState { Kind = "pair-
 
 var device = new RestraintDeviceDefinition { Id = "stable-device", Name = "Cuffs", Rules = [new RestraintRuleAssignment { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = "idle-id", AnimationLabel = "Cuffed Idle" }] };
 config.RestraintMapping.Devices[device.Id] = device;
+config.SelectedGestureMods.Add("explicit-mod");
+config.SelectedGestureFolders.Add("Animations/Poses");
+config.SelectedRestraintFolders.Add("Restraints/Cuffs");
+var restraintCatalog = new RestraintCatalogEntry
+{
+    Id = "0123456789abcdef", ModDirectory = "private/local/path", ModName = "Cuffs",
+    GroupSelections = new() { ["Style"] = ["Arms"] },
+};
+config.RestraintMapping.LocalCatalog[restraintCatalog.Id] = restraintCatalog;
 config.Aliases.Restraints.Add(new RestraintAliasDefinition { Alias = "cuffs", DeviceId = device.Id, DeviceName = device.Name });
 config.QuickCommands.Gestures.Add(new QuickCommand { Label = "Wave", Command = "gesture legacy", Target = legacy.Id, Source = ImportSource.Imported, IsFavorite = true });
 config.QuickCommands.Follow.Add(new QuickCommand { Label = "My leash", Command = "leash", Source = ImportSource.Manual });
@@ -101,12 +111,104 @@ config.Aliases.CustomTriggers.Add(new CustomTriggerDefinition
 var json = JsonSerializer.Serialize(config);
 var restored = JsonSerializer.Deserialize<PluginConfig>(json) ?? throw new InvalidOperationException("config round trip returned null");
 Check(restored.RestraintMapping.Devices.ContainsKey(device.Id), "device identity did not survive round trip");
+Check(restored.RestraintMapping.Devices[device.Id].SourceKind == RestraintSourceKind.Item, "legacy device was reinterpreted as catalog-backed");
+Check(restored.SelectedGestureMods.SetEquals(["explicit-mod"]), "explicit gesture mod selection did not survive round trip");
+Check(restored.SelectedGestureFolders.SequenceEqual(["Animations/Poses"]) && restored.SelectedRestraintFolders.SequenceEqual(["Restraints/Cuffs"]), "folder scopes did not survive round trip");
+Check(restored.RestraintMapping.LocalCatalog[restraintCatalog.Id].GroupSelections["Style"].Single() == "Arms", "full local restraint selection was not preserved");
+var restraintExport = RestraintCommand.EncodeExport(RestraintCatalogExportEntry.From(restraintCatalog));
+Check(RestraintCommand.TryParseExport(restraintExport, out var parsedRestraint) && parsedRestraint?.Id == restraintCatalog.Id, "slim restraint export did not round trip");
+Check(!restraintExport.Contains(restraintCatalog.ModDirectory, StringComparison.Ordinal), "slim restraint export leaked the local mod directory");
+for (var i = 0; i < 1000; i++) restraintCatalog.GroupSelections[$"Extra {i}"] = [$"Value {i}"];
+Check(RestraintCommand.EncodeExport(RestraintCatalogExportEntry.From(restraintCatalog)) == restraintExport,
+    "slim restraint export grew with unrelated local group selections");
+Check(CatalogSyncService.FitsPlaintextLimit(restraintExport) &&
+      !CatalogSyncService.FitsPlaintextLimit(new string('x', RelayProtocolConstants.CatalogPlaintextMaxBytes + 1)),
+    "catalog plaintext size ceiling was not enforced locally");
+var restraintWire = RestraintCommand.BuildCatalogLockCommand(restraintCatalog.Id, restraintCatalog.Label,
+    1234,
+    [new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat }]);
+Check(RestraintCommand.TryParseCatalogCommand(restraintWire["restraint catalog ".Length..], out var parsedCatalogId,
+        out var parsedItemId, out var parsedCatalogRules)
+      && parsedCatalogId == restraintCatalog.Id && parsedItemId == 1234 &&
+      parsedCatalogRules.Single().Kind == RestraintRuleKind.GagChat,
+    "catalog restraint command did not round trip");
+Check(!RestraintCommand.TryParseCatalogCommand("short \"label\" rules:gag", out _, out _, out _), "short catalog identity was accepted");
+Check(!RestraintCommand.TryParseCatalogCommand("0123456789abcdef missing-quote rules:gag", out _, out _, out _), "malformed catalog label was accepted");
+Check(!RestraintCommand.TryParseCatalogCommand("0123456789abcdef \"label\" rules:gag" + new string('x', 500), out _, out _, out _), "oversized catalog command was accepted");
 Check(restored.Aliases.Restraints.Single().DeviceId == device.Id, "restraint alias link did not survive round trip");
 var quick = restored.QuickCommands.Gestures.Single();
 Check(quick.Source == ImportSource.Imported && quick.IsFavorite && quick.Target == legacy.Id, "quick-command provenance metadata did not survive round trip");
 Check(restored.QuickCommands.Follow.Single().Source == ImportSource.Manual, "manual quick command did not survive round trip");
 Check(restored.QuickCommands.Titles.Single().Target is null, "legacy quick command gained fabricated identity metadata");
 Check(restored.Aliases.CustomTriggers.Single().Actions.Select(a => a.Kind).SequenceEqual([CustomTriggerActionKind.Restraint, CustomTriggerActionKind.Title]), "custom-trigger action order did not survive round trip");
+
+var migration = new PluginConfig { GestureModFolderFilter = " Animations\\Cuffs/ " };
+migration.SelectedGestureMods.Add("keep-me");
+Check(migration.MigrateFolderScopes(), "legacy animation folder migration reported no change");
+Check(migration.SelectedGestureFolders.SequenceEqual(["Animations/Cuffs"]) && migration.SelectedGestureMods.Contains("keep-me"), "folder migration normalized incorrectly or cleared explicit mods");
+Check(!migration.MigrateFolderScopes(), "folder migration was not idempotent");
+Check(GestureCatalogScanner.IsUnder("Restraints/Cuffs/Arms", "restraints/cuffs") &&
+      !GestureCatalogScanner.IsUnder("Restraints/Cufflinks", "Restraints/Cuffs"), "folder-prefix boundary matching failed");
+var scopeMods = new (string Directory, string SortPath)[]
+{
+    ("arms", "Restraints/Cuffs/Arms"), ("legs", "Restraints/Rope/Legs"), ("dress", "Wardrobe/Dresses"),
+};
+Check(GestureCatalogScanner.SelectScope(scopeMods, ["Restraints/Cuffs", "Restraints/Rope"], new HashSet<string>(), false).SequenceEqual(["arms", "legs"]),
+    "multiple restraint folder union included an outside mod or omitted a nested mod");
+Check(GestureCatalogScanner.SelectScope(scopeMods, [], new HashSet<string>(), false).Count == 0,
+    "empty restraint folders widened to every mod");
+Check(GestureCatalogScanner.SelectScope(scopeMods, ["Missing/Folder"], new HashSet<string>(), false).Count == 0,
+    "missing restraint folder widened the scan");
+Check(GestureCatalogScanner.SelectScope(scopeMods, ["Restraints"], new HashSet<string> { "legs" }, true).SequenceEqual(["legs"]),
+    "explicit animation mod did not narrow the selected folder union");
+Check(GestureCatalogScanner.SelectScope(scopeMods, [], new HashSet<string>(), true).Count == 3,
+    "empty animation folders/mods did not retain scan-all compatibility");
+
+var manifestDir = Path.Combine(Path.GetTempPath(), $"oathbound-scan-{Guid.NewGuid():N}");
+Directory.CreateDirectory(manifestDir);
+try
+{
+    File.WriteAllText(Path.Combine(manifestDir, "default_mod.json"), "{\"Files\":{\"chara/equipment/e0001/model.mdl\":\"x\"}}");
+    File.WriteAllText(Path.Combine(manifestDir, "group_010.json"), "{\"Type\":\"Single\",\"Name\":\"Style B\",\"Options\":[{\"Name\":\"B1\",\"Files\":{\"chara/equipment/b.mdl\":\"x\"}}]}");
+    File.WriteAllText(Path.Combine(manifestDir, "group_002.json"), "{\"Type\":\"Single\",\"Name\":\"Style A\",\"Options\":[{\"Name\":\"A1\",\"Files\":{\"chara/equipment/a.mdl\":\"x\"}},{\"Name\":\"A2\",\"Files\":{}}]}");
+    var scanned = GestureCatalogScanner.ScanManifest(manifestDir, "folder/mod", "Test restraints", false,
+        new Dictionary<string, List<string>> { ["Style B"] = ["B1"] });
+    Check(scanned.Select(x => x.GroupName).SequenceEqual(["Default", "Style A", "Style A", "Style B"]), "manifest numeric group order was not preserved");
+    Check(scanned.Count == 4, "default or triggerless restraint options were omitted");
+    Check(scanned.Single(x => x.OptionName == "A1").GroupSelections["Style B"].Single() == "B1", "complete group selections were not captured");
+    Check(scanned.Single(x => x.OptionName == "A1").Id == GestureCatalogScanner.StableOptionId("folder/mod", "Style A", "A1"), "stable option identity drifted");
+}
+finally { Directory.Delete(manifestDir, true); }
+
+var temporaryCalls = new List<string>();
+var temporary = new TemporaryModSettingsCoordinator(
+    (_, _, selections) => { temporaryCalls.Add("set:" + selections.Values.Single().Single()); return true; },
+    (_, _) => { temporaryCalls.Add("remove"); return true; });
+var collectionId = Guid.NewGuid();
+Check(temporary.Acquire("gesture", collectionId, "same-mod", new Dictionary<string, IReadOnlyList<string>> { ["G"] = ["gesture"] }), "gesture layer failed");
+Check(temporary.Acquire("restraint", collectionId, "same-mod", new Dictionary<string, IReadOnlyList<string>> { ["G"] = ["restraint"] }), "restraint layer failed");
+Check(temporary.Release("gesture", collectionId, "same-mod") && temporaryCalls[^1] == "set:restraint", "releasing lower gesture layer disturbed restraint layer");
+Check(temporary.Release("restraint", collectionId, "same-mod") && temporaryCalls[^1] == "remove", "releasing final restraint layer did not restore saved settings");
+temporaryCalls.Clear();
+temporary.Acquire("restraint", collectionId, "same-mod", new Dictionary<string, IReadOnlyList<string>> { ["G"] = ["restraint"] });
+temporary.Acquire("gesture", collectionId, "same-mod", new Dictionary<string, IReadOnlyList<string>> { ["G"] = ["gesture"] });
+Check(temporary.Release("gesture", collectionId, "same-mod") && temporaryCalls[^1] == "set:restraint", "releasing top gesture layer did not restore restraint layer");
+var failedTemporary = new TemporaryModSettingsCoordinator((_, _, _) => false, (_, _) => true);
+Check(!failedTemporary.Acquire("failed", collectionId, "same-mod", new Dictionary<string, IReadOnlyList<string>> { ["G"] = ["x"] }) &&
+      !failedTemporary.Release("failed", collectionId, "same-mod"), "failed temporary apply left an owned layer behind");
+
+var rulesManager = new Oathbound.Plugin.Safety.RestrictionRuleManager();
+var gagEnforcer = new TestEnforcer();
+rulesManager.RegisterEnforcer(RestraintRuleKind.GagChat, gagEnforcer);
+var gagRule = new List<RestraintRuleAssignment> { new() { Kind = RestraintRuleKind.GagChat } };
+Check(rulesManager.TryActivate("one", gagRule) && rulesManager.TryActivate("two", gagRule) && gagEnforcer.Engages == 1, "shared restriction rule was not reference-counted");
+rulesManager.Release("one");
+Check(gagEnforcer.Releases == 0, "shared restriction rule released while another owner remained");
+rulesManager.Release("two");
+Check(gagEnforcer.Releases == 1, "final restriction owner did not release enforcer");
+var cuffA = new List<RestraintRuleAssignment> { new() { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = "a" } };
+var cuffB = new List<RestraintRuleAssignment> { new() { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = "b" } };
+Check(rulesManager.TryActivate("cuff-a", cuffA) && rulesManager.WouldConflict(cuffB, "cuff-b"), "conflicting cuff animation was not rejected before activation");
 
 Check(restored.DeviceIdentity.HasIdentity, "device identity did not survive round trip");
 Check(restored.DeviceIdentity.ProtectedPrivateKey!.SequenceEqual((byte[])[1, 2, 3, 4]), "protected private key bytes did not survive round trip");
@@ -218,6 +320,45 @@ Check(parsedActions.Select(a => a.RestraintDeviceId ?? a.MoodleStatusId).Sequenc
     var malformed = sync.ApplyRelaySnapshot("## WARDROBE\nTruncated\n", "pair-a");
     Check(malformed.Error is not null && catalogConfig.QuickCommands.Outfits.Select(c => c.Command).SequenceEqual(beforeMalformed),
         "incomplete relay snapshot changed existing imports");
+
+    var sharedOne = new RestraintCatalogExportEntry { Id = "1111111111111111", ModName = "Cuffs" };
+    var sharedTwo = new RestraintCatalogExportEntry { Id = "2222222222222222", ModName = "Rope" };
+    var configuredOne = new ConfiguredModRestraintExportEntry { Id = "configured-cuffs", CatalogId = sharedOne.Id, Name = "Strict cuffs",
+        ItemId = 1234,
+        Rules = [new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat }] };
+    var restraintSnapshot = CompleteSnapshot(restraints: RestraintCommand.EncodeExport(sharedOne) + "\n" + RestraintCommand.EncodeConfiguredExport(configuredOne) + "\n");
+    var restraintResult = sync.ApplyRelaySnapshot(restraintSnapshot, "pair-restraints");
+    Check(restraintResult.Error is null && catalogConfig.RestraintMapping.ImportedPeerCatalog.ContainsKey(sharedOne.Id), "structured restraint relay import failed");
+    var sharedQuick = catalogConfig.QuickCommands.Restraints.Single(x => x.RestraintCatalogId == sharedOne.Id);
+    Check(sharedQuick.Label == configuredOne.Name && sharedQuick.RestraintItemId == 1234 &&
+          sharedQuick.RestraintRules?.Single().Kind == RestraintRuleKind.GagChat,
+        "Sub-configured restraint was not imported as a ready-made command");
+    sharedQuick.IsFavorite = true;
+    sharedQuick.RestraintRules = [new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat }];
+    var updatedRestraintSnapshot = CompleteSnapshot(restraints: RestraintCommand.EncodeExport(sharedOne) + "\n" + RestraintCommand.EncodeExport(sharedTwo) + "\n" + RestraintCommand.EncodeConfiguredExport(configuredOne) + "\n");
+    Check(sync.ApplyRelaySnapshot(updatedRestraintSnapshot, "pair-restraints").Error is null, "updated restraint snapshot failed");
+    var carried = catalogConfig.QuickCommands.Restraints.Single(x => x.RestraintCatalogId == sharedOne.Id);
+    Check(carried.IsFavorite && carried.RestraintRules?.Single().Kind == RestraintRuleKind.GagChat, "restraint favorite/rules were not carried forward");
+    Check(catalogConfig.QuickCommands.Restraints.All(x => x.RestraintCatalogId != sharedTwo.Id), "raw restraint mod import auto-created a command");
+    catalogConfig.QuickCommands.Restraints.Add(new QuickCommand { Label = sharedTwo.ModName,
+        Command = RestraintCommand.BuildCatalogLockCommand(sharedTwo.Id, sharedTwo.ModName, 5678,
+            [new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat }]),
+        RestraintCatalogId = sharedTwo.Id, RestraintItemId = 5678,
+        Target = sharedTwo.Id, Source = ImportSource.Manual });
+    Check(sync.ApplyRelaySnapshot(CompleteSnapshot(restraints: RestraintCommand.EncodeExport(sharedTwo) + "\n"), "pair-restraints").Error is null &&
+          !catalogConfig.RestraintMapping.ImportedPeerCatalog.ContainsKey(sharedOne.Id) &&
+          catalogConfig.QuickCommands.Restraints.All(x => x.RestraintCatalogId != sharedOne.Id) &&
+          catalogConfig.QuickCommands.Restraints.Any(x => x.RestraintCatalogId == sharedTwo.Id),
+        "newer snapshot did not remove the retired Sub creation or removed an Owner-authored restraint");
+    catalogConfig.QuickCommands.Restraints.Add(new QuickCommand { Label = "Manual legacy", Command = "restraint lock legacy", Source = ImportSource.Manual });
+    var beforeBadRestraints = catalogConfig.QuickCommands.Restraints.Select(x => x.Command).ToArray();
+    var badStructured = sync.ApplyRelaySnapshot(CompleteSnapshot(restraints: "OATHBOUND-RESTRAINT-V1|not-base64\n"), "pair-restraints");
+    Check(badStructured.Error is not null && catalogConfig.QuickCommands.Restraints.Select(x => x.Command).SequenceEqual(beforeBadRestraints), "malformed structured restraint changed catalog state");
+    Check(catalogConfig.QuickCommands.Restraints.Any(x => x.Label == "Manual legacy"), "relay reconciliation removed a manual legacy restraint");
+    var offlineConfig = new PluginConfig { SaveOverride = () => { } };
+    var offlineSync = new CatalogSyncService(offlineConfig, null!, null!, null!, null!);
+    var offline = offlineSync.ParseImport("## RESTRAINTS\n" + RestraintCommand.EncodeExport(sharedOne) + "\n");
+    Check(offline.Error is null && offlineConfig.RestraintMapping.ImportedPeerCatalog.ContainsKey(sharedOne.Id), "offline structured restraint import failed");
 }
 
 // --- collar/catalog-sync: the full Sub -> Owner encrypted snapshot path (compress, ECDH+HKDF, AES-GCM
@@ -401,4 +542,13 @@ sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) 
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
         Task.FromResult(respond(request));
+}
+
+sealed class TestEnforcer : Oathbound.Plugin.Safety.IRestrictionEnforcer
+{
+    public bool IsAvailable => true;
+    public int Engages { get; private set; }
+    public int Releases { get; private set; }
+    public void Engage() => Engages++;
+    public void Release() => Releases++;
 }

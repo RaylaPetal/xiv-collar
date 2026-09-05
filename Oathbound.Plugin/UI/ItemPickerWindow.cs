@@ -22,6 +22,7 @@ public sealed class ItemPickerWindow : Window, IDisposable
     private Action<uint, string>? onChosen;
     private ApiEquipSlot slot;
     private List<(uint ItemId, string Name)> slotItems = [];
+    private string? modLabel;
 
     public ItemPickerWindow(Plugin plugin) : base("Choose item###CollarItemPicker")
     {
@@ -38,9 +39,44 @@ public sealed class ItemPickerWindow : Window, IDisposable
     public void Open(ApiEquipSlot slot, Action<uint, string> chosen)
     {
         this.slot = slot;
+        modLabel = null;
         onChosen = chosen;
         search = "";
         slotItems = EnumerateSlotItems(slot);
+        IsOpen = true;
+    }
+
+    public void Open(Action<uint, string> chosen)
+    {
+        this.slot = default;
+        modLabel = null;
+        onChosen = chosen;
+        search = "";
+        slotItems = EnumerateAllItems();
+        IsOpen = true;
+    }
+
+    public void OpenForPenumbraMod(string directory, string name, Action<uint, string> chosen)
+    {
+        this.slot = default;
+        modLabel = name;
+        onChosen = chosen;
+        search = "";
+        var ids = plugin.PenumbraIpc.TryGetChangedItemIds(directory, name);
+        OpenForItemIds(name, ids, chosen);
+    }
+
+    public void OpenForItemIds(string name, IReadOnlySet<uint> ids, Action<uint, string> chosen)
+    {
+        this.slot = default;
+        modLabel = name;
+        onChosen = chosen;
+        search = "";
+        var sheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+        slotItems = sheet.Where(item => ids.Contains(item.RowId) && item.EquipSlotCategory.ValueNullable is not null)
+            .Select(item => (ItemId: item.RowId, Name: item.Name.ExtractText()))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Name))
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToList();
         IsOpen = true;
     }
 
@@ -60,6 +96,15 @@ public sealed class ItemPickerWindow : Window, IDisposable
             results.Add((item.RowId, name));
         }
         return results.OrderBy(i => i.Item2, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static List<(uint ItemId, string Name)> EnumerateAllItems()
+    {
+        var sheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+        return sheet.Where(item => item.EquipSlotCategory.ValueNullable is not null)
+            .Select(item => (ItemId: item.RowId, Name: item.Name.ExtractText()))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Name))
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// The 10 lockable slots each map to one non-zero `EquipSlotCategory` field - confirmed field names via
@@ -88,7 +133,7 @@ public sealed class ItemPickerWindow : Window, IDisposable
 
     public override void Draw()
     {
-        IconGlyph.Text(FontAwesomeIcon.Tshirt, $"Item Library - {slot}");
+        IconGlyph.Text(FontAwesomeIcon.Tshirt, modLabel is not null ? $"Changed items - {modLabel}" : slot == default ? "Item Library" : $"Item Library - {slot}");
         ImGui.SameLine();
         IconGlyph.WrappedDisabled("Choose any item valid for this slot - it does not need to be equipped or owned.");
         ImGui.Separator();
@@ -101,7 +146,7 @@ public sealed class ItemPickerWindow : Window, IDisposable
             ? slotItems
             : slotItems.Where(i => i.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 
-        IconGlyph.WrappedDisabled($"{visible.Count} shown / {slotItems.Count} valid for {slot}");
+        IconGlyph.WrappedDisabled(modLabel is not null ? $"{visible.Count} shown / {slotItems.Count} equipment items changed by this mod" : slot == default ? $"{visible.Count} shown / {slotItems.Count} equipment items" : $"{visible.Count} shown / {slotItems.Count} valid for {slot}");
         ImGui.Separator();
         using var child = ImRaii.Child("itemPickerResults", Vector2.Zero, false);
         if (visible.Count == 0) { IconGlyph.WrappedDisabled("No items match this search."); return; }
