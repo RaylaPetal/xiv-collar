@@ -4,6 +4,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Dalamud.Interface.ImGuiNotification;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
 
@@ -402,6 +403,17 @@ public sealed class CatalogSyncRelayService
             envelope.Signature = RelayCrypto.SignRaw(identity.GetSigningKey(), EnvelopeCanonical.SerializeExcludingSignature(envelope));
 
             await relay.UploadCatalogResponseAsync(requestId, envelope, ciphertext, ct).ConfigureAwait(false);
+
+            // The Sub side otherwise has no way to know this ever happened - everything up to here is
+            // silent by design (fails closed with no feedback on any rejection), but a successful upload
+            // is worth a transient, self-dismissing notice rather than nothing at all.
+            Plugin.NotificationManager.AddNotification(new Notification
+            {
+                Title = "Oathbound",
+                Content = $"Sent an updated catalog to {senderName}.",
+                Type = NotificationType.Success,
+                InitialDuration = TimeSpan.FromSeconds(5),
+            });
 
             // Clearing the sensitive buffers as soon as they've served their purpose - task 6.3 "clearing
             // sensitive buffers". These are managed byte[]s (no unmanaged memory to free), so this is a
