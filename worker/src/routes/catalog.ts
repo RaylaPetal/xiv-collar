@@ -255,8 +255,8 @@ export async function uploadCatalogResponse(request: Request, env: Env, requestI
   await putCiphertext(env, r2Key, ciphertextBytes);
 
   await env.RELAY_DB.prepare(
-    `INSERT INTO catalog_objects (request_id_hash, r2_key, sender_device_key_id, recipient_device_key_id, snapshot_id, ciphertext_digest, ciphertext_size_bytes, nonce, sender_ephemeral_public_key_jwk, algorithm, created_at, expires_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+    `INSERT INTO catalog_objects (request_id_hash, r2_key, sender_device_key_id, recipient_device_key_id, snapshot_id, ciphertext_digest, ciphertext_size_bytes, nonce, sender_ephemeral_public_key_jwk, algorithm, created_at, expires_at, signature)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
   )
     .bind(
       requestIdHash,
@@ -271,6 +271,7 @@ export async function uploadCatalogResponse(request: Request, env: Env, requestI
       envelope.algorithm,
       envelope.createdAt,
       envelope.expiresAt,
+      envelope.signature,
     )
     .run();
 
@@ -309,6 +310,7 @@ export async function consumeCatalogResponse(request: Request, env: Env, request
       algorithm: string;
       created_at: number;
       expires_at: number;
+      signature: string | null;
     }>();
   if (!objectRow) throw new RelayError("not_found");
 
@@ -337,6 +339,7 @@ export async function consumeCatalogResponse(request: Request, env: Env, request
       ciphertextSizeBytes: objectRow.ciphertext_size_bytes,
       nonce: objectRow.nonce,
       senderEphemeralPublicKey: JSON.parse(objectRow.sender_ephemeral_public_key_jwk),
+      signature: objectRow.signature,
     },
     ciphertextBase64Url: bytesToBase64Url(ciphertextBytes),
   });
