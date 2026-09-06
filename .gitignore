@@ -12,3 +12,6 @@ worker/dist/
 .agents/
 .cline/
 .clinerules/
+
+# OpenSpec planning artifacts - kept locally for solo use, not committed
+openspec/
