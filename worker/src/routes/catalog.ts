@@ -30,6 +30,7 @@ interface CatalogRequestRow {
   created_at: number;
   expires_at: number;
   status: "pending" | "uploaded" | "consumed" | "expired";
+  signature: string | null;
 }
 
 interface CatalogRequestEnvelope {
@@ -132,8 +133,8 @@ export async function createCatalogRequest(request: Request, env: Env): Promise<
   }
 
   await env.RELAY_DB.prepare(
-    `INSERT INTO catalog_requests (request_id_hash, pair_id_hash, pair_epoch, requester_device_key_id, owner_ephemeral_public_key_jwk, created_at, expires_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    `INSERT INTO catalog_requests (request_id_hash, pair_id_hash, pair_epoch, requester_device_key_id, owner_ephemeral_public_key_jwk, created_at, expires_at, signature)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
   )
     .bind(
       requestIdHash,
@@ -143,6 +144,7 @@ export async function createCatalogRequest(request: Request, env: Env): Promise<
       JSON.stringify(envelope.ownerEphemeralPublicKey),
       envelope.createdAt,
       envelope.expiresAt,
+      envelope.signature,
     )
     .run();
 
@@ -173,6 +175,7 @@ export async function fetchCatalogRequest(request: Request, env: Env, requestId:
     ownerEphemeralPublicKey: JSON.parse(row.owner_ephemeral_public_key_jwk),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
+    signature: row.signature,
     status: row.status,
   });
 }
