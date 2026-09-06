@@ -119,7 +119,11 @@ public sealed class PairingService
                 InviterDeviceKeyId = identity.DeviceKeyId!,
                 InviterPublicKey = identity.GetPublicKeyJwk(),
                 Role = config.Role == PluginRole.Owner ? "owner" : "sub",
-                TriggerPhrase = config.TriggerPhrase.Trim(),
+                // Empty must become null, not "": the Worker's own envelope reconstruction treats an
+                // empty triggerPhrase as absent (protocol/schemas), so this side's signed canonical form
+                // has to agree or the envelope's self-signature never verifies (collar/pairing bug: Accept
+                // failing with "relay rejected this request" whenever the accepter's trigger phrase is blank).
+                TriggerPhrase = string.IsNullOrWhiteSpace(config.TriggerPhrase) ? null : config.TriggerPhrase.Trim(),
                 CreatedAt = now,
                 ExpiresAt = now + 900,
             };
@@ -227,7 +231,11 @@ public sealed class PairingService
                 AccepterPublicKey = identity.GetPublicKeyJwk(),
                 ProofDigest = proofDigest,
                 Role = config.Role == PluginRole.Owner ? "owner" : "sub",
-                TriggerPhrase = config.TriggerPhrase.Trim(),
+                // Empty must become null, not "": the Worker's own envelope reconstruction treats an
+                // empty triggerPhrase as absent (protocol/schemas), so this side's signed canonical form
+                // has to agree or the envelope's self-signature never verifies (collar/pairing bug: Accept
+                // failing with "relay rejected this request" whenever the accepter's trigger phrase is blank).
+                TriggerPhrase = string.IsNullOrWhiteSpace(config.TriggerPhrase) ? null : config.TriggerPhrase.Trim(),
                 CreatedAt = now,
                 ExpiresAt = now + 900,
             };
