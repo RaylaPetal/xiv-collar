@@ -413,6 +413,7 @@ public sealed class PairingService
         config.PendingRelayOperations.Clear();
         config.Save();
         PairingEnded?.Invoke();
+        collar.ReleaseOnUnpair();
         PairingActivated?.Invoke();
     }
 
@@ -455,6 +456,7 @@ public sealed class PairingService
         config.Pairing.Paired = false;
         config.Save();
         PairingEnded?.Invoke();
+        collar.ReleaseOnUnpair();
 
         if (!string.IsNullOrWhiteSpace(peerName) && !string.IsNullOrWhiteSpace(peerWorld))
         {

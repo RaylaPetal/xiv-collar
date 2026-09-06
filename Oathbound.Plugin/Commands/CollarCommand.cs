@@ -36,12 +36,14 @@ public sealed class CollarCommand
     }
 
     /// Advanced from Plugin.OnFrameworkUpdate - re-applies the collar's assigned Moodle on an interval for
-    /// as long as the collar is locked, so removing it through Moodles' own UI doesn't stick (collar/
-    /// collaring "Manually removing the assigned Moodle does not stick while the collar is locked"). A
-    /// no-op whenever the collar isn't locked or has no Moodle assigned.
+    /// as long as the Sub is paired with "Collar" permission enabled, independent of whether the collar's
+    /// Neck-slot lock itself is active, so removing it through Moodles' own UI (or unlocking the collar)
+    /// doesn't stick (collar/collaring "Manually removing the assigned Moodle does not stick while
+    /// unlocked but still paired"). A no-op whenever unpaired, the permission is off, or no Moodle is
+    /// assigned.
     public void OnFrameworkUpdate()
     {
-        if (!runtimeState.CollarForceLocked || !config.Collar.HasMoodleAssigned)
+        if (!config.Pairing.IsPaired || !config.Permissions.Collar || !config.Collar.HasMoodleAssigned)
             return;
 
         var now = Environment.TickCount64;
@@ -107,9 +109,10 @@ public sealed class CollarCommand
         return true;
     }
 
-    /// The Owner's `collar unlock` override - the only way to release a locked collar besides panic. Also
-    /// clears the assigned Moodle (if any) and stops its re-assertion - collar/collaring "Owner's release
-    /// also clears the assigned Moodle".
+    /// The Owner's `collar unlock` override - releases only the Neck-slot lock. The assigned Moodle (if
+    /// any) is untouched and keeps being periodically re-asserted, since it now tracks the pairing rather
+    /// than the lock - collar/collaring "Owner's release also clears the assigned Moodle" (no longer true;
+    /// see that scenario's updated body).
     public bool ForceUnlock()
     {
         if (!slotLocks.HasLock(Owner))
@@ -117,20 +120,37 @@ public sealed class CollarCommand
 
         slotLocks.Release(Owner);
         runtimeState.CollarForceLocked = false;
-        if (config.Collar.HasMoodleAssigned)
-            moodles.Clear();
 
         return true;
     }
 
+    /// Called when a pairing ends for any reason other than panic - the Sub's own release or a verified
+    /// peer notice (PairingService.ReleasePeer / EndFromVerifiedPeerNotice) - collar/collaring "Unpairing
+    /// releases the collar and clears the assigned Moodle". Releases the Neck-slot lock if one is held, and
+    /// clears the assigned Moodle (if any) unconditionally rather than gating on the lock, since the Moodle
+    /// can now be actively reasserting while paired but unlocked. A no-op on both fronts when there's
+    /// nothing to release.
+    public void ReleaseOnUnpair()
+    {
+        if (slotLocks.HasLock(Owner))
+        {
+            slotLocks.Release(Owner);
+            runtimeState.CollarForceLocked = false;
+        }
+
+        if (config.Collar.HasMoodleAssigned)
+            moodles.Clear();
+    }
+
     /// Panic's own release path (called from PanicHandler, not from `slotLocks.ReleaseAllForPanic` which
     /// only knows about slots, not Moodles) - clears the assigned Moodle and stops its re-assertion,
-    /// unconditionally, the same as the collar's own Neck-slot lock always releases on panic. A no-op when
-    /// the collar was never locked or has no Moodle assigned, matching the "clear title" panic step's own
-    /// `runtimeState.TitleApplied`-guarded shape.
+    /// unconditionally, the same as the collar's own Neck-slot lock always releases on panic. Gated only on
+    /// whether a Moodle is assigned, not on `CollarForceLocked` - the Moodle now reasserts independently of
+    /// the Neck-slot lock (while paired), so a paired-but-unlocked Sub can still have it actively applied
+    /// and must have it cleared on panic too. A no-op when no Moodle is assigned.
     public void PanicRelease()
     {
-        if (runtimeState.CollarForceLocked && config.Collar.HasMoodleAssigned)
+        if (config.Collar.HasMoodleAssigned)
             moodles.Clear();
     }
 }
