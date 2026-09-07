@@ -33,6 +33,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
+    [PluginService] internal static ICondition Condition { get; private set; } = null!;
 
     private const string CommandName = "/oathbound";
     private const string PanicCommandName = "/oathboundpanic";
@@ -75,6 +76,7 @@ public sealed class Plugin : IDalamudPlugin
     public HonorificIpc HonorificIpc { get; }
     public PenumbraIpc PenumbraIpc { get; }
     public MoodlesIpc MoodlesIpc { get; }
+    public LifestreamIpc LifestreamIpc { get; }
     public MovementLockService MovementLockService { get; }
     public WalkOnlyService WalkOnlyService { get; }
     public ActionBlockService ActionBlockService { get; }
@@ -93,6 +95,7 @@ public sealed class Plugin : IDalamudPlugin
     public MoodlesCommand MoodlesCommand { get; }
     public RestraintCommand RestraintCommand { get; }
     public CustomTriggerCommand CustomTriggerCommand { get; }
+    public TeleportCommand TeleportCommand { get; }
     public CatalogSyncService CatalogSyncService { get; }
     public CatalogSyncRelayService CatalogSyncRelayService { get; }
     public ChatComposer ChatComposer { get; }
@@ -127,6 +130,7 @@ public sealed class Plugin : IDalamudPlugin
         HonorificIpc = new HonorificIpc();
         PenumbraIpc = new PenumbraIpc();
         MoodlesIpc = new MoodlesIpc();
+        LifestreamIpc = new LifestreamIpc();
         MovementLockService = new MovementLockService();
         WalkOnlyService = new WalkOnlyService();
         ActionBlockService = new ActionBlockService(WalkOnlyService);
@@ -153,6 +157,7 @@ public sealed class Plugin : IDalamudPlugin
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
         RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings);
         CustomTriggerCommand = new CustomTriggerCommand(Configuration, TitleCommand, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
+        TeleportCommand = new TeleportCommand(Configuration, LifestreamIpc);
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
@@ -160,7 +165,7 @@ public sealed class Plugin : IDalamudPlugin
         PairingService.PairingEnded += QueueRestraintCleanup;
         RevocationService.PairingRevoked += QueueRestraintCleanup;
         CatalogSyncRelayService = new CatalogSyncRelayService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CatalogSyncService);
-        ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, CustomTriggerCommand);
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, CustomTriggerCommand, TeleportCommand);
 
         PanicHandler = new PanicHandler(PairingService, RevocationService, Configuration, ChatComposer, ChatSender, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState, CollarCommand);
 

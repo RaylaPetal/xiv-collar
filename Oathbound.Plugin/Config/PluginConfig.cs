@@ -323,6 +323,10 @@ public class PermissionSet
     /// - a denied request never builds or uploads anything, and the Owner learns only a permission status,
     /// never catalog contents.
     public bool RelayCatalogSync { get; set; }
+
+    /// collar/teleport "Separate opt-in permission for teleport": distinct from every other category,
+    /// same independent-opt-in pattern as Follow - never implied by any other permission being on.
+    public bool Teleport { get; set; }
 }
 
 /// collar/restraints: the fixed set of restriction rule kinds a restraint device may carry.

@@ -252,7 +252,14 @@ public class CollarWindow : Window, IDisposable
                 else DrawCollarModule();
                 break;
             case "follow":
-                if (isOwner) DrawFollowQuickSection(DrawOwnerCanSendBanner());
+                if (isOwner)
+                {
+                    var canSend = DrawOwnerCanSendBanner();
+                    DrawFollowQuickSection(canSend);
+                    ImGui.Spacing();
+                    ImGui.Separator();
+                    DrawTeleportSection(canSend);
+                }
                 else DrawFollowLeashModule();
                 break;
             case "permissions":
@@ -792,7 +799,7 @@ public class CollarWindow : Window, IDisposable
         ImGui.Spacing();
         var config = plugin.Configuration;
         if (!config.TosAcknowledged)
-            IconGlyph.WrappedColored(Theme.Warning, "Animation/Follow/Restraints require the ToS acknowledgement in Settings (gear icon) first.");
+            IconGlyph.WrappedColored(Theme.Warning, "Animation/Follow/Restraints/Teleport require the ToS acknowledgement in Settings (gear icon) first.");
 
         using (ImRaii.Disabled(!config.TosAcknowledged))
         {
@@ -807,6 +814,10 @@ public class CollarWindow : Window, IDisposable
             if (ImGuiCheckbox("Restraints", permissions.Restraints, out var newRestraints))
                 SavePermission(() => permissions.Restraints = newRestraints);
             IconGlyph.HelpMarker("Lets a paired Owner apply or release a restraint device via a trigger tell. Restraint devices can suppress movement, force walking, block actions, garble your outgoing chat (Gagged), or hold you in a chosen animation (Arms/Legs/Full Body Cuffed) while active - Gagged rewrites content you actually typed, a heavier automation footprint than the others - see the Restraints tab and the README's Automation risk section.");
+
+            if (ImGuiCheckbox("Teleport", permissions.Teleport, out var newTeleport))
+                SavePermission(() => permissions.Teleport = newTeleport);
+            IconGlyph.HelpMarker("Lets a paired Owner summon you to their current world, at the aetheryte nearest their position, via a trigger tell. Refused automatically while you're bound by duty, in combat, or without the Lifestream plugin installed. Requires the Lifestream plugin.");
         }
 
         ImGui.Spacing();
@@ -2756,6 +2767,39 @@ public class CollarWindow : Window, IDisposable
         using var _ = ImRaii.Child("followQuickList", new Vector2(0, 90), true);
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend);
+    }
+
+    /// collar/teleport: Owner-only "come here" send action, only enabled when Lifestream is reachable on
+    /// the Owner's own client (proposal.md's "Teleport" send action requirement) - resolved at click time,
+    /// not cached, so it always reflects the Owner's current position.
+    private void DrawTeleportSection(bool canSend)
+    {
+        IconGlyph.Text(FontAwesomeIcon.MapMarkerAlt, "Teleport");
+        var lifestreamAvailable = plugin.LifestreamIpc.IsAvailable;
+        if (!lifestreamAvailable)
+        {
+            IconGlyph.WrappedDisabled("Requires the Lifestream plugin, installed and running on your own client.");
+            return;
+        }
+
+        ImGui.TextWrapped("Summons your paired Sub to your current world, at the aetheryte nearest your position. Requires your Sub to have enabled the Teleport permission.");
+        using (ImRaii.Disabled(!canSend))
+        {
+            if (ImGui.Button("Teleport Sub to me"))
+            {
+                var world = Plugin.ObjectTable.LocalPlayer?.CurrentWorld.Value.Name.ExtractText();
+                var shardId = plugin.LifestreamIpc.TryGetActiveAetheryte();
+                if (shardId == 0)
+                    shardId = plugin.LifestreamIpc.TryGetActiveCustomAetheryte();
+                if (shardId == 0)
+                    shardId = plugin.LifestreamIpc.TryGetActiveResidentialAetheryte();
+
+                if (world is null || shardId == 0)
+                    IconGlyph.WrappedColored(Theme.Warning, "Could not resolve your current world/aetheryte - move near an aetheryte and try again.");
+                else
+                    plugin.ChatSender.Send(plugin.ChatComposer.ComposeTeleport(world, shardId));
+            }
+        }
     }
 
     private void DrawFreeformComposer(bool canSend)

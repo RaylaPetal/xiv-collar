@@ -22,6 +22,11 @@ public sealed class ChatComposer
     /// idea which, since both are just text appended after the trigger phrase.
     public string Compose(string command) => Wrap(command);
 
+    /// collar/teleport: the Owner's `teleport` reserved-word command, carrying the world and
+    /// aetheryte/aethernet shard nearest the Owner's position at send time - resolved by the caller (via
+    /// Lifestream's own IPC) before this is called, since this class stays dependency-free by construction.
+    public string ComposeTeleport(string world, uint shardId) => Wrap($"teleport world:\"{world.Trim()}\" shard:{shardId}");
+
     /// collar/pairing's relay-assisted handshake: a short lifecycle tell carrying only the invitation's
     /// capability id - everything else (role, trigger phrase, expiry) lives in the signed invitation itself,
     /// fetched from the relay once this tell's verified sender is captured (see Relay/PairingService.cs).

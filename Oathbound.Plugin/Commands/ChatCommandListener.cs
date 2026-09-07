@@ -31,7 +31,7 @@ public sealed class ChatCommandListener : IDisposable
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
     /// lookup (see Resolve/HandleForce*). A Sub alias can never be named one of these - CollarWindow's
     /// alias-creation forms validate against this list so the two paths can never collide.
-    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint", "customtrigger"];
+    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint", "customtrigger", "teleport"];
 
     private readonly PluginConfig config;
     private readonly PairingService pairing;
@@ -44,6 +44,7 @@ public sealed class ChatCommandListener : IDisposable
     private readonly MoodlesCommand moodles;
     private readonly RestraintCommand restraints;
     private readonly CustomTriggerCommand customTriggers;
+    private readonly TeleportCommand teleport;
 
     public PeerUnpairedNotice? PeerUnpairedNotice { get; private set; }
     public event Action? PeerUnpairedNoticeChanged;
@@ -56,7 +57,7 @@ public sealed class ChatCommandListener : IDisposable
         PeerUnpairedNoticeChanged?.Invoke();
     }
 
-    public ChatCommandListener(PluginConfig config, PairingService pairing, CatalogSyncRelayService catalogSyncRelay, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, CustomTriggerCommand customTriggers)
+    public ChatCommandListener(PluginConfig config, PairingService pairing, CatalogSyncRelayService catalogSyncRelay, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, CustomTriggerCommand customTriggers, TeleportCommand teleport)
     {
         this.config = config;
         this.pairing = pairing;
@@ -69,6 +70,7 @@ public sealed class ChatCommandListener : IDisposable
         this.moodles = moodles;
         this.restraints = restraints;
         this.customTriggers = customTriggers;
+        this.teleport = teleport;
 
         Plugin.ChatGui.ChatMessage += OnChatMessage;
     }
@@ -329,6 +331,12 @@ public sealed class ChatCommandListener : IDisposable
                 // dedicated acknowledgement) individually as it dispatches (design.md's "orchestrator,
                 // not a reimplementation" decision - see also the ResolveAlias CustomTriggers branch).
                 return HandleForceCustomTrigger(rest);
+            case "teleport":
+                // Deliberately no outer permission gate here either, unlike the categories above - unlike
+                // them, every one of Teleport's guards (permission, ToS acknowledgement, duty, combat,
+                // Lifestream availability) needs a distinct, reportable reason, so TeleportCommand.Apply
+                // owns all of it (collar/teleport's "Refuses when travel cannot safely happen").
+                return HandleForceTeleport(rest);
         }
 
         return ResolveAlias(commandText);
@@ -527,6 +535,17 @@ public sealed class ChatCommandListener : IDisposable
         }
 
         return LocalTestResult.Fail($"Unrecognized \"customtrigger\" override \"{rest}\" - expected \"cast \\\"<label>\\\" ...\".");
+    }
+
+    private LocalTestResult HandleForceTeleport(string rest)
+    {
+        if (!TeleportCommand.TryParsePayload(rest, out var world, out var shardId))
+            return LocalTestResult.Fail($"Unrecognized \"teleport\" payload \"{rest}\" - expected \"world:\\\"<name>\\\" shard:<id>\".");
+
+        var (success, reason) = teleport.Apply(world, shardId);
+        return success
+            ? LocalTestResult.Ok($"Teleported to \"{world}\".")
+            : LocalTestResult.Fail(reason ?? "Teleport failed.");
     }
 
     private static (string First, string Remainder) SplitFirstToken(string text)
