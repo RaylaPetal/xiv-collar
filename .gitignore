@@ -15,3 +15,6 @@ worker/dist/
 
 # OpenSpec planning artifacts - kept locally for solo use, not committed
 openspec/
+
+# graphify output - local knowledge graph cache
+graphify-out/
