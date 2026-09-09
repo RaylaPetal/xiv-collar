@@ -377,18 +377,24 @@ public class SettingsWindow : Window, IDisposable
             IconGlyph.WrappedColored(Theme.Warning, "Running under Wine: the private key is stored without a real OS-backed protection guarantee (Wine's DPAPI does not provide one). Treat a compromised machine as requiring a reset below.");
         }
 
-        using (ImRaii.Disabled(confirmingIdentityReset))
+        var cooldownRemaining = identity.CooldownRemaining;
+        using (ImRaii.Disabled(confirmingIdentityReset || cooldownRemaining is not null))
         {
             if (ImGui.Button("Reset device identity"))
                 confirmingIdentityReset = true;
         }
+        if (cooldownRemaining is { } remaining)
+            IconGlyph.WrappedColored(Theme.TextMuted, $"Available again in {(int)remaining.TotalMinutes}m {remaining.Seconds}s.");
         if (confirmingIdentityReset)
         {
             IconGlyph.WrappedColored(Theme.Danger, "This ends every relay-assisted pairing this device holds and cannot be undone. Are you sure?");
-            if (ImGui.Button("Confirm reset"))
+            using (ImRaii.Disabled(!identity.CanReset))
             {
-                Plugin.FireAndForget(plugin.PairingService.ResetDeviceIdentityAsync(CancellationToken.None));
-                confirmingIdentityReset = false;
+                if (ImGui.Button("Confirm reset"))
+                {
+                    Plugin.FireAndForget(plugin.PairingService.ResetDeviceIdentityAsync(CancellationToken.None));
+                    confirmingIdentityReset = false;
+                }
             }
             ImGui.SameLine();
             if (ImGui.Button("Cancel"))

@@ -135,6 +135,10 @@ public class DeviceIdentityState
     public string? DeviceKeyId { get; set; }
 
     public bool HasIdentity => PublicKeyX is not null && PublicKeyY is not null && ProtectedPrivateKey is not null;
+
+    /// collar/pairing "Device identity reset has a short client-side cooldown" - set only by an explicit
+    /// user-triggered reset, never by first-time identity generation. See DeviceIdentityService.
+    public DateTime? LastResetUtc { get; set; }
 }
 
 /// A best-effort revocation the relay HTTP call for is currently failing (offline, relay down, quota) -

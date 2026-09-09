@@ -20,8 +20,24 @@ public sealed class DeviceIdentityService
         this.config = config;
     }
 
+    private static readonly TimeSpan ResetCooldown = TimeSpan.FromMinutes(5);
+
     public string? DeviceKeyId => config.DeviceIdentity.DeviceKeyId;
     public bool HasIdentity => config.DeviceIdentity.HasIdentity;
+
+    /// collar/pairing "Device identity reset has a short client-side cooldown" - a UI-friction guard
+    /// against an accidental repeat reset, not an abuse control (see the change's proposal.md for why).
+    public TimeSpan? CooldownRemaining
+    {
+        get
+        {
+            if (config.DeviceIdentity.LastResetUtc is not { } lastReset) return null;
+            var remaining = lastReset + ResetCooldown - DateTime.UtcNow;
+            return remaining > TimeSpan.Zero ? remaining : null;
+        }
+    }
+
+    public bool CanReset => CooldownRemaining is null;
 
     /// Generates a fresh identity if none exists yet; a no-op otherwise. Called once at plugin startup.
     public void EnsureIdentity()
@@ -39,6 +55,8 @@ public sealed class DeviceIdentityService
         cachedKey?.Dispose();
         cachedKey = null;
         GenerateAndPersist();
+        config.DeviceIdentity.LastResetUtc = DateTime.UtcNow;
+        config.Save();
     }
 
     /// Returns the live signing key, importing the protected private scalar on first use. Throws if no
