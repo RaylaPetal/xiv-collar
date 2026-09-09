@@ -46,7 +46,7 @@ public sealed class CustomTriggerCommand
             {
                 case CustomTriggerActionKind.Title:
                     if (!config.Permissions.Title) { skipped.Add("title (permission)"); break; }
-                    title.Apply(new TitleAliasDefinition { Text = action.TitleText, IsPrefix = action.TitleIsPrefix, Color = action.TitleColor });
+                    title.Apply(new TitleAliasDefinition { Text = action.TitleText, IsPrefix = action.TitleIsPrefix, Color = action.TitleColor, Glow = action.TitleGlow });
                     applied.Add("title");
                     break;
 
@@ -147,7 +147,14 @@ public sealed class CustomTriggerCommand
             switch (action.Kind)
             {
                 case CustomTriggerActionKind.Title:
-                    segments.Add($"title={EncodeText(action.TitleText)}|{(action.TitleIsPrefix ? 1 : 0)}|{FormatColor(action.TitleColor)}");
+                    // design.md "customtrigger cast bundle's title= segment": glow is an optional trailing
+                    // 4th part, appended only when actually set - an action with no glow still encodes as
+                    // exactly 3 parts, so an old Sub's strict `parts.Length != 3` check still accepts it;
+                    // only a glow-styled Title action requires both sides to be on this version or newer.
+                    var titleSegment = $"title={EncodeText(action.TitleText)}|{(action.TitleIsPrefix ? 1 : 0)}|{FormatColor(action.TitleColor)}";
+                    if (action.TitleGlow is { } glow)
+                        titleSegment += $"|{FormatColor(glow)}";
+                    segments.Add(titleSegment);
                     break;
                 case CustomTriggerActionKind.Outfit:
                     segments.Add($"outfit={action.OutfitDesignId}|{EncodeText(action.OutfitDesignName)}");
@@ -236,13 +243,22 @@ public sealed class CustomTriggerCommand
                 switch (kind.ToLowerInvariant())
                 {
                     case "title":
-                        if (parts.Length != 3 || !TryDecodeText(parts[0], out var titleText) || titleText.Length == 0)
+                        // design.md: parts.Length 3 is the legacy (no glow) shape; 4 carries an optional
+                        // glow as its last part, empty when the encoder had no glow to send.
+                        if ((parts.Length != 3 && parts.Length != 4) || !TryDecodeText(parts[0], out var titleText) || titleText.Length == 0)
                             return false;
                         if (!int.TryParse(parts[1], out var prefixFlag))
                             return false;
                         if (!TryParseColor(parts[2], out var color))
                             return false;
-                        actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = titleText, TitleIsPrefix = prefixFlag != 0, TitleColor = color });
+                        Vector3? glow = null;
+                        if (parts.Length == 4 && parts[3].Length > 0)
+                        {
+                            if (!TryParseColor(parts[3], out var g))
+                                return false;
+                            glow = g;
+                        }
+                        actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = titleText, TitleIsPrefix = prefixFlag != 0, TitleColor = color, TitleGlow = glow });
                         break;
 
                     case "outfit":

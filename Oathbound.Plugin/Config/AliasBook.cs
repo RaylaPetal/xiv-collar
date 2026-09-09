@@ -18,6 +18,10 @@ public class TitleAliasDefinition
     public string Text { get; set; } = "";
     public bool IsPrefix { get; set; }
     public Vector3 Color { get; set; } = new(1, 1, 1);
+
+    /// collar/title: optional glow color passed through to Honorific's own `Glow` field - null means no
+    /// glow, matching Honorific's own semantics (see HonorificIpc.HonorificTitleData.Glow).
+    public Vector3? Glow { get; set; }
 }
 
 [Serializable]
@@ -94,6 +98,7 @@ public class CustomTriggerAction
     public string TitleText { get; set; } = "";
     public bool TitleIsPrefix { get; set; }
     public Vector3 TitleColor { get; set; } = new(1, 1, 1);
+    public Vector3? TitleGlow { get; set; }
 
     // Outfit
     public Guid OutfitDesignId { get; set; }

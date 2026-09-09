@@ -349,6 +349,7 @@ public sealed class Plugin : IDalamudPlugin
         WalkOnlyService.OnFrameworkUpdate();
         CollarCommand.OnFrameworkUpdate();
         TeleportCommand.OnFrameworkUpdate();
+        TitleCommand.OnFrameworkUpdate();
 
         var utcNow = DateTime.UtcNow;
         if (utcNow >= nextRevocationOutboxRetryUtc)

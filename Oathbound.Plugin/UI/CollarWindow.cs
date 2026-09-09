@@ -41,6 +41,8 @@ public class CollarWindow : Window, IDisposable
     private string newTitleText = "";
     private bool newTitleIsPrefix;
     private Vector3 newTitleColor = new(1, 1, 1);
+    private bool newTitleHasGlow;
+    private Vector3 newTitleGlow = new(1, 1, 1);
 
     private string newOutfitAlias = "";
     private int newOutfitDesignIndex;
@@ -58,6 +60,8 @@ public class CollarWindow : Window, IDisposable
     private string ctTitleText = "";
     private bool ctTitleIsPrefix;
     private Vector3 ctTitleColor = new(1, 1, 1);
+    private bool ctTitleHasGlow;
+    private Vector3 ctTitleGlow = new(1, 1, 1);
     private int ctOutfitDesignIndex;
     private GestureCatalogEntry? ctSelectedGesture;
     private int ctMoodleStatusIndex;
@@ -78,6 +82,8 @@ public class CollarWindow : Window, IDisposable
     private string ctqTitleText = "";
     private bool ctqTitleIsPrefix;
     private Vector3 ctqTitleColor = new(1, 1, 1);
+    private bool ctqTitleHasGlow;
+    private Vector3 ctqTitleGlow = new(1, 1, 1);
     private string ctqOutfitName = "";
     private string ctqGestureName = "";
     private string ctqMoodleName = "";
@@ -110,6 +116,8 @@ public class CollarWindow : Window, IDisposable
     private string newTitleQuickText = "";
     private bool newTitleQuickIsPrefix;
     private Vector3 newTitleQuickColor = new(1, 1, 1);
+    private bool newTitleQuickHasGlow;
+    private Vector3 newTitleQuickGlow = new(1, 1, 1);
     private string newFollowQuickText = "";
     private string? importResult;
     private string? teleportResolveError;
@@ -133,6 +141,10 @@ public class CollarWindow : Window, IDisposable
     private bool editingQuickOriginalTitleIsPrefix;
     private Vector3 editingQuickTitleColor = new(1, 1, 1);
     private Vector3 editingQuickOriginalTitleColor = new(1, 1, 1);
+    private bool editingQuickTitleHasGlow;
+    private bool editingQuickOriginalTitleHasGlow;
+    private Vector3 editingQuickTitleGlow = new(1, 1, 1);
+    private Vector3 editingQuickOriginalTitleGlow = new(1, 1, 1);
 
     private enum QuickEditCategory { Raw, Title, Outfit, Gesture, Follow, Moodle }
     private QuickEditCategory editingQuickCategory;
@@ -914,10 +926,11 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.HelpMarker("Show the title before your name instead of after it.");
         ImGui.ColorEdit3("Color##newTitle", ref newTitleColor);
         IconGlyph.HelpMarker("Honorific title color.");
+        DrawGlowPicker("newTitle", ref newTitleHasGlow, ref newTitleGlow);
         DrawReservedWordWarning(newTitleAlias);
         if (ImGui.Button("Add title alias") && newTitleAlias.Length > 0 && newTitleText.Length > 0 && !IsReserved(newTitleAlias))
         {
-            titles.Add(new TitleAliasDefinition { Alias = newTitleAlias, Text = newTitleText, IsPrefix = newTitleIsPrefix, Color = newTitleColor });
+            titles.Add(new TitleAliasDefinition { Alias = newTitleAlias, Text = newTitleText, IsPrefix = newTitleIsPrefix, Color = newTitleColor, Glow = newTitleHasGlow ? newTitleGlow : null });
             config.Save();
             newTitleAlias = "";
             newTitleText = "";
@@ -1575,14 +1588,17 @@ public class CollarWindow : Window, IDisposable
                 ImGui.InputText("Text##newCtTitle", ref ctTitleText, 64);
                 ImGui.Checkbox("Prefix##newCtTitle", ref ctTitleIsPrefix);
                 ImGui.ColorEdit3("Color##newCtTitle", ref ctTitleColor);
+                DrawGlowPicker("newCtTitle", ref ctTitleHasGlow, ref ctTitleGlow);
                 using (ImRaii.Disabled(ctTitleText.Length == 0))
                 {
                     if (ImGui.Button($"{(editingCustomTriggerActionIndex is null ? "Add action" : "Save action")}##newCtTitleBtn"))
                     {
-                        CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctTitleText, TitleIsPrefix = ctTitleIsPrefix, TitleColor = ctTitleColor });
+                        CommitSubAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctTitleText, TitleIsPrefix = ctTitleIsPrefix, TitleColor = ctTitleColor, TitleGlow = ctTitleHasGlow ? ctTitleGlow : null });
                         ctTitleText = "";
                         ctTitleIsPrefix = false;
                         ctTitleColor = new Vector3(1, 1, 1);
+                        ctTitleHasGlow = false;
+                        ctTitleGlow = new Vector3(1, 1, 1);
                     }
                 }
                 break;
@@ -1771,6 +1787,8 @@ public class CollarWindow : Window, IDisposable
         ctTitleText = action.TitleText;
         ctTitleIsPrefix = action.TitleIsPrefix;
         ctTitleColor = action.TitleColor;
+        ctTitleHasGlow = action.TitleGlow is not null;
+        ctTitleGlow = action.TitleGlow ?? new Vector3(1, 1, 1);
         var designs = plugin.Configuration.WardrobeMapping.LocalDesigns.Values.ToList();
         ctOutfitDesignIndex = Math.Max(0, designs.FindIndex(d => d.DesignId == action.OutfitDesignId));
         ctSelectedGesture = plugin.Configuration.GestureMapping.LocalCatalog.Values
@@ -1788,6 +1806,8 @@ public class CollarWindow : Window, IDisposable
         ctqTitleText = action.TitleText;
         ctqTitleIsPrefix = action.TitleIsPrefix;
         ctqTitleColor = action.TitleColor;
+        ctqTitleHasGlow = action.TitleGlow is not null;
+        ctqTitleGlow = action.TitleGlow ?? new Vector3(1, 1, 1);
         ctqOutfitName = action.OutfitDesignName;
         ctqGestureName = action.GestureAnimationName;
         ctqMoodleName = MoodlesTextFormat.StripMarkup(action.MoodleStatusName);
@@ -2341,14 +2361,17 @@ public class CollarWindow : Window, IDisposable
                 ImGui.InputText("Text##ctqTitle", ref ctqTitleText, 64);
                 ImGui.Checkbox("Prefix##ctqTitle", ref ctqTitleIsPrefix);
                 ImGui.ColorEdit3("Color##ctqTitle", ref ctqTitleColor);
+                DrawGlowPicker("ctqTitle", ref ctqTitleHasGlow, ref ctqTitleGlow);
                 using (ImRaii.Disabled(ctqTitleText.Trim().Length == 0))
                 {
                     if (ImGui.SmallButton($"{(editingOwnerActionIndex is null ? "Add" : "Save")}##ctqTitleBtn"))
                     {
-                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctqTitleText.Trim(), TitleIsPrefix = ctqTitleIsPrefix, TitleColor = ctqTitleColor });
+                        CommitOwnerAction(new CustomTriggerAction { Kind = CustomTriggerActionKind.Title, TitleText = ctqTitleText.Trim(), TitleIsPrefix = ctqTitleIsPrefix, TitleColor = ctqTitleColor, TitleGlow = ctqTitleHasGlow ? ctqTitleGlow : null });
                         ctqTitleText = "";
                         ctqTitleIsPrefix = false;
                         ctqTitleColor = new Vector3(1, 1, 1);
+                        ctqTitleHasGlow = false;
+                        ctqTitleGlow = new Vector3(1, 1, 1);
                     }
                 }
                 break;
@@ -2645,20 +2668,25 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.HelpMarker("Show the title before your Sub's name instead of after it.");
         ImGui.ColorEdit3("Color##newQuickTitle", ref newTitleQuickColor);
         IconGlyph.HelpMarker("Honorific title color - matches the Sub's own Title alias color picker.");
+        DrawGlowPicker("newQuickTitle", ref newTitleQuickHasGlow, ref newTitleQuickGlow);
         if (ImGui.SmallButton("Add Command##quickTitle") && newTitleQuickText.Trim().Length > 0)
         {
             var text = newTitleQuickText.Trim();
+            var glow = newTitleQuickHasGlow ? newTitleQuickGlow : (Vector3?)null;
             quick.Add(new QuickCommand
             {
                 Label = text,
-                Command = TitleCommand.BuildStyleCommand(text, newTitleQuickIsPrefix, newTitleQuickColor),
+                Command = TitleCommand.BuildStyleCommand(text, newTitleQuickIsPrefix, newTitleQuickColor, glow),
                 TitleIsPrefix = newTitleQuickIsPrefix,
                 TitleColor = newTitleQuickColor,
+                TitleGlow = glow,
             });
             plugin.Configuration.Save();
             newTitleQuickText = "";
             newTitleQuickIsPrefix = false;
             newTitleQuickColor = new Vector3(1, 1, 1);
+            newTitleQuickHasGlow = false;
+            newTitleQuickGlow = new Vector3(1, 1, 1);
         }
         IconGlyph.HelpMarker("Saves a one-click button that force-applies this exact title (with the chosen prefix/color) and locks it on - your Sub's own clear-title alias is refused while it's locked, only the \"Clear title\" button below (or their panic) releases it. Requires a Sub on this plugin version to recognize the styled command - see the README.");
 
@@ -2900,18 +2928,24 @@ public class CollarWindow : Window, IDisposable
         editingQuickOriginalTarget = editingQuickTarget;
         editingQuickTitleIsPrefix = command.TitleIsPrefix;
         editingQuickTitleColor = command.TitleColor ?? new Vector3(1, 1, 1);
+        editingQuickTitleHasGlow = command.TitleGlow is not null;
+        editingQuickTitleGlow = command.TitleGlow ?? new Vector3(1, 1, 1);
 
         if (editingQuickCategory == QuickEditCategory.Title &&
             command.Command.StartsWith("title style ", StringComparison.OrdinalIgnoreCase) &&
-            TitleCommand.TryParseStyleCommand(command.Command["title style ".Length..], out var title, out var prefix, out var color))
+            TitleCommand.TryParseStyleCommand(command.Command["title style ".Length..], out var title, out var prefix, out var color, out var glow))
         {
             editingQuickTarget = title;
             editingQuickTitleIsPrefix = prefix;
             editingQuickTitleColor = color;
+            editingQuickTitleHasGlow = glow is not null;
+            editingQuickTitleGlow = glow ?? new Vector3(1, 1, 1);
         }
         editingQuickOriginalTarget = editingQuickTarget;
         editingQuickOriginalTitleIsPrefix = editingQuickTitleIsPrefix;
         editingQuickOriginalTitleColor = editingQuickTitleColor;
+        editingQuickOriginalTitleHasGlow = editingQuickTitleHasGlow;
+        editingQuickOriginalTitleGlow = editingQuickTitleGlow;
     }
 
     private QuickEditCategory CategoryFor(List<QuickCommand> list)
@@ -2961,6 +2995,7 @@ public class CollarWindow : Window, IDisposable
                 ImGui.InputText("Title text##quickEdit", ref editingQuickTarget, 64);
                 ImGui.Checkbox("Prefix (not suffix)##quickEdit", ref editingQuickTitleIsPrefix);
                 ImGui.ColorEdit3("Color##quickEdit", ref editingQuickTitleColor);
+                DrawGlowPicker("quickEdit", ref editingQuickTitleHasGlow, ref editingQuickTitleGlow);
                 break;
             case QuickEditCategory.Outfit:
                 ImGui.SetNextItemWidth(-1);
@@ -3010,6 +3045,7 @@ public class CollarWindow : Window, IDisposable
                 {
                     source.TitleIsPrefix = editingQuickTitleIsPrefix;
                     source.TitleColor = editingQuickTitleColor;
+                    source.TitleGlow = editingQuickTitleHasGlow ? editingQuickTitleGlow : null;
                 }
                 if (editingQuickCategory == QuickEditCategory.Gesture && draftTarget is not null &&
                     plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(draftTarget, out var gesture))
@@ -3052,13 +3088,14 @@ public class CollarWindow : Window, IDisposable
         var target = editingQuickTarget.Trim();
         var targetChanged = !string.Equals(target, editingQuickOriginalTarget.Trim(), StringComparison.Ordinal) ||
             (editingQuickCategory == QuickEditCategory.Title &&
-             (editingQuickTitleIsPrefix != editingQuickOriginalTitleIsPrefix || editingQuickTitleColor != editingQuickOriginalTitleColor));
+             (editingQuickTitleIsPrefix != editingQuickOriginalTitleIsPrefix || editingQuickTitleColor != editingQuickOriginalTitleColor ||
+              editingQuickTitleHasGlow != editingQuickOriginalTitleHasGlow || editingQuickTitleGlow != editingQuickOriginalTitleGlow));
         if (!targetChanged && editingQuickCategory != QuickEditCategory.Raw)
             return (source.Command, source.Target);
         return editingQuickCategory switch
         {
             QuickEditCategory.Title when target.Length > 0 =>
-                (TitleCommand.BuildStyleCommand(target, editingQuickTitleIsPrefix, editingQuickTitleColor), null),
+                (TitleCommand.BuildStyleCommand(target, editingQuickTitleIsPrefix, editingQuickTitleColor, editingQuickTitleHasGlow ? editingQuickTitleGlow : null), null),
             QuickEditCategory.Outfit when target.Length > 0 => ($"outfit lock {target}", target),
             QuickEditCategory.Gesture when plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(target, out var entry) =>
                 ($"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, plugin.Configuration.GestureMapping.ImportedPeerCatalog.Values))}", entry.Id),
@@ -3116,6 +3153,23 @@ public class CollarWindow : Window, IDisposable
         }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(isFavorite ? "Remove from favorites" : "Add to favorites");
+    }
+
+    /// collar/title: shared "optional glow" control for every title-styling form (Sub alias creation, both
+    /// Custom Trigger action editors, Owner quick-command create/edit) - a checkbox that reveals a
+    /// `ColorEdit3` when enabled. `hasGlow`/`glow` are plain local editor state (matching every other
+    /// title-styling field's shape, see design.md), converted to a `Vector3?` only when the caller builds
+    /// its `TitleAliasDefinition`/`CustomTriggerAction`/`QuickCommand`.
+    private static void DrawGlowPicker(string idSuffix, ref bool hasGlow, ref Vector3 glow)
+    {
+        ImGui.Checkbox($"Glow##{idSuffix}", ref hasGlow);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Honorific title glow color - optional, off by default.");
+        if (hasGlow)
+        {
+            ImGui.SameLine();
+            ImGui.ColorEdit3($"##{idSuffix}_glow", ref glow);
+        }
     }
 
     private void DrawSendCopyButtons(string command, bool canSend, string idSuffix, string sendLabel = "Send")

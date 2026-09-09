@@ -1,3 +1,4 @@
+using System.Numerics;
 using Oathbound.Plugin.Config;
 
 namespace Oathbound.Plugin.Safety;
@@ -24,6 +25,15 @@ public sealed class SubRuntimeState
     /// Apply/Clear/Unlock for that category is refused - only the matching Force* release (or panic,
     /// which always works regardless) can undo it.
     public bool TitleForceLocked { get; set; }
+
+    /// collar/title "Force-applied title reasserts if removed or changed": the style TitleCommand.ForceApply
+    /// most recently sent to Honorific, replayed by TitleCommand.OnFrameworkUpdate for as long as
+    /// TitleForceLocked stays true. In-memory only, matching TitleForceLocked itself - there's nothing to
+    /// reassert after a reload since the lock doesn't survive one either.
+    public string? TitleForceText { get; set; }
+    public bool TitleForceIsPrefix { get; set; }
+    public Vector3 TitleForceColor { get; set; } = new(1, 1, 1);
+    public Vector3? TitleForceGlow { get; set; }
 
     public bool OutfitForceLocked
     {
@@ -54,6 +64,7 @@ public sealed class SubRuntimeState
         TitleApplied = false;
         MovementLockActive = false;
         TitleForceLocked = false;
+        TitleForceText = null;
         OutfitForceLocked = false;
         CollarForceLocked = false;
         RestraintsForceLocked = false;

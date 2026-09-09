@@ -231,6 +231,7 @@ public class QuickCommand
     /// no style at all.
     public bool TitleIsPrefix { get; set; }
     public Vector3? TitleColor { get; set; }
+    public Vector3? TitleGlow { get; set; }
 
     /// collar/ui-organization "Owner can favorite quick commands for quick access": a plain flag, not a
     /// separate list - removing/renaming this entry in its own category list already removes/renames it

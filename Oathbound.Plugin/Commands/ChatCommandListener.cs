@@ -365,12 +365,12 @@ public sealed class ChatCommandListener : IDisposable
         const string stylePrefix = "style ";
         if (rest.StartsWith(stylePrefix, StringComparison.OrdinalIgnoreCase))
         {
-            if (TitleCommand.TryParseStyleCommand(rest[stylePrefix.Length..], out var text, out var isPrefix, out var color))
+            if (TitleCommand.TryParseStyleCommand(rest[stylePrefix.Length..], out var text, out var isPrefix, out var color, out var glow))
             {
-                title.ForceApply(text, isPrefix, color);
+                title.ForceApply(text, isPrefix, color, glow);
                 return LocalTestResult.Ok($"Title \"{text}\" applied with style.");
             }
-            return LocalTestResult.Fail("\"title style\" was malformed - expected \"style \\\"<text>\\\" prefix:<0|1> color:<r>,<g>,<b>\".");
+            return LocalTestResult.Fail("\"title style\" was malformed - expected \"style \\\"<text>\\\" prefix:<0|1> color:<r>,<g>,<b> [glow:<r>,<g>,<b>]\".");
         }
 
         return LocalTestResult.Fail($"Unrecognized \"title\" override \"{rest}\" - expected \"create <text>\", \"style \\\"<text>\\\" prefix:<0|1> color:<r>,<g>,<b>\", or \"clear\".");

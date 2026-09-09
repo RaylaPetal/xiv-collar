@@ -33,6 +33,7 @@ public sealed class TitleCommand
             Title = alias.Text,
             IsPrefix = alias.IsPrefix,
             Color = alias.Color,
+            Glow = alias.Glow,
         });
         runtimeState.TitleApplied = true;
     }
@@ -54,17 +55,26 @@ public sealed class TitleCommand
         honorific.SetTitle(new HonorificTitleData { Title = text, IsPrefix = false, Color = new(1, 1, 1) });
         runtimeState.TitleApplied = true;
         runtimeState.TitleForceLocked = true;
+        runtimeState.TitleForceText = text;
+        runtimeState.TitleForceIsPrefix = false;
+        runtimeState.TitleForceColor = new(1, 1, 1);
+        runtimeState.TitleForceGlow = null;
     }
 
     /// collar/title "Owner sets Sub's title": the styled counterpart to `ForceApply(string)`, driven by the
-    /// `title style "<text>" prefix:<0|1> color:<r>,<g>,<b>` wire command - a new, distinct verb rather than
-    /// a suffix on `create` (design.md: title text has no catalog to fail closed against, so an old client
-    /// can't safely ignore trailing syntax it doesn't understand).
-    public void ForceApply(string text, bool isPrefix, Vector3 color)
+    /// `title style "<text>" prefix:<0|1> color:<r>,<g>,<b> [glow:<r>,<g>,<b>]` wire command - a new,
+    /// distinct verb rather than a suffix on `create` (design.md: title text has no catalog to fail closed
+    /// against, so an old client can't safely ignore trailing syntax it doesn't understand). `glow` is
+    /// optional and defaults to null (no glow), matching Honorific's own semantics.
+    public void ForceApply(string text, bool isPrefix, Vector3 color, Vector3? glow = null)
     {
-        honorific.SetTitle(new HonorificTitleData { Title = text, IsPrefix = isPrefix, Color = color });
+        honorific.SetTitle(new HonorificTitleData { Title = text, IsPrefix = isPrefix, Color = color, Glow = glow });
         runtimeState.TitleApplied = true;
         runtimeState.TitleForceLocked = true;
+        runtimeState.TitleForceText = text;
+        runtimeState.TitleForceIsPrefix = isPrefix;
+        runtimeState.TitleForceColor = color;
+        runtimeState.TitleForceGlow = glow;
     }
 
     /// The only thing that can release a force-applied title besides panic.
@@ -73,23 +83,66 @@ public sealed class TitleCommand
         honorific.ClearTitle();
         runtimeState.TitleApplied = false;
         runtimeState.TitleForceLocked = false;
+        runtimeState.TitleForceText = null;
     }
+
+    /// collar/title "Force-applied title reasserts if removed or changed": Honorific has no "prevent
+    /// removal" or change-notification mechanism (same limitation CollarCommand.OnFrameworkUpdate already
+    /// works around for the collar's assigned Moodle), so this blindly re-sends the last force-applied style
+    /// on an interval for as long as it's still locked - calling Honorific directly rather than through
+    /// Apply, which refuses while TitleForceLocked is true.
+    public void OnFrameworkUpdate()
+    {
+        if (!runtimeState.TitleForceLocked || runtimeState.TitleForceText is null)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < nextReassertTicks)
+            return;
+
+        honorific.SetTitle(new HonorificTitleData
+        {
+            Title = runtimeState.TitleForceText,
+            IsPrefix = runtimeState.TitleForceIsPrefix,
+            Color = runtimeState.TitleForceColor,
+            Glow = runtimeState.TitleForceGlow,
+        });
+        nextReassertTicks = now + ReassertIntervalMs;
+    }
+
+    /// Matches CollarCommand.MoodleReassertIntervalMs exactly - no reason for Title's reassertion cadence to
+    /// differ from the Moodle's.
+    private const long ReassertIntervalMs = 10_000;
+    private long nextReassertTicks;
 
     /// Builds the chat text for an Owner's styled title quick command (collar/title "Owner sets Sub's
     /// title"): a new, distinct `style` verb (design.md) rather than a suffix on `create`, since title text
-    /// is arbitrary free text with no catalog to fail closed against on an old client.
-    public static string BuildStyleCommand(string text, bool isPrefix, Vector3 color) =>
-        $"title style \"{text}\" prefix:{(isPrefix ? 1 : 0)} color:{color.X.ToString(CultureInfo.InvariantCulture)},{color.Y.ToString(CultureInfo.InvariantCulture)},{color.Z.ToString(CultureInfo.InvariantCulture)}";
+    /// is arbitrary free text with no catalog to fail closed against on an old client. `glow` is optional -
+    /// omitted entirely when null, so an old Sub's parser (which only reacts to tokens it recognizes) is
+    /// unaffected either way.
+    public static string BuildStyleCommand(string text, bool isPrefix, Vector3 color, Vector3? glow = null)
+    {
+        var command = $"title style \"{text}\" prefix:{(isPrefix ? 1 : 0)} color:{FormatVector(color)}";
+        if (glow is { } g)
+            command += $" glow:{FormatVector(g)}";
+        return command;
+    }
+
+    private static string FormatVector(Vector3 v) =>
+        $"{v.X.ToString(CultureInfo.InvariantCulture)},{v.Y.ToString(CultureInfo.InvariantCulture)},{v.Z.ToString(CultureInfo.InvariantCulture)}";
 
     /// Parses the remainder of a `title style ...` command (after the "style " prefix) into text,
-    /// prefix/suffix, and color. Fails closed (returns false) on any malformed or missing segment - a
-    /// styled title with no color/prefix carried is meaningless (nothing distinguishes it from `create`),
-    /// so this never silently applies a plain title under the styled verb.
-    public static bool TryParseStyleCommand(string remainder, out string text, out bool isPrefix, out Vector3 color)
+    /// prefix/suffix, color, and an optional glow. Fails closed (returns false) if text/prefix/color are
+    /// missing or malformed - a styled title with no color/prefix carried is meaningless (nothing
+    /// distinguishes it from `create`), so this never silently applies a plain title under the styled verb.
+    /// `glow` defaults to null (no glow) when its token is absent, so a command built before glow support
+    /// existed still parses exactly as before.
+    public static bool TryParseStyleCommand(string remainder, out string text, out bool isPrefix, out Vector3 color, out Vector3? glow)
     {
         text = "";
         isPrefix = false;
         color = new Vector3(1, 1, 1);
+        glow = null;
 
         var trimmed = remainder.Trim();
         if (!trimmed.StartsWith('"'))
@@ -116,17 +169,32 @@ public sealed class TitleCommand
             }
             else if (token.StartsWith("color:", StringComparison.OrdinalIgnoreCase))
             {
-                var parts = token["color:".Length..].Split(',');
-                if (parts.Length != 3
-                    || !float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var r)
-                    || !float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var g)
-                    || !float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var b))
+                if (!TryParseVector(token["color:".Length..], out var c))
                     return false;
-                color = new Vector3(r, g, b);
+                color = c;
                 foundColor = true;
+            }
+            else if (token.StartsWith("glow:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseVector(token["glow:".Length..], out var g))
+                    return false;
+                glow = g;
             }
         }
 
         return foundPrefix && foundColor;
+    }
+
+    private static bool TryParseVector(string encoded, out Vector3 value)
+    {
+        value = default;
+        var parts = encoded.Split(',');
+        if (parts.Length != 3
+            || !float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x)
+            || !float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)
+            || !float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var z))
+            return false;
+        value = new Vector3(x, y, z);
+        return true;
     }
 }
