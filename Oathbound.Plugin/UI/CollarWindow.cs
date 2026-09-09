@@ -112,6 +112,7 @@ public class CollarWindow : Window, IDisposable
     private Vector3 newTitleQuickColor = new(1, 1, 1);
     private string newFollowQuickText = "";
     private string? importResult;
+    private string? teleportResolveError;
     private string? resetImportsResult;
     private string? subExportResult;
     private string gestureModSearch = "";
@@ -252,14 +253,7 @@ public class CollarWindow : Window, IDisposable
                 else DrawCollarModule();
                 break;
             case "follow":
-                if (isOwner)
-                {
-                    var canSend = DrawOwnerCanSendBanner();
-                    DrawFollowQuickSection(canSend);
-                    ImGui.Spacing();
-                    ImGui.Separator();
-                    DrawTeleportSection(canSend);
-                }
+                if (isOwner) DrawFollowQuickSection(DrawOwnerCanSendBanner());
                 else DrawFollowLeashModule();
                 break;
             case "permissions":
@@ -776,9 +770,47 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.Text(FontAwesomeIcon.ShieldAlt, "Safeword");
         SafewordEditor.Draw(config, "mainHeader", ref revealSafeword);
         IconGlyph.HelpMarker("This only configures the typed /oathboundpanic command; editing it never triggers panic or changes pairing.");
+
+        if (config.Role == PluginRole.Owner)
+        {
+            ImGui.Spacing();
+            ImGui.Separator();
+            DrawTeleportHeaderAction();
+        }
+
         ImGui.Spacing();
         ImGui.EndTable();
         ImGui.PopID();
+    }
+
+    /// collar/ui-organization "Header includes a quick Teleport action": relocated here from the Follow /
+    /// Leash tab (design.md "Teleport moves, doesn't duplicate") since it's commonly used enough to want in
+    /// the always-visible header rather than several clicks deep. Resolve/compose/send now lives in the
+    /// shared `TeleportSendAction` helper so the quick-access menu's favorited entry (once favorited) can
+    /// call the exact same logic instead of duplicating it.
+    private void DrawTeleportHeaderAction()
+    {
+        IconGlyph.Text(FontAwesomeIcon.MapMarkerAlt, "Teleport");
+        if (!plugin.LifestreamIpc.IsAvailable)
+        {
+            IconGlyph.WrappedDisabled("Requires the Lifestream plugin, installed and running on your own client.");
+            return;
+        }
+
+        var canSend = DrawOwnerCanSendBanner();
+        using (ImRaii.Disabled(!canSend))
+        {
+            if (ImGui.Button("Teleport Sub to me"))
+            {
+                var (success, error) = TeleportSendAction.TryResolveAndSend(plugin);
+                teleportResolveError = success ? null : error;
+            }
+        }
+        ImGui.SameLine();
+        DrawFavoriteFixedActionToggle(FixedActionIds.Teleport);
+
+        if (teleportResolveError is not null)
+            IconGlyph.WrappedColored(Theme.Warning, teleportResolveError);
     }
 
     private void DrawPermissionsCard()
@@ -2097,10 +2129,10 @@ public class CollarWindow : Window, IDisposable
     private void DrawCollarQuickSection(bool canSend)
     {
         IconGlyph.Text(FontAwesomeIcon.Lock, "Collar");
-        DrawFixedQuickRow("Collar lock", "collar lock", canSend);
+        DrawFixedQuickRow("Collar lock", "collar lock", canSend, FixedActionIds.CollarLock);
         IconGlyph.HelpMarker("(Re-)attaches your Sub's configured collar item and locks it - the same thing that happens automatically at pairing, triggered manually. Use this to re-lock after \"Collar unlock,\" or to apply it for the first time if it wasn't configured/enabled yet when pairing was accepted.");
 
-        DrawFixedQuickRow("Collar unlock", "collar unlock", canSend);
+        DrawFixedQuickRow("Collar unlock", "collar unlock", canSend, FixedActionIds.CollarUnlock);
         IconGlyph.HelpMarker("Releases your Sub's locked collar without them needing to panic - it stays equipped, just no longer locked.");
     }
 
@@ -2113,7 +2145,7 @@ public class CollarWindow : Window, IDisposable
             plugin.Configuration.Save();
         });
 
-        DrawFixedQuickRow("Clear moodle", "moodle clear", canSend);
+        DrawFixedQuickRow("Clear moodle", "moodle clear", canSend, FixedActionIds.ClearMoodle);
 
         if (quick.Count == 0)
         {
@@ -2176,7 +2208,7 @@ public class CollarWindow : Window, IDisposable
 
         ImGui.Spacing();
         ImGui.TextUnformatted("Configured mod restraints");
-        DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend);
+        DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend, FixedActionIds.RestraintUnlock);
         IconGlyph.HelpMarker("Force-releases every active restraint device and clears the force-lock, the same as your Sub's panic would for restraints specifically.");
 
         var configuredMods = quick.Where(x => x.RestraintCatalogId is not null).ToArray();
@@ -2630,7 +2662,7 @@ public class CollarWindow : Window, IDisposable
         }
         IconGlyph.HelpMarker("Saves a one-click button that force-applies this exact title (with the chosen prefix/color) and locks it on - your Sub's own clear-title alias is refused while it's locked, only the \"Clear title\" button below (or their panic) releases it. Requires a Sub on this plugin version to recognize the styled command - see the README.");
 
-        DrawFixedQuickRow("Clear title", "title clear", canSend);
+        DrawFixedQuickRow("Clear title", "title clear", canSend, FixedActionIds.ClearTitle);
 
         if (quick.Count == 0)
             return;
@@ -2649,7 +2681,7 @@ public class CollarWindow : Window, IDisposable
             plugin.Configuration.Save();
         });
 
-        DrawFixedQuickRow("Unlock outfit", "outfit unlock", canSend);
+        DrawFixedQuickRow("Unlock outfit", "outfit unlock", canSend, FixedActionIds.UnlockOutfit);
 
         if (quick.Count == 0)
         {
@@ -2758,8 +2790,8 @@ public class CollarWindow : Window, IDisposable
 
         if (quick.Count == 0)
         {
-            DrawFixedQuickRow("Leash (default)", "leash", canSend);
-            DrawFixedQuickRow("Unleash (default)", "unleash", canSend);
+            DrawFixedQuickRow("Leash (default)", "leash", canSend, FixedActionIds.LeashDefault);
+            DrawFixedQuickRow("Unleash (default)", "unleash", canSend, FixedActionIds.UnleashDefault);
             IconGlyph.WrappedDisabled("Defaults shown above - add your own if your Sub customized their alias words.");
             return;
         }
@@ -2767,39 +2799,6 @@ public class CollarWindow : Window, IDisposable
         using var _ = ImRaii.Child("followQuickList", new Vector2(0, 90), true);
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend);
-    }
-
-    /// collar/teleport: Owner-only "come here" send action, only enabled when Lifestream is reachable on
-    /// the Owner's own client (proposal.md's "Teleport" send action requirement) - resolved at click time,
-    /// not cached, so it always reflects the Owner's current position.
-    private void DrawTeleportSection(bool canSend)
-    {
-        IconGlyph.Text(FontAwesomeIcon.MapMarkerAlt, "Teleport");
-        var lifestreamAvailable = plugin.LifestreamIpc.IsAvailable;
-        if (!lifestreamAvailable)
-        {
-            IconGlyph.WrappedDisabled("Requires the Lifestream plugin, installed and running on your own client.");
-            return;
-        }
-
-        ImGui.TextWrapped("Summons your paired Sub to your current world, at the aetheryte nearest your position. Requires your Sub to have enabled the Teleport permission.");
-        using (ImRaii.Disabled(!canSend))
-        {
-            if (ImGui.Button("Teleport Sub to me"))
-            {
-                var world = Plugin.ObjectTable.LocalPlayer?.CurrentWorld.Value.Name.ExtractText();
-                var shardId = plugin.LifestreamIpc.TryGetActiveAetheryte();
-                if (shardId == 0)
-                    shardId = plugin.LifestreamIpc.TryGetActiveCustomAetheryte();
-                if (shardId == 0)
-                    shardId = plugin.LifestreamIpc.TryGetActiveResidentialAetheryte();
-
-                if (world is null || shardId == 0)
-                    IconGlyph.WrappedColored(Theme.Warning, "Could not resolve your current world/aetheryte - move near an aetheryte and try again.");
-                else
-                    plugin.ChatSender.Send(plugin.ChatComposer.ComposeTeleport(world, shardId));
-            }
-        }
     }
 
     private void DrawFreeformComposer(bool canSend)
@@ -2851,9 +2850,13 @@ public class CollarWindow : Window, IDisposable
 
     /// A built-in action (not user-saved, can't be removed) - "Clear title" and "Unlock outfit" always
     /// exist since every force-locked category needs a release valve regardless of what's been saved.
-    private void DrawFixedQuickRow(string label, string command, bool canSend)
+    /// `favoriteId` is one of the stable `FixedActionIds` constants - collar/ui-organization "Owner can
+    /// favorite ... built-in fixed-action row[s]".
+    private void DrawFixedQuickRow(string label, string command, bool canSend, string favoriteId)
     {
         ImGui.TextUnformatted(label);
+        ContinueRowOrWrap(ButtonWidth("Favorited"));
+        DrawFavoriteFixedActionToggle(favoriteId);
         ContinueRowOrWrap(ButtonWidth("Send"));
         DrawSendCopyButtons(command, canSend, $"fixed_{label}");
     }
@@ -3094,6 +3097,25 @@ public class CollarWindow : Window, IDisposable
         }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(cmd.IsFavorite ? "Remove from favorites" : "Add to favorites");
+    }
+
+    /// Same shape as `DrawFavoriteToggle`, for a built-in fixed action (no backing `QuickCommand` to attach
+    /// a bool to) - reads/writes `OwnerQuickCommands.FavoriteFixedActions` by the action's stable id instead.
+    private void DrawFavoriteFixedActionToggle(string favoriteId)
+    {
+        var favorites = plugin.Configuration.QuickCommands.FavoriteFixedActions;
+        var isFavorite = favorites.Contains(favoriteId);
+        using (ImRaii.PushColor(ImGuiCol.Text, Theme.Warning, isFavorite))
+        {
+            if (ImGui.SmallButton($"{(isFavorite ? "Favorited" : "Favorite")}##fav_{favoriteId}"))
+            {
+                if (isFavorite) favorites.Remove(favoriteId);
+                else favorites.Add(favoriteId);
+                plugin.Configuration.Save();
+            }
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(isFavorite ? "Remove from favorites" : "Add to favorites");
     }
 
     private void DrawSendCopyButtons(string command, bool canSend, string idSuffix, string sendLabel = "Send")

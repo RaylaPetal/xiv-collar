@@ -5,6 +5,7 @@ using System.Numerics;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Commands;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Utility.Raii;
 
 namespace Oathbound.Plugin.UI;
@@ -93,8 +94,9 @@ public static class QuickAccessMenu
         {
             var canSend = plugin.Configuration.Pairing.IsPaired;
             var favoritesByCategory = CategorizedFavorites(plugin.Configuration.QuickCommands);
+            var teleportFavorited = plugin.Configuration.QuickCommands.FavoriteFixedActions.Contains(FixedActionIds.Teleport);
 
-            if (favoritesByCategory.Count == 0)
+            if (favoritesByCategory.Count == 0 && !teleportFavorited)
             {
                 ImGui.TextUnformatted("Nothing favorited yet");
             }
@@ -109,6 +111,13 @@ public static class QuickAccessMenu
                         DrawFavoriteMenuItem(plugin, cmd, canSend);
                     ImGui.EndMenu();
                 }
+
+                // collar/ui-organization "Header includes a quick Teleport action": Teleport has no static
+                // Command text to compose (it's resolved live at send time), so it can't join the synthetic
+                // QuickCommand entries CategorizedFavorites builds for the other fixed actions - it gets its
+                // own top-level entry instead of a category submenu.
+                if (teleportFavorited)
+                    DrawTeleportMenuItem(plugin, canSend);
             }
         }
 
@@ -119,6 +128,23 @@ public static class QuickAccessMenu
 
         ImGui.EndPopup();
     }
+
+    /// Built-in fixed-action rows that have static command text (everything except Teleport, which is
+    /// resolved live - see DrawTeleportMenuItem) - collar/ui-organization "Owner can favorite ... built-in
+    /// fixed-action row[s]". Grouped under the same category label its `DrawFixedQuickRow` call site lives
+    /// under in CollarWindow, so a favorited "Collar lock" appears in the same submenu as any favorited
+    /// Collar QuickCommand.
+    private static readonly (string Id, string Label, string Category, string Command)[] FixedActions =
+    [
+        (FixedActionIds.CollarLock, "Collar lock", "Collar", "collar lock"),
+        (FixedActionIds.CollarUnlock, "Collar unlock", "Collar", "collar unlock"),
+        (FixedActionIds.ClearMoodle, "Clear moodle", "Moodles", "moodle clear"),
+        (FixedActionIds.RestraintUnlock, "Restraint unlock", "Restraints", "restraint unlock"),
+        (FixedActionIds.ClearTitle, "Clear title", "Title", "title clear"),
+        (FixedActionIds.UnlockOutfit, "Unlock outfit", "Outfit", "outfit unlock"),
+        (FixedActionIds.LeashDefault, "Leash (default)", "Follow", "leash"),
+        (FixedActionIds.UnleashDefault, "Unleash (default)", "Follow", "unleash"),
+    ];
 
     private static List<(string Label, List<QuickCommand> Favorites)> CategorizedFavorites(OwnerQuickCommands quick)
     {
@@ -134,10 +160,20 @@ public static class QuickAccessMenu
         ];
 
         return categories
-            .Select(c => (c.Label, Favorites: c.List.Where(cmd => cmd.IsFavorite).OrderBy(cmd => cmd.Label, StringComparer.OrdinalIgnoreCase).ToList()))
+            .Select(c => (c.Label, Favorites: c.List.Where(cmd => cmd.IsFavorite)
+                .Concat(FavoritedFixedActionsFor(c.Label, quick.FavoriteFixedActions))
+                .OrderBy(cmd => cmd.Label, StringComparer.OrdinalIgnoreCase)
+                .ToList()))
             .Where(c => c.Favorites.Count > 0)
             .ToList();
     }
+
+    /// Synthesizes a plain `QuickCommand` (Label + Command only) for each favorited fixed action in
+    /// `category`, so `DrawFavoriteMenuItem` below can send it exactly like any saved quick command - these
+    /// are never written back to `quick.*` lists, just built fresh each frame for display.
+    private static IEnumerable<QuickCommand> FavoritedFixedActionsFor(string category, HashSet<string> favoriteIds) =>
+        FixedActions.Where(a => a.Category == category && favoriteIds.Contains(a.Id))
+            .Select(a => new QuickCommand { Label = a.Label, Command = a.Command });
 
     private static void DrawFavoriteMenuItem(Plugin plugin, QuickCommand cmd, bool canSend)
     {
@@ -150,5 +186,30 @@ public static class QuickAccessMenu
         }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+    }
+
+    /// Teleport can't join `FixedActions` above - it has no static `Command` text, resolved live via
+    /// `TeleportSendAction` instead. The popup closes on click (design.md), so a resolution failure is
+    /// reported via a transient notification (matching `CatalogSyncRelayService`'s existing pattern) rather
+    /// than an inline message.
+    private static void DrawTeleportMenuItem(Plugin plugin, bool canSend)
+    {
+        using (ImRaii.Disabled(!canSend))
+        {
+            if (ImGui.MenuItem("Teleport"))
+            {
+                var (success, error) = TeleportSendAction.TryResolveAndSend(plugin);
+                if (!success)
+                    Plugin.NotificationManager.AddNotification(new Notification
+                    {
+                        Title = "Oathbound",
+                        Content = error ?? "Teleport failed.",
+                        Type = NotificationType.Warning,
+                        InitialDuration = TimeSpan.FromSeconds(5),
+                    });
+            }
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(canSend ? "Teleport your paired Sub to your current position." : "No /tell target yet - pairing hasn't captured your Sub's name.");
     }
 }

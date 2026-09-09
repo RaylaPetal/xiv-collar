@@ -157,7 +157,7 @@ public sealed class Plugin : IDalamudPlugin
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
         RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings);
         CustomTriggerCommand = new CustomTriggerCommand(Configuration, TitleCommand, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
-        TeleportCommand = new TeleportCommand(Configuration, LifestreamIpc);
+        TeleportCommand = new TeleportCommand(Configuration, LifestreamIpc, MovementLockService);
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
@@ -348,6 +348,7 @@ public sealed class Plugin : IDalamudPlugin
         FollowCommand.OnFrameworkUpdate();
         WalkOnlyService.OnFrameworkUpdate();
         CollarCommand.OnFrameworkUpdate();
+        TeleportCommand.OnFrameworkUpdate();
 
         var utcNow = DateTime.UtcNow;
         if (utcNow >= nextRevocationOutboxRetryUtc)

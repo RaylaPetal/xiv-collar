@@ -258,6 +258,29 @@ public class OwnerQuickCommands
     /// name (tagged by the Sub or not) - same auto-populated-via-import pattern as Outfits/Moodles. Each
     /// entry needs its own QuickCommand.RestraintRules assigned by the Owner before it can be sent.
     public List<QuickCommand> Restraints { get; set; } = new();
+
+    /// collar/ui-organization "Owner can favorite ... built-in fixed-action row[s]": a parallel favorite
+    /// mechanism to QuickCommand.IsFavorite for the built-in one-off Send actions (Collar lock/unlock,
+    /// Clear moodle, Restraint unlock, Clear title, Unlock outfit, the Leash/Unleash defaults, Teleport) -
+    /// these have no backing QuickCommand object to attach a bool to, so favorite state is tracked by the
+    /// stable id string instead (see FixedActionIds).
+    public HashSet<string> FavoriteFixedActions { get; set; } = new();
+}
+
+/// Stable ids for OwnerQuickCommands.FavoriteFixedActions, shared between CollarWindow (which draws the
+/// toggle on each row) and QuickAccessMenu (which reads favorited ids to populate the popup) so the two
+/// never drift by using different string literals for the same action.
+public static class FixedActionIds
+{
+    public const string CollarLock = "collarLock";
+    public const string CollarUnlock = "collarUnlock";
+    public const string ClearMoodle = "clearMoodle";
+    public const string RestraintUnlock = "restraintUnlock";
+    public const string ClearTitle = "clearTitle";
+    public const string UnlockOutfit = "unlockOutfit";
+    public const string LeashDefault = "leashDefault";
+    public const string UnleashDefault = "unleashDefault";
+    public const string Teleport = "teleport";
 }
 
 /// The Sub's configured collar item (collar/collaring) - a single Neck-slot item, picked from a
