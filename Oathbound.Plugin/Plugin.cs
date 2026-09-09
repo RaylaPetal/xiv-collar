@@ -187,7 +187,7 @@ public sealed class Plugin : IDalamudPlugin
         favoritesDtrEntry = DtrBar.Get("Oathbound Quick Access");
         favoritesDtrEntry.Text = ((char)SeIconChar.BoxedStar).ToString();
         favoritesDtrEntry.Tooltip = "Favorited Collar commands";
-        favoritesDtrEntry.OnClick = _ => QuickAccessMenu.Toggle();
+        favoritesDtrEntry.OnClick = _ => QuickAccessMenu.Toggle(anchorToButton: false);
         favoritesDtrEntry.Shown = true;
 
         WindowSystem.AddWindow(CollarWindow);

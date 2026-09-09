@@ -32,12 +32,22 @@ public static class QuickAccessMenu
     private static bool openRequested;
     private static bool closeRequested;
 
-    public static void Toggle()
+    /// Whether the most recently *requested* open should anchor to the on-screen button's own position.
+    /// `FavoritesBarButton` opens anchored there; the DTR bar entry (screen-top server info bar) opens
+    /// with this false, so Draw() skips the button anchor and lets Dear ImGui's own default mouse-position
+    /// popup placement apply instead - anchoring to the button's position regardless of trigger source was
+    /// the reported bug (DTR click at the top opening the menu down at the button's corner).
+    private static bool openAnchorToButton = true;
+
+    public static void Toggle(bool anchorToButton = true)
     {
         if (closeRequested || (!openRequested && IsLikelyOpen))
             closeRequested = true;
         else
+        {
             openRequested = true;
+            openAnchorToButton = anchorToButton;
+        }
     }
 
     /// Best-effort only - real open/closed state is Dear ImGui's, only ever queried from inside `Draw()`
@@ -61,20 +71,27 @@ public static class QuickAccessMenu
         using var popupRounding = ImRaii.PushStyle(ImGuiStyleVar.PopupRounding, Theme.CardRounding);
         using var headerHovered = ImRaii.PushColor(ImGuiCol.HeaderHovered, Theme.TileBgHover);
 
-        // Anchors the popup to the on-screen button's own rect - explicit rather than relying on Dear
-        // ImGui's default mouse-position popup placement, and pivoted so the menu grows away from
-        // whichever screen edges the button sits against instead of potentially opening off-screen (the
-        // bug report: menu appearing up near the top while the button sits at the bottom). Cheap to call
-        // every frame - ImGuiCond.Appearing only actually applies it on the frame the popup opens.
-        var buttonSettings = plugin.Configuration.FavoritesButton;
-        var buttonPos = FavoritesBarButton.ComputePosition(buttonSettings);
-        var isTop = buttonSettings.Corner is ScreenCorner.TopLeft or ScreenCorner.TopRight;
-        var isLeft = buttonSettings.Corner is ScreenCorner.TopLeft or ScreenCorner.BottomLeft;
-        var pivot = new Vector2(isLeft ? 0f : 1f, isTop ? 0f : 1f);
-        var anchor = new Vector2(
-            isLeft ? buttonPos.X : buttonPos.X + FavoritesBarButton.ButtonSize,
-            isTop ? buttonPos.Y + FavoritesBarButton.ButtonSize : buttonPos.Y);
-        ImGui.SetNextWindowPos(anchor, ImGuiCond.Appearing, pivot);
+        // Anchors the popup to the on-screen button's own rect when that's what opened it - explicit
+        // rather than relying on Dear ImGui's default mouse-position popup placement, and pivoted so the
+        // menu grows away from whichever screen edges the button sits against instead of potentially
+        // opening off-screen (the bug report: menu appearing up near the top while the button sits at the
+        // bottom). Cheap to call every frame - ImGuiCond.Appearing only actually applies it on the frame
+        // the popup opens. When opened from the DTR bar entry instead, skip this entirely so Dear ImGui's
+        // own default (anchored to the click position) applies - the DTR bar sits at the opposite end of
+        // the screen from wherever the button is configured, so anchoring to the button there reproduces
+        // the same bug from the other direction.
+        if (openAnchorToButton)
+        {
+            var buttonSettings = plugin.Configuration.FavoritesButton;
+            var buttonPos = FavoritesBarButton.ComputePosition(buttonSettings);
+            var isTop = buttonSettings.Corner is ScreenCorner.TopLeft or ScreenCorner.TopRight;
+            var isLeft = buttonSettings.Corner is ScreenCorner.TopLeft or ScreenCorner.BottomLeft;
+            var pivot = new Vector2(isLeft ? 0f : 1f, isTop ? 0f : 1f);
+            var anchor = new Vector2(
+                isLeft ? buttonPos.X : buttonPos.X + FavoritesBarButton.ButtonSize,
+                isTop ? buttonPos.Y + FavoritesBarButton.ButtonSize : buttonPos.Y);
+            ImGui.SetNextWindowPos(anchor, ImGuiCond.Appearing, pivot);
+        }
 
         if (!ImGui.BeginPopup(PopupId))
         {
