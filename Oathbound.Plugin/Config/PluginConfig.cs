@@ -25,6 +25,19 @@ public enum ScreenCorner
     BottomRight,
 }
 
+/// collar/chat-transport "Trigger-phrase command delivery over a selectable channel" - which chat
+/// channel an Owner's outgoing commands are composed for. Linkshell/CrossWorldLinkshell each need a
+/// specific numbered slot (see PluginConfig.LinkshellNumber/CrossWorldLinkshellNumber) to actually send
+/// on; the type alone isn't a sendable channel for those two.
+public enum ChatChannel
+{
+    Tell,
+    Party,
+    Alliance,
+    Linkshell,
+    CrossWorldLinkshell,
+}
+
 /// Where the on-screen quick-access button sits - a corner preset plus a pixel margin from it, rather than
 /// free drag placement (design.md's "Alternative considered": simpler to persist/validate, and matches how
 /// the DTR bar itself is positioned by Dalamud, not dragged by this plugin).
@@ -525,6 +538,16 @@ public class PluginConfig : IPluginConfiguration
     /// on this - the Owner's composer and the Sub's parser both read it from their own local config, so
     /// changing it only takes effect for messages sent/parsed after the change.
     public string TriggerPhrase { get; set; } = "command";
+
+    /// collar/chat-transport "Trigger-phrase command delivery over a selectable channel": which channel
+    /// this install's outgoing commands are composed for - persisted per install, not per pairing, editable
+    /// from the main character header. Defaults to Tell, preserving prior behavior for existing configs.
+    public ChatChannel OutgoingChannel { get; set; } = ChatChannel.Tell;
+
+    /// collar/chat-transport "Linkshell and cross-world linkshell slot is configured once": which of the
+    /// eight linkshells/cross-world linkshells to compose on when OutgoingChannel selects that channel type.
+    public int LinkshellNumber { get; set; } = 1;
+    public int CrossWorldLinkshellNumber { get; set; } = 1;
 
     /// Sub-side: what each alias actually does. Never transmitted - only the alias name crosses chat.
     public AliasBook Aliases { get; set; } = new();

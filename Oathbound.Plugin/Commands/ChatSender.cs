@@ -1,4 +1,5 @@
 using System;
+using System.Text.RegularExpressions;
 
 namespace Oathbound.Plugin.Commands;
 
@@ -11,15 +12,19 @@ namespace Oathbound.Plugin.Commands;
 /// per-message human click - no auto-reply, no reacting to received chat, no retry/resend loops.
 public sealed class ChatSender
 {
-    /// Refuses anything that isn't a /tell - this plugin never has a reason to send local/say/party chat,
-    /// and a composed message with no captured peer identity yet is just the bare trigger+command text
-    /// with no leading slash, which would otherwise get typed into whatever channel is currently active
-    /// and leak the command into public chat instead of failing safely.
+    /// collar/chat-transport "Trigger-phrase command delivery over a selectable channel": the exact set of
+    /// prefixes ChatComposer.Wrap can produce - `/tell `/`/p `/`/a ` plus a numbered linkshell (`/l1`-`/l8`)
+    /// or cross-world linkshell (`/cwl1`-`/cwl8`). Anything else refused, same as the tell-only check this
+    /// replaces - a composed message with no captured peer identity yet is just the bare trigger+command
+    /// text with no leading slash, which would otherwise get typed into whatever channel is currently
+    /// active and leak the command into public chat instead of failing safely.
+    private static readonly Regex ValidPrefix = new(@"^/(tell|p|a|l[1-8]|cwl[1-8]) ", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public bool Send(string text)
     {
-        if (!text.TrimStart().StartsWith("/tell ", StringComparison.OrdinalIgnoreCase))
+        if (!ValidPrefix.IsMatch(text.TrimStart()))
         {
-            Plugin.Log.Warning("Refused to send a command that wasn't a /tell - is a peer identity captured yet?");
+            Plugin.Log.Warning("Refused to send a command that wasn't one of this plugin's own composed channel commands - is a peer identity captured yet?");
             return false;
         }
 

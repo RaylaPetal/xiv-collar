@@ -260,6 +260,24 @@ public class SettingsWindow : Window, IDisposable
         }
         IconGlyph.HelpMarker("The word that must start every ongoing command tell, e.g. \"command strip\".");
 
+        var linkshellNumber = config.LinkshellNumber;
+        ImGui.SetNextItemWidth(80f);
+        if (ImGui.InputInt("Linkshell number", ref linkshellNumber))
+        {
+            config.LinkshellNumber = Math.Clamp(linkshellNumber, 1, 8);
+            config.Save();
+        }
+        IconGlyph.HelpMarker("Which of your 8 linkshells outgoing commands use when the header's channel selector is set to Linkshell.");
+
+        var cwlsNumber = config.CrossWorldLinkshellNumber;
+        ImGui.SetNextItemWidth(80f);
+        if (ImGui.InputInt("Cross-world Linkshell number", ref cwlsNumber))
+        {
+            config.CrossWorldLinkshellNumber = Math.Clamp(cwlsNumber, 1, 8);
+            config.Save();
+        }
+        IconGlyph.HelpMarker("Which of your 8 cross-world linkshells outgoing commands use when the header's channel selector is set to Cross-world Linkshell.");
+
         if (pairingLocked)
             IconGlyph.WrappedColored(Theme.TextMuted, "Locked while paired - trigger /oathboundpanic to release pairing and change these again.");
 

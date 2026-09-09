@@ -28,6 +28,20 @@ public sealed class ChatCommandListener : IDisposable
     private const string CatalogRequestKeyword = "collarcatalogreq";
     private const string CatalogPermissionDeniedKeyword = "collarcatalogdenied";
 
+    /// collar/chat-transport "Trigger-phrase command delivery over a selectable channel": every channel
+    /// type an ongoing alias-trigger message can arrive on. Pairing lifecycle messages (invite/ack/unpair/
+    /// catalog) deliberately stay tell-only below - this broadening is scoped to ongoing command delivery
+    /// only, per design.md.
+    private static readonly XivChatType[] AllowedTriggerChatTypes =
+    [
+        XivChatType.TellIncoming, XivChatType.Party, XivChatType.Alliance,
+        XivChatType.Ls1, XivChatType.Ls2, XivChatType.Ls3, XivChatType.Ls4,
+        XivChatType.Ls5, XivChatType.Ls6, XivChatType.Ls7, XivChatType.Ls8,
+        XivChatType.CrossLinkShell1, XivChatType.CrossLinkShell2, XivChatType.CrossLinkShell3,
+        XivChatType.CrossLinkShell4, XivChatType.CrossLinkShell5, XivChatType.CrossLinkShell6,
+        XivChatType.CrossLinkShell7, XivChatType.CrossLinkShell8,
+    ];
+
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
     /// lookup (see Resolve/HandleForce*). A Sub alias can never be named one of these - CollarWindow's
     /// alias-creation forms validate against this list so the two paths can never collide.
@@ -79,21 +93,25 @@ public sealed class ChatCommandListener : IDisposable
 
     private void OnChatMessage(Dalamud.Game.Chat.IChatMessage message)
     {
-        if (message.LogKind != XivChatType.TellIncoming)
+        if (Array.IndexOf(AllowedTriggerChatTypes, message.LogKind) < 0)
             return;
 
         var text = message.Message.TextValue.Trim();
 
-        if (TryHandleRelayAckMessage(text, message.Sender))
-            return;
-        if (TryHandleRelayInviteMessage(text, message.Sender))
-            return;
-        if (TryHandleUnpairNoticeMessage(text, message.Sender))
-            return;
-        if (TryHandleCatalogRequestMessage(text, message.Sender))
-            return;
-        if (TryHandleCatalogPermissionDeniedMessage(text, message.Sender))
-            return;
+        // Pairing lifecycle messages stay tell-only - see AllowedTriggerChatTypes' doc comment.
+        if (message.LogKind == XivChatType.TellIncoming)
+        {
+            if (TryHandleRelayAckMessage(text, message.Sender))
+                return;
+            if (TryHandleRelayInviteMessage(text, message.Sender))
+                return;
+            if (TryHandleUnpairNoticeMessage(text, message.Sender))
+                return;
+            if (TryHandleCatalogRequestMessage(text, message.Sender))
+                return;
+            if (TryHandleCatalogPermissionDeniedMessage(text, message.Sender))
+                return;
+        }
 
         // Only the Sub role ever reacts to ongoing alias triggers - the Owner's plugin only composes (see
         // ChatComposer), it never applies anything from a tell.

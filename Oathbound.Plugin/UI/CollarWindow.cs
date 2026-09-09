@@ -112,6 +112,10 @@ public class CollarWindow : Window, IDisposable
 
     private static readonly string[] PoseNames = ["Ground Sit", "Sit", "Doze"];
 
+    /// collar/chat-transport "Trigger-phrase command delivery over a selectable channel" - order matches
+    /// the ChatChannel enum exactly, since the header combo indexes into this by (int)config.OutgoingChannel.
+    private static readonly string[] ChatChannelNames = ["Tell", "Party", "Alliance", "Linkshell", "Cross-world Linkshell"];
+
     private string commandInput = "";
     private string newTitleQuickText = "";
     private bool newTitleQuickIsPrefix;
@@ -763,6 +767,15 @@ public class CollarWindow : Window, IDisposable
             if (ImGui.Button("Release pairing"))
                 plugin.PairingService.ReleasePeer();
             IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your Sub's plugin at all. Use this to fix a stale/wrong pairing or to free them up to pair with someone else.");
+
+            var channelIndex = (int)config.OutgoingChannel;
+            ImGui.SetNextItemWidth(200f);
+            if (ImGui.Combo("Send commands via##outgoingChannel", ref channelIndex, ChatChannelNames, ChatChannelNames.Length))
+            {
+                config.OutgoingChannel = (ChatChannel)channelIndex;
+                config.Save();
+            }
+            IconGlyph.HelpMarker("Which channel your commands are sent on. Your Sub listens on all of these already, so nothing needs to change on their side. Linkshell/Cross-world Linkshell number is set in Settings.");
         }
         else
         {
@@ -851,7 +864,7 @@ public class CollarWindow : Window, IDisposable
                 SavePermission(() => permissions.Gesture = newGesture);
             IconGlyph.HelpMarker("Lets a paired Owner temporarily enable a selected animation mod and immediately play its tied gesture. Disable this permission at any time to reject commands.");
 
-            if (ImGuiCheckbox("Follow / Leash (hardcore)", permissions.Follow, out var newFollow))
+            if (ImGuiCheckbox("Follow / Leash", permissions.Follow, out var newFollow))
                 SavePermission(() => permissions.Follow = newFollow);
             IconGlyph.HelpMarker("Lets a paired Owner lock your movement to follow them, blocking your own WASD input until released. Heavier automation footprint than the other three - see the README's Automation risk section.");
 

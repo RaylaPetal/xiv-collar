@@ -1,3 +1,4 @@
+using System;
 using Oathbound.Plugin.Config;
 
 namespace Oathbound.Plugin.Commands;
@@ -103,10 +104,14 @@ public sealed class ChatComposer
     /// been captured (no pairing yet, or a peer whose handshake didn't declare one).
     ///
     /// collar/chat-transport "Composing and sending require active pairing, not just a remembered peer":
-    /// addresses a `/tell` only while `IsPaired` is true, not merely whenever PeerName/PeerWorld happen to
-    /// be non-empty - PanicHandler.EndPairingLocally deliberately leaves those cached after panic clears
-    /// Paired, so checking presence alone would let a side that just panicked its own pairing away keep
-    /// composing (and, via CollarWindow's canSend, keep sending) to the peer it just unpaired from.
+    /// addresses a channel command only while `IsPaired` is true, not merely whenever PeerName/PeerWorld
+    /// happen to be non-empty - PanicHandler.EndPairingLocally deliberately leaves those cached after panic
+    /// clears Paired, so checking presence alone would let a side that just panicked its own pairing away
+    /// keep composing (and, via CollarWindow's canSend, keep sending) to the peer it just unpaired from.
+    ///
+    /// collar/chat-transport "Trigger-phrase command delivery over a selectable channel": which channel
+    /// prefix to use comes from config.OutgoingChannel - Tell keeps its existing addressed form, the other
+    /// four need no address, just their own channel command (see ChatChannelPrefix).
     private string Wrap(string body)
     {
         var pairing = config.Pairing;
@@ -116,6 +121,20 @@ public sealed class ChatComposer
         if (!pairing.IsPaired)
             return full;
 
-        return $"/tell {pairing.PeerName}@{pairing.PeerWorld} {full}";
+        if (config.OutgoingChannel == ChatChannel.Tell)
+            return $"/tell {pairing.PeerName}@{pairing.PeerWorld} {full}";
+
+        return $"{ChatChannelPrefix(config)} {full}";
     }
+
+    /// collar/chat-transport: the non-tell channel commands, shared with ChatSender's allow-list so the
+    /// two can never silently drift apart on what a valid composed prefix looks like.
+    internal static string ChatChannelPrefix(PluginConfig config) => config.OutgoingChannel switch
+    {
+        ChatChannel.Party => "/p",
+        ChatChannel.Alliance => "/a",
+        ChatChannel.Linkshell => $"/l{Math.Clamp(config.LinkshellNumber, 1, 8)}",
+        ChatChannel.CrossWorldLinkshell => $"/cwl{Math.Clamp(config.CrossWorldLinkshellNumber, 1, 8)}",
+        _ => throw new ArgumentOutOfRangeException(nameof(config.OutgoingChannel), config.OutgoingChannel, "Tell is addressed separately in Wrap."),
+    };
 }
