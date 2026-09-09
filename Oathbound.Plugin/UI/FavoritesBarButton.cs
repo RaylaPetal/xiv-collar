@@ -3,6 +3,7 @@ using System.Numerics;
 using Oathbound.Plugin.Config;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
+using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 
 namespace Oathbound.Plugin.UI;
@@ -35,15 +36,27 @@ public sealed class FavoritesBarButton : Window, IDisposable
     public override void PreDraw()
     {
         ImGui.SetNextWindowPos(ComputePosition(plugin.Configuration.FavoritesButton), ImGuiCond.Always);
-        ImGui.SetNextWindowBgAlpha(0.75f);
+        ImGui.SetNextWindowBgAlpha(0f);
     }
 
     public override void Draw()
     {
-        if (IconGlyph.Button(FontAwesomeIcon.Star, new Vector2(ButtonSize, ButtonSize)))
-            QuickAccessMenu.Toggle();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Favorited Collar commands");
+        // collar/ui-organization "On-screen quick-access button can be hidden": only the button widget
+        // itself is skipped - QuickAccessMenu.Draw() below must keep running every frame regardless, since
+        // this is the one place it's safe to call BeginPopup (see QuickAccessMenu.cs) and the DTR bar
+        // entry's OnClick relies on it to actually open the popup even with the button hidden.
+        if (plugin.Configuration.FavoritesButton.Visible)
+        {
+            using (ImRaii.PushColor(ImGuiCol.Button, Theme.TileBg))
+            using (ImRaii.PushColor(ImGuiCol.ButtonHovered, Theme.TileBgHover))
+            using (ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, Theme.TileRounding))
+            {
+                if (IconGlyph.Button(FontAwesomeIcon.Star, new Vector2(ButtonSize, ButtonSize)))
+                    QuickAccessMenu.Toggle();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Favorited Collar commands");
+        }
 
         QuickAccessMenu.Draw(plugin);
     }

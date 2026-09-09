@@ -53,6 +53,14 @@ public static class QuickAccessMenu
             ImGui.OpenPopup(PopupId);
         }
 
+        // collar/ui-organization "Quick-access button and menu use the plugin's own theme": pushed for
+        // the whole method (via `using` declarations, not blocks) so every return path - BeginPopup
+        // failing, the closeRequested branch, and the normal fallthrough to EndPopup - pops them exactly
+        // once, matching Card.cs's push/pop shape for the same Theme.CardBg/CardRounding pair.
+        using var popupBg = ImRaii.PushColor(ImGuiCol.PopupBg, Theme.CardBg);
+        using var popupRounding = ImRaii.PushStyle(ImGuiStyleVar.PopupRounding, Theme.CardRounding);
+        using var headerHovered = ImRaii.PushColor(ImGuiCol.HeaderHovered, Theme.TileBgHover);
+
         // Anchors the popup to the on-screen button's own rect - explicit rather than relying on Dear
         // ImGui's default mouse-position popup placement, and pivoted so the menu grows away from
         // whichever screen edges the button sits against instead of potentially opening off-screen (the

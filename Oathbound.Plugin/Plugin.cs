@@ -10,6 +10,8 @@ using Oathbound.Plugin.Safety;
 using Oathbound.Plugin.UI;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Game.Command;
+using Dalamud.Game.Gui.Dtr;
+using Dalamud.Game.Text;
 using Dalamud.IoC;
 using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Windowing;
@@ -34,6 +36,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
+    [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
 
     private const string CommandName = "/oathbound";
     private const string PanicCommandName = "/oathboundpanic";
@@ -64,6 +67,10 @@ public sealed class Plugin : IDalamudPlugin
     public AnimationPickerWindow AnimationPickerWindow { get; }
     public ItemPickerWindow ItemPickerWindow { get; }
     public FavoritesBarButton FavoritesBarButton { get; }
+
+    /// collar/ui-organization "A server info bar entry always opens the quick-access menu": the
+    /// guaranteed fallback access point for QuickAccessMenu, independent of FavoritesButtonSettings.Visible.
+    private readonly IDtrBarEntry favoritesDtrEntry;
 
     /// collar/onboarding: owns the guided-tutorial sequence and step index; CollarWindow only reads
     /// `CurrentStep` each frame and exposes `SetActiveModuleForTutorial` for this to call.
@@ -176,6 +183,13 @@ public sealed class Plugin : IDalamudPlugin
         AnimationPickerWindow = new AnimationPickerWindow(this);
         ItemPickerWindow = new ItemPickerWindow(this);
         FavoritesBarButton = new FavoritesBarButton(this);
+
+        favoritesDtrEntry = DtrBar.Get("Oathbound Quick Access");
+        favoritesDtrEntry.Text = ((char)SeIconChar.BoxedStar).ToString();
+        favoritesDtrEntry.Tooltip = "Favorited Collar commands";
+        favoritesDtrEntry.OnClick = _ => QuickAccessMenu.Toggle();
+        favoritesDtrEntry.Shown = true;
+
         WindowSystem.AddWindow(CollarWindow);
         WindowSystem.AddWindow(SettingsWindow);
         WindowSystem.AddWindow(WelcomeWindow);
@@ -281,6 +295,7 @@ public sealed class Plugin : IDalamudPlugin
         AnimationPickerWindow.Dispose();
         ItemPickerWindow.Dispose();
         FavoritesBarButton.Dispose();
+        favoritesDtrEntry.Remove();
 
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(ShorthandCommandName);

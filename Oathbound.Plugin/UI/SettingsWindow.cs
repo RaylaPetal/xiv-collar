@@ -408,6 +408,14 @@ public class SettingsWindow : Window, IDisposable
         ImGui.TextWrapped("A small on-screen button that opens your favorited quick commands - the same menu the server info bar entry opens.");
 
         var favoritesButton = config.FavoritesButton;
+
+        var visible = favoritesButton.Visible;
+        if (ImGui.Checkbox("Show quick-access button", ref visible))
+        {
+            favoritesButton.Visible = visible;
+            config.Save();
+        }
+
         var cornerIndex = (int)favoritesButton.Corner;
         if (ImGui.Combo("Position##favoritesButton", ref cornerIndex, FavoritesButtonCornerNames, FavoritesButtonCornerNames.Length))
         {

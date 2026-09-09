@@ -33,6 +33,10 @@ public class FavoritesButtonSettings
 {
     public ScreenCorner Corner { get; set; } = ScreenCorner.BottomRight;
     public Vector2 Margin { get; set; } = new(16, 16);
+
+    /// collar/ui-organization "On-screen quick-access button can be hidden" - the DTR bar entry still
+    /// opens QuickAccessMenu regardless of this setting.
+    public bool Visible { get; set; } = true;
 }
 
 /// collar/pairing's relay-assisted pairing state. There is no manual code handshake any more - identity is
