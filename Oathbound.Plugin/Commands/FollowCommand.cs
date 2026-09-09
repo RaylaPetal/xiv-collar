@@ -1,5 +1,7 @@
 using System;
 using System.Linq;
+using System.Numerics;
+using Dalamud.Game.ClientState.Objects.Types;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Safety;
 using ECommons.Automation;
@@ -13,10 +15,24 @@ public sealed class FollowCommand
 {
     private const string Owner = "Follow";
 
+    // Normal auto-follow trailing distance is a few yalms; a gap growing past this while the lock is
+    // still engaged means the game silently dropped follow (e.g. a gesture cancelled it through a path
+    // MovementLockService's UnfollowDetour doesn't cover) rather than the Sub just lagging behind.
+    private const float DesyncDistanceThreshold = 7f;
+    private static readonly TimeSpan DesyncCheckInterval = TimeSpan.FromSeconds(1);
+
     private readonly MovementLockService movementLock;
     private readonly SubRuntimeState runtimeState;
     private readonly PluginConfig config;
     private ulong followedObjectId;
+
+    /// Whether this client believes the Sub is currently following the leashed Owner - set whenever we
+    /// send `/follow <t>` ourselves, cleared on Release. Release only sends the stop-follow command when
+    /// this is true, since bare `/follow` is a toggle in-game and would otherwise turn follow back on if
+    /// it had already dropped.
+    private bool followActive;
+    private DateTime lastDesyncCheck;
+    private float lastDesyncDistance;
 
     public FollowCommand(PluginConfig config, MovementLockService movementLock, SubRuntimeState runtimeState)
     {
@@ -39,6 +55,9 @@ public sealed class FollowCommand
 
         Plugin.TargetManager.Target = owner;
         Chat.SendMessage("/follow <t>");
+        followActive = true;
+        lastDesyncCheck = DateTime.UtcNow;
+        lastDesyncDistance = 0f;
 
         movementLock.EngagePreserveFollow(Owner);
         followedObjectId = owner.GameObjectId;
@@ -49,8 +68,9 @@ public sealed class FollowCommand
     public void Release()
     {
         movementLock.ReleasePreserveFollow(Owner);
-        if (runtimeState.MovementLockActive)
+        if (followActive)
             Chat.SendMessage("/follow");
+        followActive = false;
         followedObjectId = 0;
         runtimeState.MovementLockActive = false;
     }
@@ -58,8 +78,39 @@ public sealed class FollowCommand
     public void OnFrameworkUpdate()
     {
         if (!runtimeState.MovementLockActive || followedObjectId == 0) return;
-        if (Plugin.ObjectTable.Any(o => o.GameObjectId == followedObjectId)) return;
-        Plugin.Log.Warning("Leash released: the paired Owner is no longer present in the current area.");
-        Release();
+        var owner = Plugin.ObjectTable.FirstOrDefault(o => o.GameObjectId == followedObjectId);
+        if (owner is null)
+        {
+            Plugin.Log.Warning("Leash released: the paired Owner is no longer present in the current area.");
+            Release();
+            return;
+        }
+
+        CheckForDesync(owner);
+    }
+
+    /// collar/follow: self-heal for a gesture (or anything else) silently cancelling follow while the
+    /// lock is still engaged - see design.md. Polled on an interval rather than every frame, and only
+    /// re-sends `/follow <t>` once the gap has grown past normal trailing distance without closing, so a
+    /// Sub simply lagging a step behind never triggers it.
+    private void CheckForDesync(IGameObject owner)
+    {
+        if (!followActive) return;
+        var now = DateTime.UtcNow;
+        if (now - lastDesyncCheck < DesyncCheckInterval) return;
+
+        var player = Plugin.ObjectTable.LocalPlayer;
+        if (player is null) return;
+
+        var distance = Vector3.Distance(player.Position, owner.Position);
+        var isDesynced = distance > DesyncDistanceThreshold && distance >= lastDesyncDistance;
+        lastDesyncCheck = now;
+        lastDesyncDistance = distance;
+        if (!isDesynced) return;
+
+        Plugin.Log.Info("Leash desync detected: re-sending follow to the paired Owner.");
+        Plugin.TargetManager.Target = owner;
+        Chat.SendMessage("/follow <t>");
+        lastDesyncDistance = 0f;
     }
 }
