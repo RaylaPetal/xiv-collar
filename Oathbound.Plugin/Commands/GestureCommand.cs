@@ -178,6 +178,12 @@ public sealed class GestureCommand
         return new ApplyResult(ApplyStatus.Success, entry.AnimationName);
     }
 
+    /// collar/follow: any emote/pose command played here cancels the game's own follow state, through a
+    /// path MovementLockService's UnfollowDetour doesn't cover - fired after every successful play so
+    /// FollowCommand can re-assert the leash regardless of which caller (Gesture or a restraint's forced
+    /// pose) triggered it. See design.md's "react to gesture playback" decision.
+    public static event Action? EmotePlayed;
+
     /// Internal rather than private: collar/restraints' Arms Cuffed/Legs Cuffed/Full Body Cuffed rules
     /// reuse this exact one-shot trigger playback for their own chosen animation, distinct from Gesture's
     /// own temporary-activation/idle-timeout bookkeeping which those rules deliberately don't share.
@@ -187,6 +193,7 @@ public sealed class GestureCommand
         {
             if (string.IsNullOrWhiteSpace(trigger.SlashCommand)) return false;
             Chat.SendMessage($"/{trigger.SlashCommand.TrimStart('/')} motion");
+            EmotePlayed?.Invoke();
             return true;
         }
         var playerState = PlayerState.Instance();
@@ -200,6 +207,7 @@ public sealed class GestureCommand
         };
         playerState->SelectedPoses[(int)poseType] = trigger.CPoseState;
         Chat.SendMessage(trigger.EmoteModeId switch { 1 => "/groundsit", 2 => "/sit", 3 => "/doze", _ => "" });
+        EmotePlayed?.Invoke();
         return true;
     }
 

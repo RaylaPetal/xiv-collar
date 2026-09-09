@@ -39,6 +39,19 @@ public sealed class FollowCommand
         this.config = config;
         this.movementLock = movementLock;
         this.runtimeState = runtimeState;
+        GestureCommand.EmotePlayed += OnEmotePlayed;
+    }
+
+    /// collar/follow: emotes/poses cancel the game's follow outright regardless of distance from the
+    /// leashed Owner (e.g. a Sub spanked in place), so the distance heuristic in CheckForDesync alone
+    /// never catches it - re-assert immediately whenever any gesture/pose actually plays.
+    private void OnEmotePlayed()
+    {
+        if (!runtimeState.MovementLockActive || !followActive || followedObjectId == 0) return;
+        var owner = Plugin.ObjectTable.FirstOrDefault(o => o.GameObjectId == followedObjectId);
+        if (owner is null) return;
+        Plugin.TargetManager.Target = owner;
+        Chat.SendMessage("/follow <t>");
     }
 
     public bool Engage()
