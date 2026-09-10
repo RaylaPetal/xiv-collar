@@ -6,7 +6,7 @@ import { enforceQuota } from "../lib/quotas";
 import { REVOCATION_RETENTION_SECONDS_MAX, nowSeconds } from "../lib/constants";
 import { lookupDeviceKey } from "../lib/deviceKeys";
 import { RelayError } from "../lib/errors";
-import { isMemberOfPair, latestPair } from "../lib/pairs";
+import { isMemberOfPair, pairAtEpoch } from "../lib/pairs";
 import { asRecord, isHex64, isNonNegInt, isSignature, isUnixSeconds, requireField } from "../lib/validate";
 
 interface RevocationEnvelope {
@@ -54,9 +54,13 @@ export async function publishRevocation(request: Request, env: Env): Promise<Res
   if (envelope.expiresAt - envelope.createdAt > REVOCATION_RETENTION_SECONDS_MAX) throw new RelayError("invalid_request");
   if (envelope.expiresAt <= nowSeconds()) throw new RelayError("invalid_request");
 
-  const pair = await latestPair(env, envelope.pairIdHash);
-  if (!pair || pair.pair_epoch !== envelope.pairEpoch || !isMemberOfPair(pair, deviceKeyId)) {
-    // Stale epoch, wrong pair, or wrong device: fails closed without hinting which.
+  const pair = await pairAtEpoch(env, envelope.pairIdHash, envelope.pairEpoch);
+  if (!pair || !isMemberOfPair(pair, deviceKeyId) || pair.revoked_at !== null) {
+    // Wrong pair/epoch, wrong device, or this exact epoch was already revoked (a stale, late-arriving
+    // revocation for a pairing that's already ended must not re-trigger anything): fails closed without
+    // hinting which. `pairAtEpoch` (unlike the `latestPair` this used to call) finds this exact epoch's row
+    // even when a newer epoch now exists for the same pairIdHash - a mutual pair's *other* direction being
+    // newer must never make this epoch's own already-revoked state pass silently.
     throw new RelayError("unauthorized");
   }
 
@@ -65,10 +69,13 @@ export async function publishRevocation(request: Request, env: Env): Promise<Res
     throw new RelayError("unauthorized");
   }
 
+  // Scoped by (pairIdHash, pairEpoch): a mutual pair's two directions share one pairIdHash but each keeps
+  // its own independent sequence counter, so one direction's sequence numbers must never be checked
+  // against the other's history.
   const highestSequenceRow = await env.RELAY_DB.prepare(
-    `SELECT MAX(sequence) AS max_sequence FROM revocations WHERE pair_id_hash = ?1`,
+    `SELECT MAX(sequence) AS max_sequence FROM revocations WHERE pair_id_hash = ?1 AND pair_epoch = ?2`,
   )
-    .bind(envelope.pairIdHash)
+    .bind(envelope.pairIdHash, envelope.pairEpoch)
     .first<{ max_sequence: number | null }>();
   if (highestSequenceRow?.max_sequence !== null && highestSequenceRow?.max_sequence !== undefined && envelope.sequence <= highestSequenceRow.max_sequence) {
     throw new RelayError("invalid_request");

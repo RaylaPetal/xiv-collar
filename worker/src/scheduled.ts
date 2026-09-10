@@ -27,15 +27,15 @@ export async function runScheduledCleanup(env: Env): Promise<void> {
     .run();
 
   const staleActiveRequests = await env.RELAY_DB.prepare(
-    `SELECT request_id_hash, pair_id_hash FROM catalog_requests WHERE status = 'pending' AND expires_at <= ?1`,
+    `SELECT request_id_hash, pair_id_hash, pair_epoch FROM catalog_requests WHERE status = 'pending' AND expires_at <= ?1`,
   )
     .bind(now)
-    .all<{ request_id_hash: string; pair_id_hash: string }>();
+    .all<{ request_id_hash: string; pair_id_hash: string; pair_epoch: number }>();
   for (const row of staleActiveRequests.results) {
     await env.RELAY_DB.prepare(
-      `UPDATE pair_cooldowns SET active_request_id_hash = NULL WHERE pair_id_hash = ?1 AND active_request_id_hash = ?2`,
+      `UPDATE pair_cooldowns SET active_request_id_hash = NULL WHERE pair_id_hash = ?1 AND pair_epoch = ?2 AND active_request_id_hash = ?3`,
     )
-      .bind(row.pair_id_hash, row.request_id_hash)
+      .bind(row.pair_id_hash, row.pair_epoch, row.request_id_hash)
       .run();
   }
   const removedPendingRequests = await env.RELAY_DB.prepare(

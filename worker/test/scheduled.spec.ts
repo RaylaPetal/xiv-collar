@@ -22,8 +22,8 @@ describe("scheduled cleanup", () => {
       .run();
 
     await env.RELAY_DB.prepare(
-      `INSERT INTO pair_cooldowns (pair_id_hash, last_accepted_sync_at, last_snapshot_id, active_request_id_hash)
-       VALUES ('pair-hash-2', 0, 0, 'stale-request-hash')`,
+      `INSERT INTO pair_cooldowns (pair_id_hash, pair_epoch, last_accepted_sync_at, last_snapshot_id, active_request_id_hash)
+       VALUES ('pair-hash-2', 0, 0, 0, 'stale-request-hash')`,
     ).run();
     await env.RELAY_DB.prepare(
       `INSERT INTO catalog_requests (request_id_hash, pair_id_hash, pair_epoch, requester_device_key_id, owner_ephemeral_public_key_jwk, created_at, expires_at, status)

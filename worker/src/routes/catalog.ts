@@ -6,7 +6,7 @@ import { CATALOG_COOLDOWN_SECONDS, CATALOG_OBJECT_EXPIRY_SECONDS, CATALOG_REQUES
 import { verifyEcdsaSignature, type EcPublicKeyJwk } from "../lib/crypto";
 import { RelayError } from "../lib/errors";
 import { sha256Hex, toCanonicalJson } from "../lib/json";
-import { latestPair } from "../lib/pairs";
+import { pairAtEpoch } from "../lib/pairs";
 import { lookupDeviceKey } from "../lib/deviceKeys";
 import { assertCircuitBreakerClosed, enforceQuota } from "../lib/quotas";
 import { deleteCiphertext, getCiphertext, putCiphertext, r2KeyForRequest } from "../lib/r2";
@@ -96,8 +96,8 @@ export async function createCatalogRequest(request: Request, env: Env): Promise<
   const now = nowSeconds();
   if (envelope.expiresAt <= now) throw new RelayError("invalid_request");
 
-  const pair = await latestPair(env, envelope.pairIdHash);
-  if (!pair || pair.pair_epoch !== envelope.pairEpoch || pair.owner_device_key_id !== deviceKeyId || pair.revoked_at !== null) {
+  const pair = await pairAtEpoch(env, envelope.pairIdHash, envelope.pairEpoch);
+  if (!pair || pair.owner_device_key_id !== deviceKeyId || pair.revoked_at !== null) {
     throw new RelayError("unauthorized");
   }
 
@@ -108,25 +108,28 @@ export async function createCatalogRequest(request: Request, env: Env): Promise<
 
   const requestIdHash = await capabilityHash(envelope.requestId);
 
+  // Scoped by (pairIdHash, pairEpoch), not pairIdHash alone: a mutual pair's two directions share one
+  // pairIdHash but must never share one cooldown/active-request slot, or a sync in one direction blocks
+  // or corrupts the other's.
   await env.RELAY_DB.prepare(
-    `INSERT INTO pair_cooldowns (pair_id_hash, last_accepted_sync_at, last_snapshot_id, active_request_id_hash)
-     VALUES (?1, 0, 0, NULL) ON CONFLICT (pair_id_hash) DO NOTHING`,
+    `INSERT INTO pair_cooldowns (pair_id_hash, pair_epoch, last_accepted_sync_at, last_snapshot_id, active_request_id_hash)
+     VALUES (?1, ?2, 0, 0, NULL) ON CONFLICT (pair_id_hash, pair_epoch) DO NOTHING`,
   )
-    .bind(envelope.pairIdHash)
+    .bind(envelope.pairIdHash, envelope.pairEpoch)
     .run();
 
   const claim = await env.RELAY_DB.prepare(
     `UPDATE pair_cooldowns SET active_request_id_hash = ?1
-     WHERE pair_id_hash = ?2 AND active_request_id_hash IS NULL AND (?3 - last_accepted_sync_at) >= ?4`,
+     WHERE pair_id_hash = ?2 AND pair_epoch = ?3 AND active_request_id_hash IS NULL AND (?4 - last_accepted_sync_at) >= ?5`,
   )
-    .bind(requestIdHash, envelope.pairIdHash, now, CATALOG_COOLDOWN_SECONDS)
+    .bind(requestIdHash, envelope.pairIdHash, envelope.pairEpoch, now, CATALOG_COOLDOWN_SECONDS)
     .run();
 
   if ((claim.meta.changes ?? 0) === 0) {
     const cooldownRow = await env.RELAY_DB.prepare(
-      `SELECT last_accepted_sync_at FROM pair_cooldowns WHERE pair_id_hash = ?1`,
+      `SELECT last_accepted_sync_at FROM pair_cooldowns WHERE pair_id_hash = ?1 AND pair_epoch = ?2`,
     )
-      .bind(envelope.pairIdHash)
+      .bind(envelope.pairIdHash, envelope.pairEpoch)
       .first<{ last_accepted_sync_at: number }>();
     const remaining = cooldownRow ? CATALOG_COOLDOWN_SECONDS - (now - cooldownRow.last_accepted_sync_at) : CATALOG_COOLDOWN_SECONDS;
     throw new RelayError("cooldown_active", Math.max(remaining, 1));
@@ -185,8 +188,8 @@ export async function uploadCatalogResponse(request: Request, env: Env, requestI
   const { row, requestIdHash } = await loadCatalogRequest(env, requestId);
   if (row.status !== "pending" || row.expires_at <= nowSeconds()) throw new RelayError("expired");
 
-  const pair = await latestPair(env, row.pair_id_hash);
-  if (!pair || pair.pair_epoch !== row.pair_epoch || pair.revoked_at !== null) throw new RelayError("expired");
+  const pair = await pairAtEpoch(env, row.pair_id_hash, row.pair_epoch);
+  if (!pair || pair.revoked_at !== null) throw new RelayError("expired");
 
   const { deviceKeyId, bodyJson } = await verifySignedRequest(request, env, resolverFromStoredDeviceKeys(env));
   if (deviceKeyId !== pair.sub_device_key_id) throw new RelayError("unauthorized");
@@ -238,9 +241,9 @@ export async function uploadCatalogResponse(request: Request, env: Env, requestI
 
   const cooldownGuard = await env.RELAY_DB.prepare(
     `UPDATE pair_cooldowns SET last_accepted_sync_at = ?1, active_request_id_hash = NULL, last_snapshot_id = ?2
-     WHERE pair_id_hash = ?3 AND last_snapshot_id < ?2`,
+     WHERE pair_id_hash = ?3 AND pair_epoch = ?4 AND last_snapshot_id < ?2`,
   )
-    .bind(nowSeconds(), envelope.snapshotId, row.pair_id_hash)
+    .bind(nowSeconds(), envelope.snapshotId, row.pair_id_hash, row.pair_epoch)
     .run();
   if ((cooldownGuard.meta.changes ?? 0) === 0) throw new RelayError("invalid_request");
 
