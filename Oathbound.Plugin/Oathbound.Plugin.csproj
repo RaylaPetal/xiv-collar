@@ -8,7 +8,7 @@
          `dotnet build` on this csproj, an IDE's default build task, or the .slnx - instead of depending
          on everyone remembering to build through the solution file. -->
     <Platform>x64</Platform>
-    <Version>0.0.2.2</Version>
+    <Version>0.0.2.3</Version>
     <!-- Manifest fields (see https://github.com/goatcorp/DalamudPackager/blob/827d88dc/DalamudPackager/DalamudPackager.cs#L420) -->
     <Author>Rayla Petal</Author>
     <Name>Oathbound</Name>
@@ -21,7 +21,6 @@ service, while all gameplay actions remain local to the Sub's client.</Descripti
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Penumbra.Api" Version="5.15.1" />
     <PackageReference Include="Glamourer.Api" Version="2.8.2" />
     <PackageReference Include="ECommons" Version="3.2.1.18" />
     <!-- collar/relay-service: DPAPI protection for the device signing private key (Relay/DeviceIdentityService.cs). -->
@@ -31,5 +30,21 @@ service, while all gameplay actions remain local to the Sub's client.</Descripti
          shim does not implement EC key generation (NTE_NOT_SUPPORTED, 0x80090029), which crashes the
          plugin on load for any Wine-hosted install. BouncyCastle never touches an OS crypto API. -->
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Built from source against the Penumbra.Api and Luna submodules (matching how Glamourer and
+      Penumbra.Api's other consumers build) rather than the published NuGet package - as of
+      Penumbra.Api 5.19.0, that package's compiled DLL references an assembly literally named "Luna",
+      but the separately-published "Luna" NuGet package's DLL identifies itself as "Luna.Core" (a
+      genuine assembly-name mismatch in the published packages, confirmed via disassembling both DLLs'
+      assembly references, same finding as PoseKit's) - no reference short of building from source
+      resolves it.
+    -->
+    <ProjectReference Include="..\Penumbra.Api\Penumbra.Api.csproj" />
+    <ProjectReference Include="..\Luna\Luna\Luna.csproj" />
+    <ProjectReference Include="..\Luna\Luna.Generators\Luna.Generators.csproj" OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>
