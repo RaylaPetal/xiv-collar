@@ -326,23 +326,44 @@ public sealed class CatalogSyncRelayService
         // only the Sub-side one is a valid source for a catalog *request* (the Owner-side one is this
         // device requesting catalog *from* them, a different flow entirely).
         var pairing = config.FindPairing(senderName, senderWorld, PairingDirection.SubSide);
-        if (pairing is null) return;
+        if (pairing is null)
+        {
+            Plugin.Log.Warning($"Catalog request from {senderName}@{senderWorld} ignored: no Sub-side pairing with that sender.");
+            return;
+        }
 
         CatalogRequestEnvelope request;
         try
         {
             request = await relay.FetchCatalogRequestAsync(requestId, ct).ConfigureAwait(false);
         }
-        catch (RelayException)
+        catch (RelayException ex)
         {
+            Plugin.Log.Warning($"Catalog request {requestId} ignored: could not fetch it from the relay ({DescribeError(ex)}).");
             return;
         }
 
-        if (request.PairIdHash != pairing.PairIdHash || request.PairEpoch != pairing.PairEpoch) return;
-        if (request.RequesterDeviceKeyId != pairing.PeerDeviceKeyId) return; // Not from the actual paired Owner's device.
-        if (pairing.PeerPublicKeyX is null || pairing.PeerPublicKeyY is null) return;
+        if (request.PairIdHash != pairing.PairIdHash || request.PairEpoch != pairing.PairEpoch)
+        {
+            Plugin.Log.Warning($"Catalog request {requestId} ignored: pair id/epoch didn't match this pairing (stale pairing or re-pair since?).");
+            return;
+        }
+        if (request.RequesterDeviceKeyId != pairing.PeerDeviceKeyId)
+        {
+            Plugin.Log.Warning($"Catalog request {requestId} ignored: requester device key didn't match the paired Owner's device (re-paired since?).");
+            return; // Not from the actual paired Owner's device.
+        }
+        if (pairing.PeerPublicKeyX is null || pairing.PeerPublicKeyY is null)
+        {
+            Plugin.Log.Warning($"Catalog request {requestId} ignored: no peer public key on file for this pairing.");
+            return;
+        }
         var peerPublicKey = new EcPublicKeyJwk { Kty = "EC", Crv = "P-256", X = pairing.PeerPublicKeyX, Y = pairing.PeerPublicKeyY };
-        if (!RelayCrypto.VerifyRaw(peerPublicKey, request.Signature ?? "", EnvelopeCanonical.SerializeExcludingSignature(request))) return;
+        if (!RelayCrypto.VerifyRaw(peerPublicKey, request.Signature ?? "", EnvelopeCanonical.SerializeExcludingSignature(request)))
+        {
+            Plugin.Log.Warning($"Catalog request {requestId} ignored: signature did not verify against the paired peer's key.");
+            return;
+        }
 
         if (!config.Permissions.RelayCatalogSync)
         {
