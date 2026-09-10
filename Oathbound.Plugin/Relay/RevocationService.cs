@@ -206,7 +206,13 @@ public sealed class RevocationService
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         if (revocation.PairIdHash != pairing.PairIdHash) return true;
-        if (revocation.PairEpoch < pairing.PairEpoch) return true; // Old epoch - a prior pairing's stale notice.
+        // collar/multi-pairing: exact match, not just "not older" - pairIdHash is symmetric over just the
+        // two device key ids (no direction), so the same two devices paired in both directions share one
+        // pairIdHash family; fetching "revocations since IncomingRevocationSequence" for THIS pairing can
+        // come back carrying a DIFFERENT epoch that belongs to the OTHER direction's independent pairing
+        // between the same two devices, not a stale notice for this one. Only this pairing's own exact
+        // epoch can end it.
+        if (revocation.PairEpoch != pairing.PairEpoch) return true;
         if (revocation.Sequence <= pairing.IncomingRevocationSequence) return true; // Replay.
         if (revocation.ExpiresAt <= now) return true;
         if (revocation.IssuedByDeviceKeyId != pairing.PeerDeviceKeyId) return true; // Wrong device.

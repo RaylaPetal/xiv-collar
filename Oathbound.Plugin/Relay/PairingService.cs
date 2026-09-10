@@ -113,6 +113,14 @@ public sealed class PairingService
             SetError("The current Role does not support that pairing direction.");
             return false;
         }
+        // A blank trigger phrase means incoming commands can never match once this device becomes the
+        // Sub-side of a pairing (collar/chat-transport's own listener refuses to match an empty trigger) -
+        // refused up front rather than letting pairing "succeed" into a relationship that can never work.
+        if (direction == PairingDirection.SubSide && string.IsNullOrWhiteSpace(config.TriggerPhrase))
+        {
+            SetError("Set a trigger phrase in Settings before pairing as Sub - without one, incoming commands can never apply.");
+            return false;
+        }
         if (!ChatComposer.TryValidateTellTarget(targetTellAddress, out var targetError))
         {
             SetError(targetError);
@@ -231,6 +239,14 @@ public sealed class PairingService
         // Role, since a Switch's own Role doesn't say which direction any one pairing is.
         var direction = request.SenderRole == PluginRole.Owner ? PairingDirection.SubSide : PairingDirection.OwnerSide;
 
+        // See CreateAndSendInvitationAsync's matching check - accepting into a Sub-side pairing is just as
+        // pointless with a blank trigger phrase as sending into one.
+        if (direction == PairingDirection.SubSide && string.IsNullOrWhiteSpace(config.TriggerPhrase))
+        {
+            SetError("Set a trigger phrase in Settings before accepting this - without one, incoming commands can never apply.");
+            return false;
+        }
+
         // Pre-generated here (rather than left to PairingState's own default) so a same-moment collar
         // ForceApply below can record ownership under the exact id this pairing will carry once
         // ActivateLocally actually adds it to Pairings - that only happens later, once the background
@@ -306,9 +322,15 @@ public sealed class PairingService
                 try
                 {
                     var pair = await relay.FetchPairAsync(pairIdHash, ct).ConfigureAwait(false);
-                    ActivateLocally(pair, direction, pairingId, request.Name, request.World, inviterInvitation.InviterDeviceKeyId, inviterInvitation.InviterPublicKey, request.TriggerPhrase);
-                    SetError(null);
-                    return;
+                    // collar/multi-pairing: fetch-by-hash returns whichever epoch is latest for these two
+                    // devices - if this pair already has another pairing (opposite direction), an early
+                    // poll can land on that prior epoch before the inviter's consume() creates this one.
+                    // That's a race, not a failure - keep polling instead of giving up.
+                    if (ActivateLocally(pair, direction, pairingId, request.Name, request.World, inviterInvitation.InviterDeviceKeyId, inviterInvitation.InviterPublicKey, request.TriggerPhrase))
+                    {
+                        SetError(null);
+                        return;
+                    }
                 }
                 catch (RelayException ex) when (ex.Code is "unauthorized" or "not_found")
                 {
@@ -372,8 +394,14 @@ public sealed class PairingService
                 outgoingInvitation = null;
                 config.PendingRelayOperations.RemoveAll(o => o.Kind == "pair-invite" && o.OperationId == invitationId);
 
-                ActivateLocally(pair, outgoing.Direction, Guid.NewGuid(), senderName, senderWorld, acceptance.AccepterDeviceKeyId, acceptance.AccepterPublicKey, acceptance.TriggerPhrase);
-                SetError(null);
+                // Unlike the accepter's own AwaitActivationAsync (which fetches by pairIdHash alone and can
+                // race a still-existing prior epoch between the same two devices), consume() always returns
+                // the envelope for *this exact* invitation - a mismatch here is a genuine protocol violation,
+                // not a race, so it's reported immediately rather than retried.
+                if (!ActivateLocally(pair, outgoing.Direction, Guid.NewGuid(), senderName, senderWorld, acceptance.AccepterDeviceKeyId, acceptance.AccepterPublicKey, acceptance.TriggerPhrase))
+                    SetError("The relay returned pairing data that did not match the verified devices and roles.");
+                else
+                    SetError(null);
                 return;
             }
             catch (RelayException ex) when (ex.Code is "network" or "service_unavailable" or "rate_limited" && attempt < AcknowledgementRetryDelaysSeconds.Length)
@@ -391,39 +419,49 @@ public sealed class PairingService
         }
     }
 
-    private void ActivateLocally(PairEnvelope pair, PairingDirection direction, Guid pairingId, string peerName, string peerWorld, string peerDeviceKeyId, EcPublicKeyJwk peerPublicKey, string? peerTriggerPhrase)
+    /// Returns whether a pairing was actually added. `pairIdHash` alone can't distinguish directions - the
+    /// same two devices pairing a second time (in the opposite direction) computes the *same* pairIdHash as
+    /// their first pairing (collar/multi-pairing: ComputePairIdHash is symmetric over just the two device
+    /// key ids), so a fetch-by-hash can return a *different, still-valid* epoch of the SAME hash whose
+    /// owner/sub don't match the direction currently being activated - not a protocol violation, just a
+    /// race against the inviter's own consume (see AwaitActivationAsync, which retries on `false` rather
+    /// than treating it as terminal).
+    private bool ActivateLocally(PairEnvelope pair, PairingDirection direction, Guid pairingId, string peerName, string peerWorld, string peerDeviceKeyId, EcPublicKeyJwk peerPublicKey, string? peerTriggerPhrase)
     {
         var ownKeyId = identity.DeviceKeyId;
         var expectedOwner = direction == PairingDirection.OwnerSide ? ownKeyId : peerDeviceKeyId;
         var expectedSub = direction == PairingDirection.SubSide ? ownKeyId : peerDeviceKeyId;
         if (pair.Type != "pair" || pair.SchemaVersion != 1 || pair.OwnerDeviceKeyId != expectedOwner || pair.SubDeviceKeyId != expectedSub ||
             pair.PairIdHash != RelayCrypto.ComputePairIdHash(ownKeyId!, peerDeviceKeyId))
+            return false;
+
+        // collar/multi-pairing: re-pairing the same specific peer device in the same direction again
+        // (e.g. a retried/duplicated activation from the race above, or a genuine unpair-then-re-pair)
+        // updates that existing PairingState in place rather than adding a duplicate entry - this also
+        // means its revocation-sequence counters and Id (so anything already pointing at it, like
+        // ActivePairingId or CollarOwningPairingId, stays valid) survive the re-pair.
+        var existing = config.Pairings.FirstOrDefault(p => p.PeerDeviceKeyId == peerDeviceKeyId && p.Direction == direction);
+        var pairing = existing ?? new PairingState { Id = pairingId, Direction = direction };
+        pairing.PairIdHash = pair.PairIdHash;
+        pairing.PairEpoch = pair.PairEpoch;
+        pairing.PeerDeviceKeyId = peerDeviceKeyId;
+        pairing.PeerPublicKeyX = peerPublicKey.X;
+        pairing.PeerPublicKeyY = peerPublicKey.Y;
+        pairing.PeerName = peerName;
+        pairing.PeerWorld = peerWorld;
+        pairing.PeerTriggerPhrase = peerTriggerPhrase;
+        pairing.Paired = true;
+        // The very first pairing this device ever gets becomes active by default; a later one added while
+        // another is already selected leaves that selection alone.
+        if (existing is null)
         {
-            SetError("The relay returned pairing data that did not match the verified devices and roles.");
-            return;
+            config.Pairings.Add(pairing);
+            config.ActivePairingId ??= pairing.Id;
         }
-        // collar/multi-pairing: appends a new pairing rather than overwriting - holding other pairings
-        // never blocks or disturbs them. The very first pairing this device ever gets becomes active by
-        // default; a later one added while another is already selected leaves that selection alone.
-        var pairing = new PairingState
-        {
-            Id = pairingId,
-            Direction = direction,
-            PairIdHash = pair.PairIdHash,
-            PairEpoch = pair.PairEpoch,
-            PeerDeviceKeyId = peerDeviceKeyId,
-            PeerPublicKeyX = peerPublicKey.X,
-            PeerPublicKeyY = peerPublicKey.Y,
-            PeerName = peerName,
-            PeerWorld = peerWorld,
-            PeerTriggerPhrase = peerTriggerPhrase,
-            Paired = true,
-        };
-        config.Pairings.Add(pairing);
-        config.ActivePairingId ??= pairing.Id;
         config.PendingRelayOperations.RemoveAll(o => o.Kind is "pair-invite" or "pair-accept");
         config.Save();
         PairingActivated?.Invoke();
+        return true;
     }
 
     /// Local-only disable, used by panic - never touches anything beyond this client's own config.
