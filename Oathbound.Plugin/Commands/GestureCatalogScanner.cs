@@ -24,9 +24,10 @@ public sealed record PenumbraModScanEntry(string Id, string ModDirectory, string
 /// names instead of flattening an entire mod to GetChangedItems labels.
 public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
 {
+    private sealed record ModMetaDto(DefaultDataDto? DefaultData, List<GroupDto>? Groups);
+    private sealed record DefaultDataDto(Dictionary<string, string>? Files);
     private sealed record GroupDto(string Type, string Name, List<OptionDto> Options);
     private sealed record OptionDto(string Name, Dictionary<string, string>? Files);
-    private sealed record DefaultDto(Dictionary<string, string>? Files);
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true, AllowTrailingCommas = true, ReadCommentHandling = JsonCommentHandling.Skip };
 
     public GestureScanResult Scan()
@@ -186,42 +187,37 @@ public sealed class GestureCatalogScanner(PenumbraIpc ipc, PluginConfig config)
     private sealed record Option(string Name, IEnumerable<string> Paths);
     private sealed record Group(string Name, bool Multi, bool Implicit, List<Option> Options, HashSet<string> Selected);
 
+    /// Reads the mod's own on-disk meta.json directly - Penumbra's mod-meta file format (schema version
+    /// 4): a single JSON file per mod holding "DefaultData": {"Files": {gamePath: redirect}} for the
+    /// mod's always-active files, plus "Groups": [{"Type": "Single"|"Multi", "Name": ..., "Options":
+    /// [{"Name": ..., "Files": {gamePath: redirect}}]}] for its option groups, in manifest order. Older
+    /// Penumbra versions split this across a separate default_mod.json plus one group_*.json per group;
+    /// Penumbra migrates existing mods to the single meta.json in place (renaming the old files to
+    /// .bak), so only the current format needs reading - see PoseKit's PenumbraPoseScanner, confirmed
+    /// against a real installed mod, for the same fix applied there first.
     private static List<Group> ReadGroups(string modPath, string modName, Dictionary<string, List<string>>? current)
     {
         var groups = new List<Group>();
-        var defaultPath = Path.Combine(modPath, "default_mod.json");
-        if (File.Exists(defaultPath))
+        var metaPath = Path.Combine(modPath, "meta.json");
+        ModMetaDto? meta = null;
+        if (File.Exists(metaPath))
         {
-            try
-            {
-                var dto = JsonSerializer.Deserialize<DefaultDto>(File.ReadAllText(defaultPath), JsonOptions);
-                var paths = (dto?.Files?.Keys ?? Enumerable.Empty<string>()).Where(p => p.StartsWith("chara/", StringComparison.OrdinalIgnoreCase)).ToList();
-                if (paths.Count > 0) groups.Add(new Group("Default", false, true, [new Option(modName, paths)], [modName]));
-            }
-            catch (Exception ex) { Plugin.Log.Warning(ex, $"Failed to parse {defaultPath}."); }
+            try { meta = JsonSerializer.Deserialize<ModMetaDto>(File.ReadAllText(metaPath), JsonOptions); }
+            catch (Exception ex) { Plugin.Log.Warning(ex, $"Failed to parse {metaPath}."); }
         }
-        // Penumbra persists group order in the numeric group_### filename. Sorting by the displayed
-        // group name produced 1, 10, 100... in large packs; PoseKit follows this manifest order.
-        foreach (var file in Directory.GetFiles(modPath, "group_*.json", SearchOption.TopDirectoryOnly)
-                     .OrderBy(GroupFileOrder).ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+
+        var defaultPaths = (meta?.DefaultData?.Files?.Keys ?? Enumerable.Empty<string>())
+            .Where(p => p.StartsWith("chara/", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (defaultPaths.Count > 0) groups.Add(new Group("Default", false, true, [new Option(modName, defaultPaths)], [modName]));
+
+        foreach (var dto in meta?.Groups ?? [])
         {
-            try
-            {
-                var dto = JsonSerializer.Deserialize<GroupDto>(File.ReadAllText(file), JsonOptions);
-                if (dto?.Options is null) continue;
-                groups.Add(new Group(dto.Name, dto.Type.Equals("Multi", StringComparison.OrdinalIgnoreCase), false,
-                    dto.Options.Select(o => new Option(o.Name, o.Files?.Keys ?? Enumerable.Empty<string>())).ToList(),
-                    current != null && current.TryGetValue(dto.Name, out var selected) ? [.. selected] : []));
-            }
-            catch (Exception ex) { Plugin.Log.Warning(ex, $"Failed to parse {file}."); }
+            if (dto.Options is null) continue;
+            groups.Add(new Group(dto.Name, dto.Type.Equals("Multi", StringComparison.OrdinalIgnoreCase), false,
+                dto.Options.Select(o => new Option(o.Name, o.Files?.Keys ?? Enumerable.Empty<string>())).ToList(),
+                current != null && current.TryGetValue(dto.Name, out var selected) ? [.. selected] : []));
         }
         return groups;
-    }
-
-    private static int GroupFileOrder(string path)
-    {
-        var match = Regex.Match(Path.GetFileName(path), @"^group_(\d+)", RegexOptions.IgnoreCase);
-        return match.Success && int.TryParse(match.Groups[1].Value, out var order) ? order : int.MaxValue;
     }
 }
 
