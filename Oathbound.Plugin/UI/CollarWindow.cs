@@ -771,7 +771,7 @@ public class CollarWindow : Window, IDisposable
         SafewordEditor.Draw(config, "mainHeader", ref revealSafeword);
         IconGlyph.HelpMarker("This only configures the typed /oathboundpanic command; editing it never triggers panic or changes pairing.");
 
-        if (config.Role != PluginRole.Sub)
+        if (config.ResolveActiveDirection() == PairingDirection.OwnerSide)
         {
             ImGui.Spacing();
             ImGui.Separator();
