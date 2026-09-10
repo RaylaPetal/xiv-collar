@@ -73,27 +73,25 @@ public sealed class CatalogSyncRelayService
         RequestInFlightChanged?.Invoke();
     }
 
-    public TimeSpan? CooldownRemaining
+    public TimeSpan? CooldownRemaining(PairingState pairing)
     {
-        get
-        {
-            var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - config.Pairing.LastAcceptedCatalogSyncUnixSeconds;
-            var remaining = RelayProtocolConstants.CatalogCooldownSeconds - elapsed;
-            return remaining > 0 ? TimeSpan.FromSeconds(remaining) : null;
-        }
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - pairing.LastAcceptedCatalogSyncUnixSeconds;
+        var remaining = RelayProtocolConstants.CatalogCooldownSeconds - elapsed;
+        return remaining > 0 ? TimeSpan.FromSeconds(remaining) : null;
     }
 
     /// Owner-side, explicit UI action: creates a signed one-use catalog request and sends its reference in
-    /// one lifecycle tell (task 6.2). Client-side cooldown/active-request checks are advisory only - the
-    /// Worker's own atomic check is authoritative and is what actually prevents a bypass via clock changes.
-    public async Task<bool> RequestRefreshAsync(CancellationToken ct)
+    /// one lifecycle tell (task 6.2), addressed to the given pairing (the active pairing, in practice - see
+    /// CollarWindow). Client-side cooldown/active-request checks are advisory only - the Worker's own atomic
+    /// check is authoritative and is what actually prevents a bypass via clock changes.
+    public async Task<bool> RequestRefreshAsync(PairingState pairing, CancellationToken ct)
     {
-        if (!config.Pairing.IsPaired)
+        if (!pairing.IsPaired)
         {
             SetError("Not paired.");
             return false;
         }
-        if (CooldownRemaining is { } remaining)
+        if (CooldownRemaining(pairing) is { } remaining)
         {
             SetError($"Still cooling down - try again in {FormatRemaining(remaining)}.");
             return false;
@@ -116,8 +114,8 @@ public sealed class CatalogSyncRelayService
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var envelope = new CatalogRequestEnvelope
             {
-                PairIdHash = config.Pairing.PairIdHash!,
-                PairEpoch = config.Pairing.PairEpoch,
+                PairIdHash = pairing.PairIdHash!,
+                PairEpoch = pairing.PairEpoch,
                 RequestId = requestId,
                 RequesterDeviceKeyId = identity.DeviceKeyId!,
                 OwnerEphemeralPublicKey = RelayCrypto.ExportPublicKeyJwk(ownerEphemeral),
@@ -136,12 +134,12 @@ public sealed class CatalogSyncRelayService
             config.PendingRelayOperations.Add(new PendingRelayOperationState { Kind = "catalog-request", OperationId = requestId, ExpiresAt = envelope.ExpiresAt });
             config.Save();
 
-            var tell = composer.ComposeCatalogRequestNotice(config.Pairing.PeerName!, config.Pairing.PeerWorld!, requestId);
+            var tell = composer.ComposeCatalogRequestNotice(pairing.PeerName!, pairing.PeerWorld!, requestId);
             sender.Send(tell);
             SetError(null);
 
             SetPhase("Waiting for Sub upload");
-            _ = PollAndImportAsync(requestId, ct);
+            _ = PollAndImportAsync(requestId, pairing, ct);
             pollStarted = true;
             return true;
         }
@@ -164,7 +162,7 @@ public sealed class CatalogSyncRelayService
     /// Owner-side: bounded poll for the Sub's upload, then retrieve/decrypt/decompress/validate/commit.
     /// Never re-enables anything on failure; the prior imported snapshot is always left untouched unless
     /// every check here passes (task 6.4).
-    private async Task PollAndImportAsync(string requestId, CancellationToken ct)
+    private async Task PollAndImportAsync(string requestId, PairingState pairing, CancellationToken ct)
     {
         try
         {
@@ -198,15 +196,15 @@ public sealed class CatalogSyncRelayService
             SetPhase("Decrypting and validating");
             LastAttemptAt = DateTimeOffset.UtcNow;
 
-            if (!ImportSnapshot(envelope, ciphertext, ownerEphemeral, out var result, out var error))
+            if (!ImportSnapshot(envelope, ciphertext, ownerEphemeral, pairing, out var result, out var error))
             {
                 SetError(error);
                 LastImportResult = new CatalogSnapshotResult(0, 0, 0, 0, error);
                 return;
             }
 
-            config.Pairing.LastAcceptedCatalogSyncUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            config.Pairing.LastImportedSnapshotId = envelope.SnapshotId;
+            pairing.LastAcceptedCatalogSyncUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            pairing.LastImportedSnapshotId = envelope.SnapshotId;
             config.Save();
             LastImportResult = result;
             SetPhase("Complete");
@@ -232,22 +230,22 @@ public sealed class CatalogSyncRelayService
 
     /// All of the Owner-side authentication/decryption/validation task 6.4 requires, isolated so a failure
     /// anywhere here guarantees no partial state - `result`/`error` are mutually exclusive on return.
-    private bool ImportSnapshot(CatalogResponseEnvelope envelope, byte[] ciphertext, RelayEcKeyPair ownerEphemeral, out CatalogSnapshotResult result, out string? error)
+    private bool ImportSnapshot(CatalogResponseEnvelope envelope, byte[] ciphertext, RelayEcKeyPair ownerEphemeral, PairingState pairing, out CatalogSnapshotResult result, out string? error)
     {
         result = default;
         error = null;
 
-        if (envelope.PairIdHash != config.Pairing.PairIdHash || envelope.PairEpoch != config.Pairing.PairEpoch)
+        if (envelope.PairIdHash != pairing.PairIdHash || envelope.PairEpoch != pairing.PairEpoch)
         {
             error = "Snapshot addressed to a different pair/epoch - ignored.";
             return false;
         }
-        if (envelope.RecipientDeviceKeyId != identity.DeviceKeyId || envelope.SenderDeviceKeyId != config.Pairing.PeerDeviceKeyId)
+        if (envelope.RecipientDeviceKeyId != identity.DeviceKeyId || envelope.SenderDeviceKeyId != pairing.PeerDeviceKeyId)
         {
             error = "Snapshot sender/recipient device keys did not match this pairing - ignored.";
             return false;
         }
-        if (envelope.SnapshotId <= config.Pairing.LastImportedSnapshotId)
+        if (envelope.SnapshotId <= pairing.LastImportedSnapshotId)
         {
             error = "Snapshot is not newer than the last one imported - ignored (stale or replayed).";
             return false;
@@ -262,12 +260,12 @@ public sealed class CatalogSyncRelayService
             error = "Snapshot ciphertext digest did not match - ignored (corrupt or tampered).";
             return false;
         }
-        if (config.Pairing.PeerPublicKeyX is null || config.Pairing.PeerPublicKeyY is null)
+        if (pairing.PeerPublicKeyX is null || pairing.PeerPublicKeyY is null)
         {
             error = "No peer public key on file - cannot verify this snapshot.";
             return false;
         }
-        var peerPublicKey = new EcPublicKeyJwk { Kty = "EC", Crv = "P-256", X = config.Pairing.PeerPublicKeyX, Y = config.Pairing.PeerPublicKeyY };
+        var peerPublicKey = new EcPublicKeyJwk { Kty = "EC", Crv = "P-256", X = pairing.PeerPublicKeyX, Y = pairing.PeerPublicKeyY };
         if (!RelayCrypto.VerifyRaw(peerPublicKey, envelope.Signature ?? "", EnvelopeCanonical.SerializeExcludingSignature(envelope)))
         {
             error = "Snapshot signature did not verify against the paired peer's key - ignored.";
@@ -317,10 +315,11 @@ public sealed class CatalogSyncRelayService
     /// Owner isn't left guessing (task 6.1/6.3).
     public async Task HandleCatalogRequestTellAsync(string requestId, string senderName, string senderWorld, CancellationToken ct)
     {
-        if (!config.Pairing.IsPaired) return;
-        if (!string.Equals(senderName, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(senderWorld, config.Pairing.PeerWorld, StringComparison.OrdinalIgnoreCase))
-            return;
+        // collar/multi-pairing: resolved against every currently-paired Owner, not a single configured
+        // peer - a request from any of this device's Owner-side... rather, any pairing where this device is
+        // the Sub-side, is honored using that pairing's own state, independent of which pairing is active.
+        var pairing = config.FindPairing(senderName, senderWorld);
+        if (pairing is not { Direction: PairingDirection.SubSide }) return;
 
         CatalogRequestEnvelope request;
         try
@@ -332,10 +331,10 @@ public sealed class CatalogSyncRelayService
             return;
         }
 
-        if (request.PairIdHash != config.Pairing.PairIdHash || request.PairEpoch != config.Pairing.PairEpoch) return;
-        if (request.RequesterDeviceKeyId != config.Pairing.PeerDeviceKeyId) return; // Not from the actual paired Owner's device.
-        if (config.Pairing.PeerPublicKeyX is null || config.Pairing.PeerPublicKeyY is null) return;
-        var peerPublicKey = new EcPublicKeyJwk { Kty = "EC", Crv = "P-256", X = config.Pairing.PeerPublicKeyX, Y = config.Pairing.PeerPublicKeyY };
+        if (request.PairIdHash != pairing.PairIdHash || request.PairEpoch != pairing.PairEpoch) return;
+        if (request.RequesterDeviceKeyId != pairing.PeerDeviceKeyId) return; // Not from the actual paired Owner's device.
+        if (pairing.PeerPublicKeyX is null || pairing.PeerPublicKeyY is null) return;
+        var peerPublicKey = new EcPublicKeyJwk { Kty = "EC", Crv = "P-256", X = pairing.PeerPublicKeyX, Y = pairing.PeerPublicKeyY };
         if (!RelayCrypto.VerifyRaw(peerPublicKey, request.Signature ?? "", EnvelopeCanonical.SerializeExcludingSignature(request))) return;
 
         if (!config.Permissions.RelayCatalogSync)
@@ -373,7 +372,7 @@ public sealed class CatalogSyncRelayService
             var aesKey = RelayCrypto.DeriveAesKey(sharedSecret, salt, info);
             var nonceBytes = RelayCrypto.RandomBytes(RelayCrypto.AeadNonceLengthBytes);
 
-            var snapshotId = ++config.Pairing.NextOutgoingSnapshotId;
+            var snapshotId = ++pairing.NextOutgoingSnapshotId;
             config.Save();
 
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Oathbound.Plugin.Config;
@@ -24,13 +25,16 @@ public sealed class RevocationService
         this.identity = identity;
     }
 
-    /// Best-effort publish of a revocation for the pair identified by the given snapshot (captured by the
-    /// caller *before* it cleared config.Pairing, since EndPairingLocally/ReleasePeer only flip flags, not
-    /// erase PairIdHash - see PanicHandler). On any failure, queues a retry entry rather than throwing;
-    /// callers should treat this as fire-and-forget.
-    public async Task PublishBestEffortAsync(string pairIdHash, int pairEpoch, string reason, CancellationToken ct)
+    /// Best-effort publish of a revocation for the given pairing (captured by the caller *before* it
+    /// cleared its identity fields, since EndPairingLocally/ReleasePeer only flip flags or clear identity,
+    /// not this pairing's own sequence bookkeeping - see PanicHandler/PairingService). `pairIdHash`/
+    /// `pairEpoch` are passed explicitly (rather than read from `pairing`) because ReleasePeer clears
+    /// `pairing.PairIdHash` before this runs; `pairing` itself is only used for its own sequence counter and
+    /// delivery-status display, which survive that clearing. On any failure, queues a retry entry rather
+    /// than throwing; callers should treat this as fire-and-forget.
+    public async Task PublishBestEffortAsync(PairingState pairing, string pairIdHash, int pairEpoch, string reason, CancellationToken ct)
     {
-        var sequence = config.Pairing.OutgoingRevocationSequence + 1;
+        var sequence = pairing.OutgoingRevocationSequence + 1;
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var envelope = new RevocationEnvelope
         {
@@ -46,14 +50,14 @@ public sealed class RevocationService
 
         // The sequence is reserved locally (and persisted) whether or not the publish itself succeeds, so a
         // retried attempt never reuses a sequence number a peer might already be tracking as consumed.
-        config.Pairing.OutgoingRevocationSequence = sequence;
-        SetDeliveryStatus("pending");
+        pairing.OutgoingRevocationSequence = sequence;
+        SetDeliveryStatus(pairing, "pending");
         config.Save();
 
         try
         {
             await relay.PublishRevocationAsync(envelope, ct).ConfigureAwait(false);
-            SetDeliveryStatus("delivered");
+            SetDeliveryStatus(pairing, "delivered");
             config.Save();
         }
         catch (RelayException)
@@ -70,7 +74,7 @@ public sealed class RevocationService
                 Attempt = 0,
                 NextAttemptAtUnixSeconds = now + 30,
             });
-            SetDeliveryStatus("pending");
+            SetDeliveryStatus(pairing, "pending");
             config.Save();
         }
     }
@@ -96,7 +100,7 @@ public sealed class RevocationService
             {
                 Plugin.Log.Warning($"Revocation retry for pair {entry.PairIdHash} (sequence {entry.Sequence}) expired without confirmed delivery.");
                 config.RevocationOutbox.Remove(entry);
-                SetDeliveryStatus("expired");
+                SetDeliveryStatus(entry, "expired");
                 config.Save();
                 continue;
             }
@@ -118,14 +122,14 @@ public sealed class RevocationService
             {
                 await relay.PublishRevocationAsync(envelope, ct).ConfigureAwait(false);
                 config.RevocationOutbox.Remove(entry);
-                SetDeliveryStatus("delivered");
+                SetDeliveryStatus(entry, "delivered");
                 config.Save();
             }
             catch (RelayException ex) when (PermanentFailureCodes.Contains(ex.Code))
             {
                 Plugin.Log.Warning($"Revocation retry for pair {entry.PairIdHash} (sequence {entry.Sequence}) permanently rejected ({ex.Code}); giving up.");
                 config.RevocationOutbox.Remove(entry);
-                SetDeliveryStatus("failed");
+                SetDeliveryStatus(entry, "failed");
                 config.Save();
             }
             catch (RelayException ex)
@@ -138,10 +142,21 @@ public sealed class RevocationService
         }
     }
 
-    private void SetDeliveryStatus(string status)
+    private static void SetDeliveryStatus(PairingState pairing, string status)
     {
-        config.Pairing.LastRevocationDeliveryStatus = status;
-        config.Pairing.LastRevocationDeliveryUpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        pairing.LastRevocationDeliveryStatus = status;
+        pairing.LastRevocationDeliveryUpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    }
+
+    /// Retry-outbox entries no longer carry a reference to the `PairingState` that created them (the caller
+    /// only had `pairIdHash`/`pairEpoch` by the time a retry entry is queued - see PublishBestEffortAsync).
+    /// If that pairing has since been released, its identity fields (and so this lookup) are gone; the
+    /// status update is then simply skipped - display-only staleness, never a correctness issue.
+    private void SetDeliveryStatus(RevocationRetryEntry entry, string status)
+    {
+        var pairing = config.Pairings.FirstOrDefault(p => p.PairIdHash == entry.PairIdHash && p.PairEpoch == entry.PairEpoch);
+        if (pairing is not null)
+            SetDeliveryStatus(pairing, status);
     }
 
     /// collar/pairing "Peer missed the notification tell" / "Old revocation is replayed after re-pairing".
@@ -150,11 +165,18 @@ public sealed class RevocationService
     /// smuggle in - there is nothing else to execute, the schema has no room for it.
     public async Task CheckForMissedRevocationAsync(CancellationToken ct)
     {
-        var pairing = config.Pairing;
+        // collar/multi-pairing: every active pairing is checked independently - one pairing's revocation
+        // ends only that pairing, never any other this device holds.
+        foreach (var pairing in config.Pairings.Where(p => p.IsPaired).ToList())
+            await CheckForMissedRevocationAsync(pairing, ct).ConfigureAwait(false);
+    }
+
+    private async Task CheckForMissedRevocationAsync(PairingState pairing, CancellationToken ct)
+    {
         if (!pairing.IsPaired || pairing.PairIdHash is null || pairing.PeerPublicKeyX is null || pairing.PeerPublicKeyY is null)
             return;
 
-        config.Pairing.LastRevocationCheckUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        pairing.LastRevocationCheckUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         config.Save();
 
         RevocationEnvelope[] revocations;
@@ -172,16 +194,15 @@ public sealed class RevocationService
 
         foreach (var revocation in revocations)
         {
-            if (!ApplyIfValid(revocation, peerPublicKey))
-                return; // Once pairing has ended locally, later entries in this batch (if any) no longer apply.
+            if (!ApplyIfValid(revocation, peerPublicKey, pairing))
+                return; // Once this pairing has ended locally, later entries in this batch (if any) no longer apply.
         }
     }
 
     /// Returns true if pairing is still active after processing this revocation (false means it just ended).
     /// Task 5.4: rejects wrong-device, wrong-pair, stale-sequence, expired, and old-epoch revocations.
-    private bool ApplyIfValid(RevocationEnvelope revocation, EcPublicKeyJwk peerPublicKey)
+    private bool ApplyIfValid(RevocationEnvelope revocation, EcPublicKeyJwk peerPublicKey, PairingState pairing)
     {
-        var pairing = config.Pairing;
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         if (revocation.PairIdHash != pairing.PairIdHash) return true;

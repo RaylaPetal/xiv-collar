@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using Oathbound.Plugin.Config;
@@ -10,7 +11,8 @@ using Dalamud.Game.Text.SeStringHandling.Payloads;
 namespace Oathbound.Plugin.Commands;
 
 /// collar/pairing "Receiving a panic notification updates the header": the peer's declared role at the
-/// moment they panicked, so the header can say "your Sub" or "your Owner" - transient, in-memory.
+/// moment they panicked, so the header can say "your Sub" or "your Owner" - transient, in-memory. Keyed by
+/// which specific pairing ended (collar/multi-pairing: one pairing ending via panic never affects another).
 public readonly record struct PeerUnpairedNotice(PluginRole PeerRole);
 
 /// collar/chat-transport's listener, watching every incoming tell for three things:
@@ -60,15 +62,16 @@ public sealed class ChatCommandListener : IDisposable
     private readonly CustomTriggerCommand customTriggers;
     private readonly TeleportCommand teleport;
 
-    public PeerUnpairedNotice? PeerUnpairedNotice { get; private set; }
+    private readonly Dictionary<Guid, PeerUnpairedNotice> peerUnpairedNotices = new();
+    public IReadOnlyDictionary<Guid, PeerUnpairedNotice> PeerUnpairedNotices => peerUnpairedNotices;
     public event Action? PeerUnpairedNoticeChanged;
 
-    /// Called from the header once the notice has been shown and acted on (Owner clicks Release; Sub
-    /// dismisses the informational note) - clears it back to null.
-    public void DismissPeerUnpairedNotice()
+    /// Called from the header once one pairing's notice has been shown and acted on (Owner clicks Release;
+    /// Sub dismisses the informational note) - clears only that pairing's notice.
+    public void DismissPeerUnpairedNotice(Guid pairingId)
     {
-        PeerUnpairedNotice = null;
-        PeerUnpairedNoticeChanged?.Invoke();
+        if (peerUnpairedNotices.Remove(pairingId))
+            PeerUnpairedNoticeChanged?.Invoke();
     }
 
     public ChatCommandListener(PluginConfig config, PairingService pairing, CatalogSyncRelayService catalogSyncRelay, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, CustomTriggerCommand customTriggers, TeleportCommand teleport)
@@ -113,22 +116,29 @@ public sealed class ChatCommandListener : IDisposable
                 return;
         }
 
-        // Only the Sub role ever reacts to ongoing alias triggers - the Owner's plugin only composes (see
-        // ChatComposer), it never applies anything from a tell.
-        if (config.Role != PluginRole.Sub || !config.Pairing.IsPaired)
+        // Only a role that can hold a Sub-side pairing (Sub or Switch) ever reacts to ongoing alias
+        // triggers - the Owner-side of any pairing only composes (see ChatComposer), it never applies
+        // anything from a tell. collar/multi-pairing "Incoming commands resolve against the full peer
+        // list": resolved against every currently-paired peer, independent of which pairing (if any) is
+        // selected as active in the UI.
+        if (config.Role == PluginRole.Owner)
             return;
 
         var (senderName, senderWorld) = ExtractNameAndWorld(message.Sender);
         if (senderName is null)
             return;
-        if (!string.Equals(senderName, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase))
+
+        // World is unavailable on some chat types' sender payload - fall back to a name-only match, but
+        // only when it's unambiguous (some chat types embed PlayerPayload reliably; this mirrors the
+        // pre-multi-pairing leniency for those that don't, without silently guessing between two Owners
+        // sharing a first+last name on different worlds).
+        var matchedPairing = senderWorld is not null
+            ? config.FindPairing(senderName, senderWorld)
+            : SingleOrDefaultIfUnambiguous(config.Pairings.Where(p => p.IsPaired && p.Direction == PairingDirection.SubSide &&
+                string.Equals(p.PeerName, senderName, StringComparison.OrdinalIgnoreCase)));
+        if (matchedPairing is null)
         {
-            Plugin.Log.Information($"Trigger tell ignored: sender \"{senderName}\" does not match the configured peer \"{config.Pairing.PeerName}\".");
-            return;
-        }
-        if (senderWorld is not null && !string.Equals(senderWorld, config.Pairing.PeerWorld, StringComparison.OrdinalIgnoreCase))
-        {
-            Plugin.Log.Information($"Trigger tell ignored: sender world \"{senderWorld}\" does not match the configured peer world \"{config.Pairing.PeerWorld}\".");
+            Plugin.Log.Information($"Trigger tell ignored: sender \"{senderName}\" does not match any currently-paired Owner.");
             return;
         }
 
@@ -148,7 +158,7 @@ public sealed class ChatCommandListener : IDisposable
 
         try
         {
-            var outcome = Resolve(alias);
+            var outcome = Resolve(alias, matchedPairing);
             Plugin.Log.Information($"Trigger tell dispatch: {outcome.Message}");
         }
         catch (Exception ex)
@@ -175,7 +185,9 @@ public sealed class ChatCommandListener : IDisposable
 
         try
         {
-            return Resolve(alias);
+            // No real sender to resolve in a local test - the active pairing (if any) stands in, matching
+            // what a real tell from that peer would use.
+            return Resolve(alias, config.GetActivePairing());
         }
         catch (Exception ex)
         {
@@ -250,15 +262,19 @@ public sealed class ChatCommandListener : IDisposable
         var (name, world) = ExtractNameAndWorld(sender);
         if (name is null)
             return true;
-        if (!string.Equals(name, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (world is not null && !string.Equals(world, config.Pairing.PeerWorld, StringComparison.OrdinalIgnoreCase))
+        var matchedPairing = world is not null
+            ? config.FindPairing(name, world)
+            : SingleOrDefaultIfUnambiguous(config.Pairings.Where(p => p.IsPaired && string.Equals(p.PeerName, name, StringComparison.OrdinalIgnoreCase)));
+        if (matchedPairing is null)
             return true;
 
-        PeerUnpairedNotice = new PeerUnpairedNotice(peerRole);
-        if (config.Role == PluginRole.Sub)
+        peerUnpairedNotices[matchedPairing.Id] = new PeerUnpairedNotice(peerRole);
+        // collar/restraints: only force-unlock this device's own restraints when the ending pairing was
+        // this side's Sub-side relationship - an Owner-side pairing ending (one of this device's Subs
+        // panicked) has no bearing on this device's own restraints.
+        if (matchedPairing.Direction == PairingDirection.SubSide)
             restraints.ForceUnlock();
-        pairing.EndFromVerifiedPeerNotice();
+        pairing.EndFromVerifiedPeerNotice(matchedPairing);
         PeerUnpairedNoticeChanged?.Invoke();
         return true;
     }
@@ -293,7 +309,8 @@ public sealed class ChatCommandListener : IDisposable
         var (requestId, _) = SplitFirstToken(text[CatalogPermissionDeniedKeyword.Length..].Trim());
         if (requestId.Length == 0)
             return true;
-        if (!string.Equals(ExtractNameAndWorld(sender).Name, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase))
+        var (name, world) = ExtractNameAndWorld(sender);
+        if (name is null || world is null || config.FindPairing(name, world) is not { Direction: PairingDirection.OwnerSide })
             return true;
 
         catalogSyncRelay.HandlePermissionDeniedTell(requestId);
@@ -323,7 +340,7 @@ public sealed class ChatCommandListener : IDisposable
     /// (TestIncomingCommand), so neither can drift from what a real tell actually does. An alias that
     /// doesn't match anything the Sub has defined is still never an error visible to the Owner - the result
     /// here is purely local (logged or shown to the Sub only).
-    private LocalTestResult Resolve(string commandText)
+    private LocalTestResult Resolve(string commandText, PairingState? sourcePairing)
     {
         var (firstToken, rest) = SplitFirstToken(commandText);
         var permissions = config.Permissions;
@@ -337,7 +354,7 @@ public sealed class ChatCommandListener : IDisposable
             case "gesture":
                 return permissions.Gesture && config.TosAcknowledged ? HandleForceGesture(rest) : LocalTestResult.Fail("Gesture permission or the automation-risk acknowledgement is not enabled.");
             case "collar":
-                return permissions.Collar ? HandleForceCollar(rest) : LocalTestResult.Fail("Collar permission is not enabled.");
+                return permissions.Collar ? HandleForceCollar(rest, sourcePairing) : LocalTestResult.Fail("Collar permission is not enabled.");
             case "moodle":
                 return permissions.Moodles ? HandleForceMoodle(rest) : LocalTestResult.Fail("Moodles permission is not enabled.");
             case "restraint":
@@ -357,7 +374,7 @@ public sealed class ChatCommandListener : IDisposable
                 return HandleForceTeleport(rest);
         }
 
-        return ResolveAlias(commandText);
+        return ResolveAlias(commandText, sourcePairing);
     }
 
     private LocalTestResult HandleForceTitle(string rest)
@@ -443,18 +460,23 @@ public sealed class ChatCommandListener : IDisposable
     /// Only `collar unlock` exists - the collar only ever applies as a side effect of pairing acceptance
     /// (see AcceptPending), never through a chat command, so there is no `collar lock` counterpart to
     /// title/outfit's own force-apply grammar.
-    private LocalTestResult HandleForceCollar(string rest)
+    private LocalTestResult HandleForceCollar(string rest, PairingState? sourcePairing)
     {
+        if (sourcePairing is null)
+            return LocalTestResult.Fail("No pairing to attribute this command to.");
+
         if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
         {
-            return collar.ForceUnlock()
+            return collar.ForceUnlock(sourcePairing.Id)
                 ? LocalTestResult.Ok("Collar unlocked.")
-                : LocalTestResult.Fail("Collar unlock failed - nothing was locked.");
+                : LocalTestResult.Fail("Collar unlock failed - nothing was locked by this pairing.");
         }
 
         if (rest.Equals("lock", StringComparison.OrdinalIgnoreCase))
         {
-            return collar.ForceApply()
+            // collar/collaring "A different Owner's lock command takes over the collar": this always
+            // supersedes whichever pairing owned the collar before.
+            return collar.ForceApply(sourcePairing.Id)
                 ? LocalTestResult.Ok("Collar applied and locked.")
                 : LocalTestResult.Fail("Collar apply failed - no collar item configured.");
         }
@@ -566,6 +588,14 @@ public sealed class ChatCommandListener : IDisposable
             : LocalTestResult.Fail(reason ?? "Teleport failed.");
     }
 
+    private static PairingState? SingleOrDefaultIfUnambiguous(IEnumerable<PairingState> candidates)
+    {
+        using var e = candidates.GetEnumerator();
+        if (!e.MoveNext()) return null;
+        var only = e.Current;
+        return e.MoveNext() ? null : only;
+    }
+
     private static (string First, string Remainder) SplitFirstToken(string text)
     {
         var trimmed = text.Trim();
@@ -575,7 +605,7 @@ public sealed class ChatCommandListener : IDisposable
 
     private static string StripQuotes(string text) => text.Trim('"', '\'');
 
-    private LocalTestResult ResolveAlias(string alias)
+    private LocalTestResult ResolveAlias(string alias, PairingState? sourcePairing)
     {
         var aliases = config.Aliases;
         var permissions = config.Permissions;
@@ -602,9 +632,9 @@ public sealed class ChatCommandListener : IDisposable
         {
             if (!permissions.Follow)
                 return LocalTestResult.Fail("Follow permission is not enabled.");
-            return follow.Engage()
+            return follow.Engage(sourcePairing?.PeerName)
                 ? LocalTestResult.Ok($"Alias \"{alias}\" matched leash-engage.")
-                : LocalTestResult.Fail("Leash engage failed - movement lock is unavailable.");
+                : LocalTestResult.Fail("Leash engage failed - movement lock is unavailable, or no Owner to follow.");
         }
 
         if (Matches(alias, aliases.Follow.ReleaseAlias))

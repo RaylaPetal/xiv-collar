@@ -410,6 +410,25 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.Version = 4;
             changed = true;
         }
+        // collar/multi-pairing: move the old single `Pairing` field into the new `Pairings` list, active,
+        // so an already-paired install keeps working identically after upgrading. A never-paired install's
+        // default `Pairing` object carries no real state, so it's discarded rather than added as a dead
+        // entry.
+        if (Configuration.Version < 5)
+        {
+            if (Configuration.Pairing is { } legacy &&
+                (!string.IsNullOrWhiteSpace(legacy.PeerName) || !string.IsNullOrWhiteSpace(legacy.PairIdHash)))
+            {
+                legacy.Direction = Configuration.Role == PluginRole.Owner
+                    ? PairingDirection.OwnerSide
+                    : PairingDirection.SubSide;
+                Configuration.Pairings.Add(legacy);
+                Configuration.ActivePairingId = legacy.Id;
+            }
+            Configuration.Pairing = null;
+            Configuration.Version = 5;
+            changed = true;
+        }
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (Configuration.PendingRelayOperations.RemoveAll(o => o.ExpiresAt <= now) > 0)
             changed = true;

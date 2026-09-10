@@ -16,7 +16,7 @@ public sealed class WelcomeWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
     private string triggerPhraseInput = "";
-    private static readonly string[] RoleNames = ["Sub", "Owner"];
+    private static readonly string[] RoleNames = ["Sub", "Owner", "Switch"];
 
     public WelcomeWindow(Plugin plugin) : base("Welcome to Oathbound###OathboundWelcome")
     {
@@ -40,10 +40,10 @@ public sealed class WelcomeWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        var roleIndex = config.Role == PluginRole.Owner ? 1 : 0;
+        var roleIndex = config.Role switch { PluginRole.Owner => 1, PluginRole.Switch => 2, _ => 0 };
         if (ImGui.Combo("Role", ref roleIndex, RoleNames, RoleNames.Length))
-            config.Role = roleIndex == 1 ? PluginRole.Owner : PluginRole.Sub;
-        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only Sub actually gates anything. Owner is mostly informational. You can switch roles later in Settings.");
+            config.Role = roleIndex switch { 1 => PluginRole.Owner, 2 => PluginRole.Switch, _ => PluginRole.Sub };
+        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only a Sub-side pairing actually gates anything. Owner is mostly informational. Switch can be both at once. You can change this later in Settings.");
 
         ImGui.Spacing();
         ImGui.InputTextWithHint("Trigger phrase", "e.g. command", ref triggerPhraseInput, 32);
@@ -60,7 +60,7 @@ public sealed class WelcomeWindow : Window, IDisposable
             config.HasCompletedWelcome = true;
             config.Save();
             IsOpen = false;
-            plugin.TutorialDriver.StartIfUnseen(config.Role);
+            plugin.TutorialDriver.StartIfUnseenForRole(config.Role);
         }
     }
 }

@@ -228,7 +228,7 @@ public class CollarWindow : Window, IDisposable
         ImGui.Spacing();
         DrawTutorialCallout();
         using var card = Card.Begin("moduleCard");
-        var isOwner = plugin.Configuration.Role == PluginRole.Owner;
+        var isOwner = ResolveOwnerModeView();
         switch (activeModule)
         {
             case "title":
@@ -292,7 +292,7 @@ public class CollarWindow : Window, IDisposable
         if (driver.CurrentStep is not { } step)
             return;
 
-        var text = plugin.Configuration.Role == PluginRole.Owner ? step.OwnerText : step.SubText;
+        var text = driver.ActiveDirection == PairingDirection.OwnerSide ? step.OwnerText : step.SubText;
         // Fixed, compact height + noScroll: Card.Begin's default (0,0) size fills all remaining window
         // space in ImGui, which left no room for the module card below and forced the whole window to
         // scroll - matching the nav bar's own fixed-height, noScroll card for the same reason.
@@ -312,10 +312,27 @@ public class CollarWindow : Window, IDisposable
     /// shared category tab's Owner-role view instead. Returns whether Send should be enabled on that tab.
     private bool DrawOwnerCanSendBanner()
     {
-        var canSend = plugin.Configuration.Pairing.IsPaired;
+        var canSend = plugin.Configuration.ActivePairing is { Direction: PairingDirection.OwnerSide };
         if (!canSend)
-            IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until pairing captures your Sub's name (Settings' handshake), or is re-enabled after a panic/unpair. Copy still works any time.");
+            IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until an Owner-side pairing is active (select one in the header, or pair from Settings' handshake if you have none). Copy still works any time.");
         return canSend;
+    }
+
+    /// collar/multi-pairing "Active pairing selection drives outgoing commands and role-aware views": which
+    /// direction's view a shared category tab renders. The active pairing's own direction wins when one is
+    /// selected; otherwise it falls back to the device's Role (Owner/Sub), and for a Switch with nothing
+    /// active, the last direction it was showing.
+    private bool ResolveOwnerModeView()
+    {
+        var config = plugin.Configuration;
+        var isOwner = config.ResolveActiveDirection() == PairingDirection.OwnerSide;
+
+        if (config.Role == PluginRole.Switch && config.SwitchLastUsedOwnerView != isOwner)
+        {
+            config.SwitchLastUsedOwnerView = isOwner;
+            config.Save();
+        }
+        return isOwner;
     }
 
     /// collar/ui-organization: replaces the stale "use \"Import commands\" above" message these
@@ -693,8 +710,6 @@ public class CollarWindow : Window, IDisposable
     private void DrawCharacterHeader()
     {
         var pending = plugin.PairingService.Pending;
-        var peerUnpairedNotice = plugin.ChatCommandListener.PeerUnpairedNotice;
-        var pairing = plugin.Configuration.Pairing;
         var config = plugin.Configuration;
         var character = CharacterHeaderModel.Current();
         var sameRoleWarning = pending is { } p && p.SenderRole == config.Role;
@@ -740,55 +755,15 @@ public class CollarWindow : Window, IDisposable
             using (ImRaii.Disabled(invitationExpired))
                 if (ImGui.Button("Accept"))
                     Plugin.FireAndForget(plugin.PairingService.AcceptPendingAsync(System.Threading.CancellationToken.None));
-            IconGlyph.HelpMarker("Trusts this sender as your paired peer from now on. Locks pairing on if you're set to Sub (only /oathboundpanic, your safeword command, undoes it) - if you're set to Owner, Release pairing (below, once accepted) undoes it any time.");
+            IconGlyph.HelpMarker("Trusts this sender as your paired peer from now on. Locks pairing on for its Sub-side (only /oathboundpanic, your safeword command, undoes it) - the Owner-side can Release pairing (below, once accepted) any time.");
             ImGui.SameLine();
             if (ImGui.Button("Reject"))
                 plugin.PairingService.DismissPending();
+            ImGui.Spacing();
+            ImGui.Separator();
         }
-        else if (peerUnpairedNotice is { } ownerNotice && config.Role == PluginRole.Owner)
-        {
-            var peerLabel = ownerNotice.PeerRole == PluginRole.Owner ? "Your Owner's" : "Your Sub's";
-            IconGlyph.WrappedColored(Theme.Warning, $"{peerLabel} side ended pairing via panic - they will not receive any commands until you pair again.");
-            if (ImGui.Button("Release pairing"))
-            {
-                plugin.PairingService.ReleasePeer();
-                plugin.ChatCommandListener.DismissPeerUnpairedNotice();
-            }
-            IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your former Sub's plugin at all.");
-        }
-        else if (!pairing.IsPaired)
-        {
-            IconGlyph.WrappedColored(Theme.TextMuted, "Not paired");
-            IconGlyph.WrappedDisabled("Send or accept a relay invitation from Settings when you're ready.");
-        }
-        else if (config.Role == PluginRole.Owner)
-        {
-            IconGlyph.WrappedColored(Theme.Success, $"Owns: {pairing.PeerName}@{pairing.PeerWorld}");
-            if (ImGui.Button("Release pairing"))
-                plugin.PairingService.ReleasePeer();
-            IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your Sub's plugin at all. Use this to fix a stale/wrong pairing or to free them up to pair with someone else.");
 
-            var channelIndex = (int)config.OutgoingChannel;
-            ImGui.SetNextItemWidth(200f);
-            if (ImGui.Combo("Send commands via##outgoingChannel", ref channelIndex, ChatChannelNames, ChatChannelNames.Length))
-            {
-                config.OutgoingChannel = (ChatChannel)channelIndex;
-                config.Save();
-            }
-            IconGlyph.HelpMarker("Which channel your commands are sent on. Your Sub listens on all of these already, so nothing needs to change on their side. Linkshell/Cross-world Linkshell number is set in Settings.");
-        }
-        else
-        {
-            IconGlyph.WrappedColored(Theme.Success, $"Owned by: {pairing.PeerName}@{pairing.PeerWorld}");
-            IconGlyph.WrappedDisabled("Locked until you use /oathboundpanic.");
-            if (peerUnpairedNotice is { } subNotice)
-            {
-                var peerLabel = subNotice.PeerRole == PluginRole.Owner ? "your Owner's" : "your Sub's";
-                IconGlyph.WrappedColored(Theme.Warning, $"Note: {peerLabel} side ended pairing via panic. You're still paired and locked until you use /oathboundpanic - this doesn't change that.");
-                if (ImGui.SmallButton("Dismiss##peerUnpairedNotice"))
-                    plugin.ChatCommandListener.DismissPeerUnpairedNotice();
-            }
-        }
+        DrawPairingsList(config);
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -796,16 +771,99 @@ public class CollarWindow : Window, IDisposable
         SafewordEditor.Draw(config, "mainHeader", ref revealSafeword);
         IconGlyph.HelpMarker("This only configures the typed /oathboundpanic command; editing it never triggers panic or changes pairing.");
 
-        if (config.Role == PluginRole.Owner)
+        if (config.Role != PluginRole.Sub)
         {
             ImGui.Spacing();
             ImGui.Separator();
+            var channelIndex = (int)config.OutgoingChannel;
+            ImGui.SetNextItemWidth(200f);
+            if (ImGui.Combo("Send commands via##outgoingChannel", ref channelIndex, ChatChannelNames, ChatChannelNames.Length))
+            {
+                config.OutgoingChannel = (ChatChannel)channelIndex;
+                config.Save();
+            }
+            IconGlyph.HelpMarker("Which channel your commands are sent on, for every Sub you own. They listen on all of these already, so nothing needs to change on their side. Linkshell/Cross-world Linkshell number is set in Settings.");
             DrawTeleportHeaderAction();
         }
 
         ImGui.Spacing();
         ImGui.EndTable();
         ImGui.PopID();
+    }
+
+    /// collar/pairing "Always-visible local character and relationship header" (multi-pairing): every
+    /// active pairing gets its own row with peer/direction, notice, and (Owner-side) Release control; an
+    /// active-pairing selector only appears once there's more than one to choose between.
+    private void DrawPairingsList(PluginConfig config)
+    {
+        var pairings = config.Pairings.Where(p => p.IsPaired).ToList();
+        if (pairings.Count == 0)
+        {
+            IconGlyph.WrappedColored(Theme.TextMuted, "Not paired");
+            IconGlyph.WrappedDisabled("Send or accept a relay invitation from Settings when you're ready.");
+            return;
+        }
+
+        var notices = plugin.ChatCommandListener.PeerUnpairedNotices;
+        var multiplePairings = pairings.Count > 1;
+
+        foreach (var pairing in pairings)
+        {
+            ImGui.PushID(pairing.Id.GetHashCode());
+            var isActive = config.ActivePairingId == pairing.Id;
+
+            if (multiplePairings)
+            {
+                if (ImGui.RadioButton("##activePairing", isActive) && !isActive)
+                {
+                    config.ActivePairingId = pairing.Id;
+                    config.Save();
+                }
+                ImGui.SameLine();
+                IconGlyph.HelpMarker("Selects this pairing as active - outgoing commands target it, and shared category tabs show its Owner/Sub view.");
+                ImGui.SameLine();
+            }
+
+            var relationshipLabel = pairing.Direction == PairingDirection.OwnerSide
+                ? $"Owns: {pairing.PeerName}@{pairing.PeerWorld}"
+                : $"Owned by: {pairing.PeerName}@{pairing.PeerWorld}";
+            IconGlyph.WrappedColored(Theme.Success, relationshipLabel + (isActive && multiplePairings ? "  (active)" : ""));
+
+            if (pairing.Direction == PairingDirection.OwnerSide)
+            {
+                if (ImGui.SmallButton("Release pairing"))
+                    plugin.PairingService.ReleasePeer(pairing);
+                IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch their plugin at all. Use this to fix a stale/wrong pairing or to free them up to pair with someone else.");
+            }
+            else
+            {
+                IconGlyph.WrappedDisabled("Locked until you use /oathboundpanic.");
+            }
+
+            if (notices.TryGetValue(pairing.Id, out var notice))
+            {
+                if (pairing.Direction == PairingDirection.OwnerSide)
+                {
+                    var peerLabel = notice.PeerRole == PluginRole.Owner ? "Your Owner's" : "Your Sub's";
+                    IconGlyph.WrappedColored(Theme.Warning, $"{peerLabel} side ended pairing via panic - they will not receive any commands until you pair again.");
+                    if (ImGui.SmallButton("Dismiss and release##peerUnpairedNotice"))
+                    {
+                        plugin.PairingService.ReleasePeer(pairing);
+                        plugin.ChatCommandListener.DismissPeerUnpairedNotice(pairing.Id);
+                    }
+                }
+                else
+                {
+                    var peerLabel = notice.PeerRole == PluginRole.Owner ? "your Owner's" : "your Sub's";
+                    IconGlyph.WrappedColored(Theme.Warning, $"Note: {peerLabel} side ended pairing via panic. You're still paired and locked until you use /oathboundpanic - this doesn't change that.");
+                    if (ImGui.SmallButton("Dismiss##peerUnpairedNotice"))
+                        plugin.ChatCommandListener.DismissPeerUnpairedNotice(pairing.Id);
+                }
+            }
+
+            ImGui.Spacing();
+            ImGui.PopID();
+        }
     }
 
     /// collar/ui-organization "Header includes a quick Teleport action": relocated here from the Follow /
@@ -1253,7 +1311,7 @@ public class CollarWindow : Window, IDisposable
 
     private bool BoundAnimationsConfigured(RestraintRuleEditState edit)
     {
-        bool Contains(string id) => plugin.Configuration.Role == PluginRole.Owner
+        bool Contains(string id) => ResolveOwnerModeView()
             ? plugin.Configuration.GestureMapping.ImportedPeerCatalog.ContainsKey(id)
             : plugin.Configuration.GestureMapping.LocalCatalog.ContainsKey(id);
         bool Valid(bool enabled, string? id) => !enabled || id is not null && Contains(id);
@@ -1315,7 +1373,7 @@ public class CollarWindow : Window, IDisposable
             return;
 
         ImGui.Indent();
-        var ownerMode = plugin.Configuration.Role == PluginRole.Owner;
+        var ownerMode = ResolveOwnerModeView();
         var localCatalog = plugin.Configuration.GestureMapping.LocalCatalog;
         var peerCatalog = plugin.Configuration.GestureMapping.ImportedPeerCatalog;
         var chosenLabel = "(none chosen)";
@@ -2078,20 +2136,20 @@ public class CollarWindow : Window, IDisposable
     private void DrawCatalogRelaySection()
     {
         var relayService = plugin.CatalogSyncRelayService;
-        var pairing = plugin.Configuration.Pairing;
+        var pairing = plugin.Configuration.ActivePairing;
         IconGlyph.Text(FontAwesomeIcon.CloudDownloadAlt, "Cloud catalog sync");
         IconGlyph.WrappedDisabled("Securely requests the latest catalog from your paired Sub through the Oathbound Cloudflare relay. No file transfer is needed.");
-        if (!pairing.IsPaired)
+        if (pairing is not { Direction: PairingDirection.OwnerSide })
         {
-            IconGlyph.WrappedDisabled("Not paired - pair from Settings first. The offline file fallback remains available below.");
+            IconGlyph.WrappedDisabled("No Owner-side pairing is active - select one above, or pair from Settings first. The offline file fallback remains available below.");
             return;
         }
 
-        var cooldown = relayService.CooldownRemaining;
+        var cooldown = relayService.CooldownRemaining(pairing);
         using (ImRaii.Disabled(relayService.RequestInFlight || cooldown is not null))
         {
             if (ImGui.Button(relayService.RequestInFlight ? "Requesting..." : "Request refresh"))
-                Plugin.FireAndForget(relayService.RequestRefreshAsync(System.Threading.CancellationToken.None));
+                Plugin.FireAndForget(relayService.RequestRefreshAsync(pairing, System.Threading.CancellationToken.None));
         }
         IconGlyph.HelpMarker("Asks your paired Sub for a fresh, end-to-end encrypted catalog snapshot instead of a manually transferred file - at most once every four hours, enforced by both sides.");
 
@@ -2646,7 +2704,7 @@ public class CollarWindow : Window, IDisposable
         string? LabelFor(string? id)
         {
             if (id is null) return null;
-            if (plugin.Configuration.Role == PluginRole.Owner && plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(id, out var peer))
+            if (ResolveOwnerModeView() && plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(id, out var peer))
                 return CommandSelector.GestureSelector(peer, plugin.Configuration.GestureMapping.ImportedPeerCatalog.Values);
             return plugin.Configuration.GestureMapping.LocalCatalog.TryGetValue(id, out var local)
                 ? CommandSelector.GestureLabel(local.ModName, local.GroupName, local.AnimationName, local.Trigger) : null;

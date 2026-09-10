@@ -92,9 +92,11 @@ public sealed class ChatComposer
     /// is already known (the peer identity cached at the moment panic ran), so this composes a full
     /// `/tell` directly rather than going through Wrap. Carries no code - ending a trust relationship
     /// doesn't need one, only establishing a new one does (see design.md).
-    public string ComposeUnpairNotice(string name, string world)
+    /// `direction` is this device's role in the specific pairing that just ended - never the device's
+    /// overall Role, since a Switch's Role doesn't say which direction any one pairing was.
+    public string ComposeUnpairNotice(string name, string world, PairingDirection direction)
     {
-        var roleToken = config.Role == PluginRole.Owner ? "owner" : "sub";
+        var roleToken = direction == PairingDirection.OwnerSide ? "owner" : "sub";
         return $"/tell {name}@{world} collarunpair {roleToken}";
     }
 
@@ -114,11 +116,14 @@ public sealed class ChatComposer
     /// four need no address, just their own channel command (see ChatChannelPrefix).
     private string Wrap(string body)
     {
-        var pairing = config.Pairing;
-        var trigger = (!string.IsNullOrWhiteSpace(pairing.PeerTriggerPhrase) ? pairing.PeerTriggerPhrase : config.TriggerPhrase).Trim();
+        // collar/multi-pairing "Active pairing selection drives outgoing commands": addressed to the
+        // active pairing's peer, or no target at all if none is selected.
+        var pairing = config.GetActivePairing();
+        var peerTriggerPhrase = pairing?.PeerTriggerPhrase;
+        var trigger = (!string.IsNullOrWhiteSpace(peerTriggerPhrase) ? peerTriggerPhrase : config.TriggerPhrase).Trim();
         var full = $"{trigger} {body}".Trim();
 
-        if (!pairing.IsPaired)
+        if (pairing is not { IsPaired: true })
             return full;
 
         if (config.OutgoingChannel == ChatChannel.Tell)

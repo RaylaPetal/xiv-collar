@@ -54,15 +54,17 @@ public sealed class FollowCommand
         Chat.SendMessage("/follow <t>");
     }
 
-    public bool Engage()
+    /// `peerName` is the specific Owner-side pairing whose incoming command triggered this (collar/
+    /// multi-pairing: resolved from the tell's own verified sender, not any single configured peer).
+    public bool Engage(string? peerName)
     {
-        if (!movementLock.IsAvailable)
+        if (!movementLock.IsAvailable || peerName is null)
             return false;
 
-        var owner = Plugin.ObjectTable.FirstOrDefault(o => string.Equals(o.Name.TextValue, config.Pairing.PeerName, StringComparison.OrdinalIgnoreCase));
+        var owner = Plugin.ObjectTable.FirstOrDefault(o => string.Equals(o.Name.TextValue, peerName, StringComparison.OrdinalIgnoreCase));
         if (owner is null)
         {
-            Plugin.Log.Warning($"Leash refused: paired Owner '{config.Pairing.PeerName}' is not a targetable player in the current area.");
+            Plugin.Log.Warning($"Leash refused: paired Owner '{peerName}' is not a targetable player in the current area.");
             return false;
         }
 

@@ -43,7 +43,11 @@ public sealed class CollarCommand
     /// assigned.
     public void OnFrameworkUpdate()
     {
-        if (!config.Pairing.IsPaired || !config.Permissions.Collar || !config.Collar.HasMoodleAssigned)
+        // collar/collaring: re-asserts for as long as the collar-owning pairing (see ForceApply) remains
+        // paired - not "any pairing," since only that one relationship's authority governs this device's
+        // single Neck slot.
+        var owningPairing = config.CollarOwningPairingId is { } id ? config.FindPairingById(id) : null;
+        if (owningPairing is not { IsPaired: true } || !config.Permissions.Collar || !config.Collar.HasMoodleAssigned)
             return;
 
         var now = Environment.TickCount64;
@@ -93,7 +97,11 @@ public sealed class CollarCommand
     /// was accepted). If a Moodle is assigned, it applies alongside the item and its periodic
     /// re-assertion (OnFrameworkUpdate) begins - collar/collaring "Assigned Moodle applies alongside the
     /// collar at acceptance"/"Owner's re-lock also resumes the assigned Moodle".
-    public bool ForceApply()
+    /// `pairingId` is the pairing whose authority this apply/lock is exercised under - collar/collaring
+    /// "Collar applied and locked on pairing acceptance" and "Owner can (re-)apply the collar directly":
+    /// the Neck slot can only ever be locked by one pairing at a time, so this always takes over as the
+    /// collar-owning pairing, superseding whichever pairing (if any) owned it before.
+    public bool ForceApply(Guid pairingId)
     {
         if (!config.Collar.IsConfigured)
             return false;
@@ -102,6 +110,8 @@ public sealed class CollarCommand
         if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [ApiEquipSlot.Neck] = value }))
             return false;
 
+        config.CollarOwningPairingId = pairingId;
+        config.Save();
         runtimeState.CollarForceLocked = true;
         if (config.Collar.HasMoodleAssigned)
             ApplyAssignedMoodle();
@@ -109,16 +119,21 @@ public sealed class CollarCommand
         return true;
     }
 
-    /// The Owner's `collar unlock` override - releases only the Neck-slot lock. The assigned Moodle (if
-    /// any) is untouched and keeps being periodically re-asserted, since it now tracks the pairing rather
-    /// than the lock - collar/collaring "Owner's release also clears the assigned Moodle" (no longer true;
-    /// see that scenario's updated body).
-    public bool ForceUnlock()
+    /// The Owner's `collar unlock` override - releases only the Neck-slot lock. Ignored when `pairingId`
+    /// is not the current collar-owning pairing (collar/collaring "A non-owning pairing's release command
+    /// is ignored"). The assigned Moodle (if any) is untouched and keeps being periodically re-asserted,
+    /// since it now tracks the pairing rather than the lock - collar/collaring "Owner's release also clears
+    /// the assigned Moodle" (no longer true; see that scenario's updated body).
+    public bool ForceUnlock(Guid pairingId)
     {
+        if (config.CollarOwningPairingId != pairingId)
+            return false;
         if (!slotLocks.HasLock(Owner))
             return false;
 
         slotLocks.Release(Owner);
+        config.CollarOwningPairingId = null;
+        config.Save();
         runtimeState.CollarForceLocked = false;
 
         return true;
@@ -138,6 +153,9 @@ public sealed class CollarCommand
             runtimeState.CollarForceLocked = false;
         }
 
+        config.CollarOwningPairingId = null;
+        config.Save();
+
         if (config.Collar.HasMoodleAssigned)
             moodles.Clear();
     }
@@ -150,6 +168,9 @@ public sealed class CollarCommand
     /// and must have it cleared on panic too. A no-op when no Moodle is assigned.
     public void PanicRelease()
     {
+        config.CollarOwningPairingId = null;
+        config.Save();
+
         if (config.Collar.HasMoodleAssigned)
             moodles.Clear();
     }

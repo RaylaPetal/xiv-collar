@@ -115,9 +115,13 @@ public static class QuickAccessMenu
         // configured as Sub has nothing to send them to (its own client never applies anything it sends
         // to itself, see ChatCommandListener.OnChatMessage's Role check), so the menu stays limited to the
         // plain open-window shortcuts below instead of exposing a Send list that would only do nothing.
-        if (plugin.Configuration.Role == PluginRole.Owner)
+        // collar/multi-pairing: driven by the active pairing's direction (falling back to Role when none is
+        // active), matching CollarWindow's own Owner/Sub view selection.
+        var activePairing = plugin.Configuration.ActivePairing;
+        var isOwnerMode = plugin.Configuration.ResolveActiveDirection() == PairingDirection.OwnerSide;
+        if (isOwnerMode)
         {
-            var canSend = plugin.Configuration.Pairing.IsPaired;
+            var canSend = activePairing is { Direction: PairingDirection.OwnerSide };
             var favoritesByCategory = CategorizedFavorites(plugin.Configuration.QuickCommands);
             var teleportFavorited = plugin.Configuration.QuickCommands.FavoriteFixedActions.Contains(FixedActionIds.Teleport);
 

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
@@ -58,15 +59,14 @@ public sealed class PanicHandler
     /// independent best-effort additions on top of teardown that has already fully happened.
     public void Panic()
     {
-        // Snapshot notification data first: EndPairingLocally only flips Paired (never clears these), but
+        // collar/multi-pairing: panic ends every active pairing this device holds, not just one. Snapshot
+        // each one's notification data first: EndPairingLocally only flips Paired (never clears these), but
         // capturing them before touching anything at all keeps this immune to any future change in what
         // local teardown clears.
-        var peerName = config.Pairing.PeerName;
-        var peerWorld = config.Pairing.PeerWorld;
-        var pairIdHash = config.Pairing.PairIdHash;
-        var pairEpoch = config.Pairing.PairEpoch;
+        var pairings = config.Pairings.Where(p => p.IsPaired).ToList();
+        var notifyTargets = pairings.Select(p => (Pairing: p, p.PeerName, p.PeerWorld, p.PairIdHash, p.PairEpoch)).ToList();
 
-        RunStep("unpair", () => pairing.EndPairingLocally());
+        RunStep("unpair", () => { foreach (var p in pairings) pairing.EndPairingLocally(p); });
         RunStep("revert outfit/collar", () => glamourer.RevertToAutomationFull());
         RunStep("release slot locks", slotLocks.ReleaseAllForPanic);
         RunStep("clear collar moodle", collar.PanicRelease);
@@ -82,18 +82,21 @@ public sealed class PanicHandler
         RunStep("release restraint bound animations", restraints.ReleaseAllBoundAnimationsForPanic);
 
         runtimeState.Reset();
-        Plugin.Log.Information("Panic triggered: unpaired, outfit/collar reverted, title cleared, movement lock released, all slot locks and restriction rules released.");
+        Plugin.Log.Information($"Panic triggered: unpaired {pairings.Count} pairing(s), outfit/collar reverted, title cleared, movement lock released, all slot locks and restriction rules released.");
 
-        // Everything above is already done, unconditionally, by this point. Only now are the two
-        // best-effort notifications attempted, independently of each other and of everything above.
-        RunStep("notify peer (tell)", () =>
+        // Everything above is already done, unconditionally, by this point. Only now are the best-effort
+        // notifications attempted, one pair per ended pairing, each independently of every other.
+        foreach (var (targetPairing, peerName, peerWorld, pairIdHash, pairEpoch) in notifyTargets)
         {
-            if (!string.IsNullOrWhiteSpace(peerName) && !string.IsNullOrWhiteSpace(peerWorld))
-                sender.Send(composer.ComposeUnpairNotice(peerName, peerWorld));
-        });
+            RunStep("notify peer (tell)", () =>
+            {
+                if (!string.IsNullOrWhiteSpace(peerName) && !string.IsNullOrWhiteSpace(peerWorld))
+                    sender.Send(composer.ComposeUnpairNotice(peerName!, peerWorld!, targetPairing.Direction));
+            });
 
-        if (pairIdHash is not null)
-            Plugin.FireAndForget(revocation.PublishBestEffortAsync(pairIdHash, pairEpoch, "panic", CancellationToken.None));
+            if (pairIdHash is not null)
+                Plugin.FireAndForget(revocation.PublishBestEffortAsync(targetPairing, pairIdHash, pairEpoch, "panic", CancellationToken.None));
+        }
     }
 
     private static void RunStep(string name, Action step)

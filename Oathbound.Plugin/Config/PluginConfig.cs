@@ -14,6 +14,22 @@ public enum PluginRole
 {
     Owner,
     Sub,
+
+    /// collar/multi-pairing: can hold pairings in both directions at once - Owner-side (commanding a Sub)
+    /// and Sub-side (being commanded by an Owner). See PairingState.Direction and PluginConfig.Pairings.
+    Switch,
+}
+
+/// collar/multi-pairing: which side of a specific pairing this device is on. Independent of the device's
+/// own Role - a Switch holds pairings of both directions; an Owner or Sub only ever holds pairings matching
+/// their own single direction.
+public enum PairingDirection
+{
+    /// This device commands the peer (the peer is the Sub in this relationship).
+    OwnerSide,
+
+    /// This device is commanded by the peer (the peer is the Owner in this relationship).
+    SubSide,
 }
 
 /// collar/ui-organization "A movable on-screen button opens the quick-access favorites menu".
@@ -60,6 +76,16 @@ public class FavoritesButtonSettings
 [Serializable]
 public class PairingState
 {
+    /// collar/multi-pairing: stable identity for this specific pairing, generated once when the pairing is
+    /// created (invitation sent, or invitation accepted) and never reused - what `ActivePairingId` and
+    /// `CollarOwningPairingId` reference, since peer name/world can change over time but this can't.
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// collar/multi-pairing: which side of this specific relationship this device is on. Set once, when the
+    /// pairing is created, from the local Role at that moment (Owner/Switch sending or accepting as the
+    /// commanding side -> OwnerSide; Sub/Switch accepting or being invited as the commanded side -> SubSide).
+    public PairingDirection Direction { get; set; }
+
     /// Deterministic (SHA-256 of both devices' sorted key ids - see RelayCrypto/computePairIdHash on the
     /// Worker), so this side can always recompute it locally; cached here so it doesn't need recomputing
     /// on every relay call.
@@ -180,6 +206,11 @@ public class PendingRelayOperationState
     public string OperationId { get; set; } = "";
     public string? Target { get; set; }
     public long ExpiresAt { get; set; }
+
+    /// collar/multi-pairing: which direction a "pair-invite" operation declared itself as, so an invite
+    /// interrupted by a restart resumes with its original direction rather than re-deriving it from the
+    /// device's current Role (ambiguous for Switch, and wrong if Role changed since the invite was sent).
+    public PairingDirection Direction { get; set; }
 }
 
 /// collar/catalog-sync: where a `QuickCommand` came from - lets reset-imports (see CollarWindow's
@@ -485,9 +516,14 @@ public class RestraintCatalogExportEntry
 [Serializable]
 public class PluginConfig : IPluginConfiguration
 {
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
 
     public PluginRole Role { get; set; } = PluginRole.Sub;
+
+    /// collar/ui-organization "Switch with no active pairing falls back to a default view": which direction
+    /// a Switch's shared category tabs last rendered, used only while Switch has no active pairing selected
+    /// (an active pairing's own direction always wins otherwise). Defaults to Sub-side (false).
+    public bool SwitchLastUsedOwnerView { get; set; }
 
     /// collar/onboarding: whether the first-run Welcome window (Role + trigger phrase setup) has been
     /// completed or dismissed. An install that predates this field is migrated to `true` on load (see
@@ -504,7 +540,26 @@ public class PluginConfig : IPluginConfiguration
     /// who has seen one Role's tutorial has not necessarily seen the other's.
     public bool HasSeenSubTutorial { get; set; }
 
-    public PairingState Pairing { get; set; } = new();
+    /// collar/multi-pairing: every concurrent pairing this device holds, in either direction. Replaces the
+    /// old single scalar `Pairing` field (see `LegacyPairing` for the one-time migration path).
+    public List<PairingState> Pairings { get; set; } = new();
+
+    /// collar/multi-pairing: which pairing outgoing commands are currently addressed to, and which
+    /// direction's view shared category tabs render. Null means no pairing is selected (e.g. nothing is
+    /// paired yet, or the sole prior pairing just ended).
+    public Guid? ActivePairingId { get; set; }
+
+    /// collar/collaring: which pairing currently holds the Neck-slot collar lock - at most one, since the
+    /// Neck slot itself can only ever be locked by one relationship at a time. Null means the collar is not
+    /// currently locked by any pairing.
+    public Guid? CollarOwningPairingId { get; set; }
+
+    /// Migration-only: the pre-multi-pairing single pairing. Kept under its original property name so an
+    /// old config file (serialized before this change) still deserializes it correctly; `Plugin.
+    /// MigrateConfiguration` reads it once to seed `Pairings[0]` and then sets it back to null. Never read
+    /// or written anywhere else - every other call site uses `Pairings`/`GetActivePairing()`/`FindPairing()`.
+    public PairingState? Pairing { get; set; }
+
     public DeviceIdentityState DeviceIdentity { get; set; } = new();
     public List<RevocationRetryEntry> RevocationOutbox { get; set; } = new();
     public List<PendingRelayOperationState> PendingRelayOperations { get; set; } = new();
@@ -595,6 +650,46 @@ public class PluginConfig : IPluginConfiguration
 
     [JsonIgnore]
     public Action? SaveOverride { get; set; }
+
+    /// collar/multi-pairing: the pairing outgoing commands are currently addressed to, or null if none is
+    /// selected. Never returns a pairing that has since become unpaired.
+    [JsonIgnore]
+    public PairingState? ActivePairing => ActivePairingId is { } id ? FindPairingById(id) is { IsPaired: true } p ? p : null : null;
+
+    public PairingState? GetActivePairing() => ActivePairing;
+
+    /// collar/multi-pairing "Incoming commands resolve against the full peer list": matches an incoming
+    /// message's verified sender against every currently-paired peer, independent of which pairing (if any)
+    /// is active. Case-insensitive, since FFXIV character/world names are not case-sensitive identity.
+    public PairingState? FindPairing(string? name, string? world)
+    {
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(world)) return null;
+        return Pairings.FirstOrDefault(p => p.IsPaired &&
+            string.Equals(p.PeerName, name, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(p.PeerWorld, world, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public PairingState? FindPairingById(Guid id) => Pairings.FirstOrDefault(p => p.Id == id);
+
+    [JsonIgnore]
+    public IEnumerable<PairingState> ActivePairings => Pairings.Where(p => p.IsPaired);
+
+    [JsonIgnore]
+    public bool HasActiveSubSidePairing => Pairings.Any(p => p.IsPaired && p.Direction == PairingDirection.SubSide);
+
+    [JsonIgnore]
+    public bool HasActiveOwnerSidePairing => Pairings.Any(p => p.IsPaired && p.Direction == PairingDirection.OwnerSide);
+
+    /// collar/multi-pairing "Active pairing selection drives outgoing commands and role-aware views": the
+    /// active pairing's own direction wins when one is selected; otherwise falls back to Role, and for a
+    /// Switch with nothing active, to whichever direction its shared category tabs last showed.
+    public PairingDirection ResolveActiveDirection() => ActivePairing switch
+    {
+        { } active => active.Direction,
+        null when Role == PluginRole.Owner => PairingDirection.OwnerSide,
+        null when Role == PluginRole.Sub => PairingDirection.SubSide,
+        _ => SwitchLastUsedOwnerView ? PairingDirection.OwnerSide : PairingDirection.SubSide,
+    };
 
     public void Save()
     {

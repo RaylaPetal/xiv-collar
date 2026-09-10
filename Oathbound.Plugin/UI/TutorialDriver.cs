@@ -63,19 +63,24 @@ public sealed class TutorialDriver
     }
 
     public bool IsActive { get; private set; }
-    public PluginRole? ActiveRole { get; private set; }
+    public PairingDirection? ActiveDirection { get; private set; }
+
+    /// collar/multi-pairing: set only while chaining from the Owner tutorial into the Sub tutorial for a
+    /// Switch's first-ever Role selection (see StartIfUnseenForRole) - consumed and cleared as soon as the
+    /// chained tutorial starts.
+    private PairingDirection? pendingChainDirection;
 
     public TutorialStep? CurrentStep => IsActive && stepIndex < activeSteps.Count ? activeSteps[stepIndex] : null;
     public int CurrentStepNumber => stepIndex + 1;
     public int TotalSteps => activeSteps.Count;
     public bool IsLastStep => stepIndex >= activeSteps.Count - 1;
 
-    /// Starts (or restarts) the guided tutorial for `role` unconditionally - used by Settings' "Rerun
-    /// Tutorial" button, which must replay regardless of whether that Role's tutorial has already been seen.
-    public void Start(PluginRole role)
+    /// Starts (or restarts) the guided tutorial for `direction` unconditionally - used by Settings' "Rerun
+    /// Tutorial" button, which must replay regardless of whether it has already been seen.
+    public void Start(PairingDirection direction)
     {
-        ActiveRole = role;
-        activeSteps = role == PluginRole.Owner
+        ActiveDirection = direction;
+        activeSteps = direction == PairingDirection.OwnerSide
             ? AllSteps.Where(s => s.OwnerText is not null).ToList()
             : AllSteps.Where(s => s.SubText is not null).ToList();
         stepIndex = 0;
@@ -88,13 +93,43 @@ public sealed class TutorialDriver
     }
 
     /// collar/onboarding "Tutorial completion is tracked independently per Role": only starts the tutorial
-    /// for `role` if that Role's `HasSeen*Tutorial` flag is still false - the path used by the Welcome
-    /// window's "Continue" action and by a Role change elsewhere (e.g. Settings' Role combo).
-    public void StartIfUnseen(PluginRole role)
+    /// for `direction` if its `HasSeen*Tutorial` flag is still false.
+    public void StartIfUnseen(PairingDirection direction)
     {
-        var seen = role == PluginRole.Owner ? plugin.Configuration.HasSeenOwnerTutorial : plugin.Configuration.HasSeenSubTutorial;
+        var seen = direction == PairingDirection.OwnerSide ? plugin.Configuration.HasSeenOwnerTutorial : plugin.Configuration.HasSeenSubTutorial;
         if (!seen)
-            Start(role);
+            Start(direction);
+    }
+
+    /// collar/onboarding "Tutorial completion is tracked independently per Role" / "First-ever switch to
+    /// Switch triggers both tutorials": the path used by the Welcome window's "Continue" action and by a
+    /// Role change elsewhere (Settings' Role combo). For Owner/Sub this is just StartIfUnseen on the
+    /// matching direction; for Switch, it starts whichever of the two tutorials is still unseen, and if
+    /// both are, chains the Sub tutorial to start automatically once the Owner one finishes or is exited.
+    public void StartIfUnseenForRole(PluginRole role)
+    {
+        switch (role)
+        {
+            case PluginRole.Owner:
+                StartIfUnseen(PairingDirection.OwnerSide);
+                break;
+            case PluginRole.Sub:
+                StartIfUnseen(PairingDirection.SubSide);
+                break;
+            default:
+                var ownerUnseen = !plugin.Configuration.HasSeenOwnerTutorial;
+                var subUnseen = !plugin.Configuration.HasSeenSubTutorial;
+                if (ownerUnseen)
+                {
+                    pendingChainDirection = subUnseen ? PairingDirection.SubSide : null;
+                    Start(PairingDirection.OwnerSide);
+                }
+                else if (subUnseen)
+                {
+                    Start(PairingDirection.SubSide);
+                }
+                break;
+        }
     }
 
     public void Advance()
@@ -118,15 +153,21 @@ public sealed class TutorialDriver
 
     private void Complete()
     {
-        if (ActiveRole == PluginRole.Owner)
+        if (ActiveDirection == PairingDirection.OwnerSide)
             plugin.Configuration.HasSeenOwnerTutorial = true;
-        else if (ActiveRole == PluginRole.Sub)
+        else if (ActiveDirection == PairingDirection.SubSide)
             plugin.Configuration.HasSeenSubTutorial = true;
         plugin.Configuration.Save();
 
         IsActive = false;
-        ActiveRole = null;
+        ActiveDirection = null;
         stepIndex = 0;
         activeSteps = [];
+
+        if (pendingChainDirection is { } next)
+        {
+            pendingChainDirection = null;
+            Start(next);
+        }
     }
 }

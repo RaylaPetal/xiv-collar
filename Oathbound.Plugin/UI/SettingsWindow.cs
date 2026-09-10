@@ -27,6 +27,10 @@ public class SettingsWindow : Window, IDisposable
     private string inviteTargetInput = "";
     private bool sendingInvitation;
     private bool acceptingInvitation;
+
+    /// collar/multi-pairing: only meaningful for Switch, which can send an invite establishing either
+    /// direction - true invites as the Owner-side (commanding a prospective Sub), false as the Sub-side.
+    private bool inviteAsOwnerSide = true;
     private bool confirmingIdentityReset;
     private bool confirmingInviteReplace;
     private string triggerPhraseInput = "";
@@ -42,7 +46,7 @@ public class SettingsWindow : Window, IDisposable
     /// How long a local Test control's result stays visible before auto-clearing (collar/ui-organization).
     private const long TestResultDisplayMs = 4_000;
 
-    private static readonly string[] RoleNames = ["Sub", "Owner"];
+    private static readonly string[] RoleNames = ["Sub", "Owner", "Switch"];
 
     public SettingsWindow(Plugin plugin) : base("Oathbound - Settings###CollarSettingsWindow")
     {
@@ -178,8 +182,10 @@ public class SettingsWindow : Window, IDisposable
         var pairingService = plugin.PairingService;
         var pending = pairingService.Pending;
         var sameRoleWarning = pending is { } pendingCheck && pendingCheck.SenderRole == config.Role;
-        var pairingLocked = config.Pairing.IsPaired;
-        var subLocked = config.Role == PluginRole.Sub && pairingLocked;
+        // collar/pairing "Sub's pairing identity configuration locks while paired" (extended to Switch):
+        // Role, code, and trigger phrase lock while this device holds any active Sub-side pairing, not just
+        // while `Role == Sub` - a Switch's Owner-side capacity never locks anything.
+        var subLocked = config.HasActiveSubSidePairing;
 
         IconGlyph.Text(FontAwesomeIcon.UserShield, "Identity & Pairing");
         ImGui.Separator();
@@ -189,21 +195,21 @@ public class SettingsWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextWrapped("Role determines which side of the pairing you are - every shared category tab in the main window shows its Sub or Owner view based on this, so nothing here is hidden by Role.");
+        ImGui.TextWrapped("Role determines which side(s) of a pairing you can hold - every shared category tab in the main window shows its Sub or Owner view based on the active pairing (or Role, with nothing active), so nothing here is hidden by Role. Switch can hold pairings of both directions at once.");
         using (ImRaii.Disabled(subLocked))
         {
-            var roleIndex = config.Role == PluginRole.Owner ? 1 : 0;
+            var roleIndex = config.Role switch { PluginRole.Owner => 1, PluginRole.Switch => 2, _ => 0 };
             if (ImGui.Combo("Role", ref roleIndex, RoleNames, RoleNames.Length))
             {
-                config.Role = roleIndex == 1 ? PluginRole.Owner : PluginRole.Sub;
+                config.Role = roleIndex switch { 1 => PluginRole.Owner, 2 => PluginRole.Switch, _ => PluginRole.Sub };
                 config.Save();
                 // collar/onboarding "Tutorial completion is tracked independently per Role": the shared
                 // path (also used by the Welcome window) for launching a Role's guided tutorial the first
-                // time that Role is ever selected on this install.
-                plugin.TutorialDriver.StartIfUnseen(config.Role);
+                // time this Role's direction(s) are ever gained on this install.
+                plugin.TutorialDriver.StartIfUnseenForRole(config.Role);
             }
         }
-        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only Sub actually gates anything. Owner is mostly informational. Either role can send the invitation first - whoever does, the other side just needs to Accept.");
+        IconGlyph.HelpMarker("Sub reacts to trigger tells and applies commands locally - only a Sub-side pairing actually gates anything. Owner is mostly informational. Switch can be both at once. Either side of a pairing can send the invitation first - whoever does, the other side just needs to Accept.");
 
         ImGui.Spacing();
         IconGlyph.WrappedDisabled("Secure Oathbound relay enabled.");
@@ -212,8 +218,14 @@ public class SettingsWindow : Window, IDisposable
             IconGlyph.WrappedColored(reachable ? Theme.Success : Theme.Warning,
                 reachable ? "Relay connection verified." : "Relay was unreachable on the last attempt; existing pairing and panic remain local-first.");
         ImGui.Spacing();
-        ImGui.TextWrapped("Send an invitation: enter who to pair with, exactly as you'd address a tell, then click Send.");
-        using (ImRaii.Disabled(pairingLocked || sendingInvitation))
+        ImGui.TextWrapped("Send an invitation: enter who to pair with, exactly as you'd address a tell, then click Send. Holding other pairings never blocks sending another.");
+        if (config.Role == PluginRole.Switch)
+        {
+            if (ImGui.RadioButton("Invite as Owner (they'll be your Sub)", inviteAsOwnerSide)) inviteAsOwnerSide = true;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("Invite as Sub (they'll be your Owner)", !inviteAsOwnerSide)) inviteAsOwnerSide = false;
+        }
+        using (ImRaii.Disabled(sendingInvitation))
         {
             ImGui.InputTextWithHint("Pair with", "Name Surname@World", ref inviteTargetInput, 64);
             using (ImRaii.Disabled(inviteTargetInput.Trim().Length == 0 || confirmingInviteReplace))
@@ -278,8 +290,8 @@ public class SettingsWindow : Window, IDisposable
         }
         IconGlyph.HelpMarker("Which of your 8 cross-world linkshells outgoing commands use when the header's channel selector is set to Cross-world Linkshell.");
 
-        if (pairingLocked)
-            IconGlyph.WrappedColored(Theme.TextMuted, "Locked while paired - trigger /oathboundpanic to release pairing and change these again.");
+        if (subLocked)
+            IconGlyph.WrappedColored(Theme.TextMuted, "Role, code, and trigger phrase are locked while you hold a Sub-side pairing - trigger /oathboundpanic to release it and change these again.");
 
         if (pairingService.LastError is { Length: > 0 } lastError)
             IconGlyph.WrappedColored(Theme.Danger, lastError);
@@ -292,22 +304,30 @@ public class SettingsWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        if (config.Pairing.IsPaired)
+        var activePairings = config.Pairings.Where(p => p.IsPaired).ToList();
+        if (activePairings.Count > 0)
         {
-            IconGlyph.WrappedColored(Theme.Success, $"Paired with {config.Pairing.PeerName}@{config.Pairing.PeerWorld}.");
-            if (config.Pairing.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
-                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{peerPhrase}\" (from your paired peer).");
-            else
-                IconGlyph.WrappedDisabled($"Trigger phrase in effect: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
-            if (config.Role == PluginRole.Owner)
+            foreach (var p in activePairings)
             {
-                if (ImGui.Button("Release pairing"))
-                    pairingService.ReleasePeer();
-                IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch your Sub's plugin at all. Fixes a stale/wrong pairing or frees them up to pair with someone else.");
-            }
-            else
-            {
-                IconGlyph.WrappedDisabled("Locked - only /oathboundpanic (your safeword, below) unpairs, not this screen.");
+                ImGui.PushID(p.Id.GetHashCode());
+                var directionLabel = p.Direction == PairingDirection.OwnerSide ? "Own" : "Owned by";
+                IconGlyph.WrappedColored(Theme.Success, $"{directionLabel}: {p.PeerName}@{p.PeerWorld}.");
+                if (p.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
+                    IconGlyph.WrappedDisabled($"Trigger phrase in effect for this pairing: \"{peerPhrase}\" (from your paired peer).");
+                else
+                    IconGlyph.WrappedDisabled($"Trigger phrase in effect for this pairing: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
+                if (p.Direction == PairingDirection.OwnerSide)
+                {
+                    if (ImGui.Button("Release pairing"))
+                        pairingService.ReleasePeer(p);
+                    IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch their plugin at all. Fixes a stale/wrong pairing or frees them up to pair with someone else.");
+                }
+                else
+                {
+                    IconGlyph.WrappedDisabled("Locked - only /oathboundpanic (your safeword, below) unpairs, not this screen.");
+                }
+                ImGui.Spacing();
+                ImGui.PopID();
             }
         }
         else if (pending is { } request)
@@ -343,7 +363,11 @@ public class SettingsWindow : Window, IDisposable
             IconGlyph.WrappedColored(Theme.TextMuted, "Not paired - no pending invitation.");
         }
 
-        if (config.Pairing.LastRevocationDeliveryStatus is { Length: > 0 } delivery)
+        var mostRecentDelivery = config.Pairings
+            .Where(p => p.LastRevocationDeliveryStatus is { Length: > 0 })
+            .OrderByDescending(p => p.LastRevocationDeliveryUpdatedAt)
+            .FirstOrDefault();
+        if (mostRecentDelivery?.LastRevocationDeliveryStatus is { Length: > 0 } delivery)
         {
             var label = delivery switch
             {
@@ -358,9 +382,15 @@ public class SettingsWindow : Window, IDisposable
 
     private async System.Threading.Tasks.Task SendInvitationAsync(string target)
     {
+        var direction = plugin.Configuration.Role switch
+        {
+            PluginRole.Owner => PairingDirection.OwnerSide,
+            PluginRole.Sub => PairingDirection.SubSide,
+            _ => inviteAsOwnerSide ? PairingDirection.OwnerSide : PairingDirection.SubSide,
+        };
         try
         {
-            await plugin.PairingService.CreateAndSendInvitationAsync(target, CancellationToken.None);
+            await plugin.PairingService.CreateAndSendInvitationAsync(target, direction, CancellationToken.None);
         }
         finally
         {
@@ -463,11 +493,11 @@ public class SettingsWindow : Window, IDisposable
     {
         IconGlyph.Text(FontAwesomeIcon.GraduationCap, "Guided tutorial");
         ImGui.Separator();
-        ImGui.TextWrapped("Replays the guided tour of each tab for your current Role, even if you've already seen it.");
+        ImGui.TextWrapped("Replays the guided tour of each tab for your active pairing's direction (or Role, with nothing active), even if you've already seen it.");
 
         if (ImGui.Button("Rerun Tutorial"))
-            plugin.TutorialDriver.Start(config.Role);
-        IconGlyph.HelpMarker("Doesn't affect the other Role's own first-time tutorial.");
+            plugin.TutorialDriver.Start(config.ResolveActiveDirection());
+        IconGlyph.HelpMarker("Doesn't affect the other direction's own first-time tutorial.");
     }
 
     /// Backs Settings' "Test an Owner command" control (`collar/chat-transport`'s "An Owner-style command
