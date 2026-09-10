@@ -1,6 +1,4 @@
 using System;
-using System.Linq;
-using System.Threading;
 using Oathbound.Plugin.Commands;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Ipc;
@@ -8,25 +6,18 @@ using Oathbound.Plugin.Relay;
 
 namespace Oathbound.Plugin.Safety;
 
-/// The always-available panic/safeword (collar/pairing) - either side can trigger it, not just the Sub.
-/// Every step but the first uses only local state and local IPC calls - EndPairingLocally only flips a
-/// local config flag, nothing to wait on. Each step is isolated in its own try/catch so one failure (an
-/// IPC call throwing, a send failing) never stops the rest of the sequence from running. Unlike a normal
-/// single-category slot-lock release (SlotLockManager.Release's snapshot/restore dance), panic is a full
-/// teardown by design - one unconditional whole-actor revert, then simply dropping every tracked lock,
-/// since nothing needs preserving when everything is being reverted anyway (design.md: "Panic keeps a
-/// single, unconditional whole-actor revert"). The one exception to "only local state": the first step
-/// sends a single best-effort notification tell to the cached peer (collar/pairing "Panic notifies the
-/// peer, best-effort") - the second of this plugin's two narrow exceptions to "no automated sending"
-/// (collar/chat-transport), isolated in its own RunStep so a send failure can never affect anything else
-/// panic guarantees.
+/// The always-available panic/safeword. Reverts every local restriction/effect this device currently has
+/// applied - unconditional whole-actor Glamourer revert, then simply dropping every tracked lock, since
+/// nothing needs preserving when everything is being reverted anyway (design.md: "Panic keeps a single,
+/// unconditional whole-actor revert") - but, per product decision, no longer ends any pairing. Panic is a
+/// pure "clear my current state" safety valve: every relationship this device holds stays exactly as
+/// paired as it was before. Ending a specific pairing is now a separate, deliberate action
+/// (`ReleasePairing`, exposed from Settings) - see that method for the "AND remove restrictions" +
+/// peer-notification behavior a deliberate unpair still needs. Each step is isolated in its own try/catch
+/// so one failure (an IPC call throwing, a send failing) never stops the rest of the sequence from running.
 public sealed class PanicHandler
 {
     private readonly PairingService pairing;
-    private readonly RevocationService revocation;
-    private readonly PluginConfig config;
-    private readonly ChatComposer composer;
-    private readonly ChatSender sender;
     private readonly GlamourerIpc glamourer;
     private readonly SlotLockManager slotLocks;
     private readonly HonorificIpc honorific;
@@ -36,13 +27,9 @@ public sealed class PanicHandler
     private readonly SubRuntimeState runtimeState;
     private readonly CollarCommand collar;
 
-    public PanicHandler(PairingService pairing, RevocationService revocation, PluginConfig config, ChatComposer composer, ChatSender sender, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, SubRuntimeState runtimeState, CollarCommand collar)
+    public PanicHandler(PairingService pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, SubRuntimeState runtimeState, CollarCommand collar)
     {
         this.pairing = pairing;
-        this.revocation = revocation;
-        this.config = config;
-        this.composer = composer;
-        this.sender = sender;
         this.glamourer = glamourer;
         this.slotLocks = slotLocks;
         this.honorific = honorific;
@@ -53,20 +40,29 @@ public sealed class PanicHandler
         this.collar = collar;
     }
 
-    /// collar/pairing "Unpair and panic publish authenticated revocation": every local, synchronous
-    /// teardown step runs and completes *before* either notification is even attempted - a network attempt
-    /// (tell send, relay publish) can never delay or skip a local safety step, and both notifications are
-    /// independent best-effort additions on top of teardown that has already fully happened.
+    /// Reverts every local restriction/effect - does not touch any pairing. Every relationship this device
+    /// holds remains exactly as paired as it was before.
     public void Panic()
     {
-        // collar/multi-pairing: panic ends every active pairing this device holds, not just one. Snapshot
-        // each one's notification data first: EndPairingLocally only flips Paired (never clears these), but
-        // capturing them before touching anything at all keeps this immune to any future change in what
-        // local teardown clears.
-        var pairings = config.Pairings.Where(p => p.IsPaired).ToList();
-        var notifyTargets = pairings.Select(p => (Pairing: p, p.PeerName, p.PeerWorld, p.PairIdHash, p.PairEpoch)).ToList();
+        RevertLocalState();
+        Plugin.Log.Information("Panic triggered: outfit/collar reverted, title cleared, movement lock released, all slot locks and restriction rules released. Every pairing remains active.");
+    }
 
-        RunStep("unpair", () => { foreach (var p in pairings) pairing.EndPairingLocally(p); });
+    /// Deliberate, explicit unpair of exactly one pairing (Settings' "select a pairing, then Unpair" - any
+    /// direction, Owner-side or Sub-side alike). Ends that one pairing - clearing its peer identity, best-
+    /// effort notifying that peer over tell (collar/pairing "Panic notifies the peer, best-effort", now
+    /// reused for a deliberate unpair instead of panic) and publishing a revocation - and, in the same
+    /// action, reverts every local restriction/effect exactly as panic does, since there is no reliable way
+    /// to attribute outfit/title/movement-lock/restraint state to the one pairing that applied it. Every
+    /// *other* pairing this device holds is untouched by either half of this action.
+    public void ReleasePairing(PairingState target)
+    {
+        RunStep("unpair", () => pairing.ReleasePeer(target));
+        RevertLocalState();
+    }
+
+    private void RevertLocalState()
+    {
         RunStep("revert outfit/collar", () => glamourer.RevertToAutomationFull());
         RunStep("release slot locks", slotLocks.ReleaseAllForPanic);
         RunStep("clear collar moodle", collar.PanicRelease);
@@ -82,21 +78,6 @@ public sealed class PanicHandler
         RunStep("release restraint bound animations", restraints.ReleaseAllBoundAnimationsForPanic);
 
         runtimeState.Reset();
-        Plugin.Log.Information($"Panic triggered: unpaired {pairings.Count} pairing(s), outfit/collar reverted, title cleared, movement lock released, all slot locks and restriction rules released.");
-
-        // Everything above is already done, unconditionally, by this point. Only now are the best-effort
-        // notifications attempted, one pair per ended pairing, each independently of every other.
-        foreach (var (targetPairing, peerName, peerWorld, pairIdHash, pairEpoch) in notifyTargets)
-        {
-            RunStep("notify peer (tell)", () =>
-            {
-                if (!string.IsNullOrWhiteSpace(peerName) && !string.IsNullOrWhiteSpace(peerWorld))
-                    sender.Send(composer.ComposeUnpairNotice(peerName!, peerWorld!, targetPairing.Direction));
-            });
-
-            if (pairIdHash is not null)
-                Plugin.FireAndForget(revocation.PublishBestEffortAsync(targetPairing, pairIdHash, pairEpoch, "panic", CancellationToken.None));
-        }
     }
 
     private static void RunStep(string name, Action step)

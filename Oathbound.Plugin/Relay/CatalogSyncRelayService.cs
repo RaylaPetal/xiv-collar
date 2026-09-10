@@ -315,11 +315,13 @@ public sealed class CatalogSyncRelayService
     /// Owner isn't left guessing (task 6.1/6.3).
     public async Task HandleCatalogRequestTellAsync(string requestId, string senderName, string senderWorld, CancellationToken ct)
     {
-        // collar/multi-pairing: resolved against every currently-paired Owner, not a single configured
-        // peer - a request from any of this device's Owner-side... rather, any pairing where this device is
-        // the Sub-side, is honored using that pairing's own state, independent of which pairing is active.
-        var pairing = config.FindPairing(senderName, senderWorld);
-        if (pairing is not { Direction: PairingDirection.SubSide }) return;
+        // collar/multi-pairing: resolved against every pairing where this device is the Sub-side, not a
+        // single configured peer - honored using that pairing's own state, independent of which pairing is
+        // active. Direction-specific on purpose: a mutual pair has two pairings with this same sender, and
+        // only the Sub-side one is a valid source for a catalog *request* (the Owner-side one is this
+        // device requesting catalog *from* them, a different flow entirely).
+        var pairing = config.FindPairing(senderName, senderWorld, PairingDirection.SubSide);
+        if (pairing is null) return;
 
         CatalogRequestEnvelope request;
         try

@@ -10,9 +10,10 @@ using Dalamud.Game.Text.SeStringHandling.Payloads;
 
 namespace Oathbound.Plugin.Commands;
 
-/// collar/pairing "Receiving a panic notification updates the header": the peer's declared role at the
-/// moment they panicked, so the header can say "your Sub" or "your Owner" - transient, in-memory. Keyed by
-/// which specific pairing ended (collar/multi-pairing: one pairing ending via panic never affects another).
+/// collar/pairing "Receiving an unpair notification updates the header": the peer's declared role in the
+/// pairing that just ended (their own deliberate unpair, not panic - panic no longer ends any pairing), so
+/// the header can say "your Sub" or "your Owner" - transient, in-memory. Keyed by which specific pairing
+/// ended (collar/multi-pairing: ending one pairing never affects another).
 public readonly record struct PeerUnpairedNotice(PluginRole PeerRole);
 
 /// collar/chat-transport's listener, watching every incoming tell for three things:
@@ -133,7 +134,7 @@ public sealed class ChatCommandListener : IDisposable
         // pre-multi-pairing leniency for those that don't, without silently guessing between two Owners
         // sharing a first+last name on different worlds).
         var matchedPairing = senderWorld is not null
-            ? config.FindPairing(senderName, senderWorld)
+            ? config.FindPairing(senderName, senderWorld, PairingDirection.SubSide)
             : SingleOrDefaultIfUnambiguous(config.Pairings.Where(p => p.IsPaired && p.Direction == PairingDirection.SubSide &&
                 string.Equals(p.PeerName, senderName, StringComparison.OrdinalIgnoreCase)));
         if (matchedPairing is null)
@@ -262,9 +263,13 @@ public sealed class ChatCommandListener : IDisposable
         var (name, world) = ExtractNameAndWorld(sender);
         if (name is null)
             return true;
+        // collar/multi-pairing: a mutual pair has two pairings with the same peer name+world - the
+        // notice's own role token (the sender's role in the pairing that ended) says which one: if the
+        // sender was the Owner there, it's this device's Sub-side pairing with them, and vice versa.
+        var endedDirection = peerRole == PluginRole.Owner ? PairingDirection.SubSide : PairingDirection.OwnerSide;
         var matchedPairing = world is not null
-            ? config.FindPairing(name, world)
-            : SingleOrDefaultIfUnambiguous(config.Pairings.Where(p => p.IsPaired && string.Equals(p.PeerName, name, StringComparison.OrdinalIgnoreCase)));
+            ? config.FindPairing(name, world, endedDirection)
+            : SingleOrDefaultIfUnambiguous(config.Pairings.Where(p => p.IsPaired && p.Direction == endedDirection && string.Equals(p.PeerName, name, StringComparison.OrdinalIgnoreCase)));
         if (matchedPairing is null)
             return true;
 
@@ -310,7 +315,7 @@ public sealed class ChatCommandListener : IDisposable
         if (requestId.Length == 0)
             return true;
         var (name, world) = ExtractNameAndWorld(sender);
-        if (name is null || world is null || config.FindPairing(name, world) is not { Direction: PairingDirection.OwnerSide })
+        if (name is null || world is null || config.FindPairing(name, world, PairingDirection.OwnerSide) is null)
             return true;
 
         catalogSyncRelay.HandlePermissionDeniedTell(requestId);

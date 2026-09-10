@@ -704,9 +704,9 @@ public class CollarWindow : Window, IDisposable
 
     /// Both roles can receive a Pending handshake now (collarpair's role token - see
     /// ChatCommandListener), so this is one role-aware card instead of two windows each handling their own
-    /// half. Sub's accepted pairing stays locked (only /oathboundpanic, the safeword command, undoes it);
-    /// Owner's has a plain Release button, since nothing is actually applied to the Owner's own character
-    /// for panic to revert.
+    /// half. Panic no longer ends any pairing - it only reverts local restriction state - so unpairing
+    /// either direction is a deliberate action from Settings' Unpair section (DrawUnpairSection) now,
+    /// available for Owner-side and Sub-side pairings alike.
     private void DrawCharacterHeader()
     {
         var pending = plugin.PairingService.Pending;
@@ -755,7 +755,7 @@ public class CollarWindow : Window, IDisposable
             using (ImRaii.Disabled(invitationExpired))
                 if (ImGui.Button("Accept"))
                     Plugin.FireAndForget(plugin.PairingService.AcceptPendingAsync(System.Threading.CancellationToken.None));
-            IconGlyph.HelpMarker("Trusts this sender as your paired peer from now on. Locks pairing on for its Sub-side (only /oathboundpanic, your safeword command, undoes it) - the Owner-side can Release pairing (below, once accepted) any time.");
+            IconGlyph.HelpMarker("Trusts this sender as your paired peer from now on. Either direction can be ended any time from Settings' Unpair section - panic no longer does this, it only reverts your current outfit/title/collar/movement-lock state.");
             ImGui.SameLine();
             if (ImGui.Button("Reject"))
                 plugin.PairingService.DismissPending();
@@ -791,80 +791,57 @@ public class CollarWindow : Window, IDisposable
         ImGui.PopID();
     }
 
-    /// collar/pairing "Always-visible local character and relationship header" (multi-pairing): every
-    /// active pairing gets its own row with peer/direction, notice, and (Owner-side) Release control; an
-    /// active-pairing selector only appears once there's more than one to choose between.
+    /// collar/pairing "Always-visible local character and relationship header" (multi-pairing): a dropdown
+    /// selects which pairing is active whenever there's more than one; unpairing itself is a deliberate
+    /// Settings action now (see DrawUnpairSection), not something this header does. Panic no longer ends
+    /// any pairing, so a "your peer ended this" notice can now only ever come from their own deliberate
+    /// unpair - shown here per pairing, regardless of whether that pairing is still active (ending a
+    /// pairing over a verified peer notice clears `Paired` immediately, before this can ever render it
+    /// alongside "still active").
     private void DrawPairingsList(PluginConfig config)
     {
-        var pairings = config.Pairings.Where(p => p.IsPaired).ToList();
-        if (pairings.Count == 0)
+        var pairedEntries = config.Pairings.Where(p => p.IsPaired).ToList();
+        var notices = plugin.ChatCommandListener.PeerUnpairedNotices;
+
+        if (pairedEntries.Count == 0 && notices.Count == 0)
         {
             IconGlyph.WrappedColored(Theme.TextMuted, "Not paired");
             IconGlyph.WrappedDisabled("Send or accept a relay invitation from Settings when you're ready.");
             return;
         }
 
-        var notices = plugin.ChatCommandListener.PeerUnpairedNotices;
-        var multiplePairings = pairings.Count > 1;
-
-        foreach (var pairing in pairings)
+        if (pairedEntries.Count > 1)
         {
-            ImGui.PushID(pairing.Id.GetHashCode());
-            var isActive = config.ActivePairingId == pairing.Id;
-
-            if (multiplePairings)
+            var activeIndex = Math.Max(0, pairedEntries.FindIndex(p => p.Id == config.ActivePairingId));
+            var labels = pairedEntries.Select(PairingLabel).ToArray();
+            ImGui.SetNextItemWidth(320f);
+            if (ImGui.Combo("Active pairing", ref activeIndex, labels, labels.Length))
             {
-                if (ImGui.RadioButton("##activePairing", isActive) && !isActive)
-                {
-                    config.ActivePairingId = pairing.Id;
-                    config.Save();
-                }
-                ImGui.SameLine();
-                IconGlyph.HelpMarker("Selects this pairing as active - outgoing commands target it, and shared category tabs show its Owner/Sub view.");
-                ImGui.SameLine();
+                config.ActivePairingId = pairedEntries[activeIndex].Id;
+                config.Save();
             }
+            IconGlyph.HelpMarker("Outgoing commands target this pairing, and shared category tabs show its Owner/Sub view.");
+        }
+        else if (pairedEntries.Count == 1)
+        {
+            IconGlyph.WrappedColored(Theme.Success, PairingLabel(pairedEntries[0]));
+        }
 
-            var relationshipLabel = pairing.Direction == PairingDirection.OwnerSide
-                ? $"Owns: {pairing.PeerName}@{pairing.PeerWorld}"
-                : $"Owned by: {pairing.PeerName}@{pairing.PeerWorld}";
-            IconGlyph.WrappedColored(Theme.Success, relationshipLabel + (isActive && multiplePairings ? "  (active)" : ""));
-
-            if (pairing.Direction == PairingDirection.OwnerSide)
-            {
-                if (ImGui.SmallButton("Release pairing"))
-                    plugin.PairingService.ReleasePeer(pairing);
-                IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch their plugin at all. Use this to fix a stale/wrong pairing or to free them up to pair with someone else.");
-            }
-            else
-            {
-                IconGlyph.WrappedDisabled("Locked until you use /oathboundpanic.");
-            }
-
-            if (notices.TryGetValue(pairing.Id, out var notice))
-            {
-                if (pairing.Direction == PairingDirection.OwnerSide)
-                {
-                    var peerLabel = notice.PeerRole == PluginRole.Owner ? "Your Owner's" : "Your Sub's";
-                    IconGlyph.WrappedColored(Theme.Warning, $"{peerLabel} side ended pairing via panic - they will not receive any commands until you pair again.");
-                    if (ImGui.SmallButton("Dismiss and release##peerUnpairedNotice"))
-                    {
-                        plugin.PairingService.ReleasePeer(pairing);
-                        plugin.ChatCommandListener.DismissPeerUnpairedNotice(pairing.Id);
-                    }
-                }
-                else
-                {
-                    var peerLabel = notice.PeerRole == PluginRole.Owner ? "your Owner's" : "your Sub's";
-                    IconGlyph.WrappedColored(Theme.Warning, $"Note: {peerLabel} side ended pairing via panic. You're still paired and locked until you use /oathboundpanic - this doesn't change that.");
-                    if (ImGui.SmallButton("Dismiss##peerUnpairedNotice"))
-                        plugin.ChatCommandListener.DismissPeerUnpairedNotice(pairing.Id);
-                }
-            }
-
-            ImGui.Spacing();
+        foreach (var (pairingId, notice) in notices)
+        {
+            var pairing = config.FindPairingById(pairingId);
+            ImGui.PushID(pairingId.GetHashCode());
+            var peerLabel = notice.PeerRole == PluginRole.Owner ? "Your Owner" : "Your Sub";
+            IconGlyph.WrappedColored(Theme.Warning, $"{peerLabel} ({pairing?.PeerName}@{pairing?.PeerWorld}) ended this pairing on their side.");
+            if (ImGui.SmallButton("Dismiss##peerUnpairedNotice"))
+                plugin.ChatCommandListener.DismissPeerUnpairedNotice(pairingId);
             ImGui.PopID();
         }
     }
+
+    private static string PairingLabel(PairingState p) => p.Direction == PairingDirection.OwnerSide
+        ? $"Owns: {p.PeerName}@{p.PeerWorld}"
+        : $"Owned by: {p.PeerName}@{p.PeerWorld}";
 
     /// collar/ui-organization "Header includes a quick Teleport action": relocated here from the Follow /
     /// Leash tab (design.md "Teleport moves, doesn't duplicate") since it's commonly used enough to want in

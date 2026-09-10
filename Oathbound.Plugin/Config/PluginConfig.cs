@@ -661,10 +661,27 @@ public class PluginConfig : IPluginConfiguration
     /// collar/multi-pairing "Incoming commands resolve against the full peer list": matches an incoming
     /// message's verified sender against every currently-paired peer, independent of which pairing (if any)
     /// is active. Case-insensitive, since FFXIV character/world names are not case-sensitive identity.
+    /// Ambiguous whenever the same peer holds pairings in both directions (a mutual Owner/Sub pair) -
+    /// prefer `FindPairing(name, world, direction)` wherever the caller already knows which direction it
+    /// needs; this overload exists only for call sites that genuinely mean "any direction" (there's exactly
+    /// one today: an unpair notice's sender match, before the notice's own role token narrows it further).
     public PairingState? FindPairing(string? name, string? world)
     {
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(world)) return null;
         return Pairings.FirstOrDefault(p => p.IsPaired &&
+            string.Equals(p.PeerName, name, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(p.PeerWorld, world, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// collar/multi-pairing: disambiguates a mutual Owner/Sub pair, where the same peer name+world matches
+    /// two different pairings (one per direction) - callers that already know which direction they need
+    /// (an incoming trigger tell only ever means the Sub-side pairing with that sender, a catalog request
+    /// only the Sub-side pairing, etc.) must use this, not the direction-less overload, or they can
+    /// silently resolve to the wrong one of the two.
+    public PairingState? FindPairing(string? name, string? world, PairingDirection direction)
+    {
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(world)) return null;
+        return Pairings.FirstOrDefault(p => p.IsPaired && p.Direction == direction &&
             string.Equals(p.PeerName, name, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(p.PeerWorld, world, StringComparison.OrdinalIgnoreCase));
     }

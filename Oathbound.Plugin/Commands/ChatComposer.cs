@@ -107,9 +107,9 @@ public sealed class ChatComposer
     ///
     /// collar/chat-transport "Composing and sending require active pairing, not just a remembered peer":
     /// addresses a channel command only while `IsPaired` is true, not merely whenever PeerName/PeerWorld
-    /// happen to be non-empty - PanicHandler.EndPairingLocally deliberately leaves those cached after panic
-    /// clears Paired, so checking presence alone would let a side that just panicked its own pairing away
-    /// keep composing (and, via CollarWindow's canSend, keep sending) to the peer it just unpaired from.
+    /// happen to be non-empty - PairingService.EndFromVerifiedPeerNotice deliberately leaves those cached
+    /// after a verified peer notice clears Paired, so checking presence alone would let this side keep
+    /// composing (and, via CollarWindow's canSend, keep sending) to a peer whose own side already ended it.
     ///
     /// collar/chat-transport "Trigger-phrase command delivery over a selectable channel": which channel
     /// prefix to use comes from config.OutgoingChannel - Tell keeps its existing addressed form, the other

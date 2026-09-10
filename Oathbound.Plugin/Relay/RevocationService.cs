@@ -26,8 +26,8 @@ public sealed class RevocationService
     }
 
     /// Best-effort publish of a revocation for the given pairing (captured by the caller *before* it
-    /// cleared its identity fields, since EndPairingLocally/ReleasePeer only flip flags or clear identity,
-    /// not this pairing's own sequence bookkeeping - see PanicHandler/PairingService). `pairIdHash`/
+    /// cleared its identity fields, since ReleasePeer clears identity but not this pairing's own sequence
+    /// bookkeeping - see PairingService). `pairIdHash`/
     /// `pairEpoch` are passed explicitly (rather than read from `pairing`) because ReleasePeer clears
     /// `pairing.PairIdHash` before this runs; `pairing` itself is only used for its own sequence counter and
     /// delivery-status display, which survive that clearing. On any failure, queues a retry entry rather

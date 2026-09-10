@@ -48,8 +48,8 @@ public sealed class PairingService
     public event Action? PendingChanged;
 
     /// Fired once a pairing actually activates (inviter side, after consume succeeds). CollarWindow's
-    /// stale "your peer panicked" notice is superseded by a freshly-completed pairing - most relevant when
-    /// re-pairing with the same person after they panicked - but that notice lives in ChatCommandListener,
+    /// stale "your peer unpaired" notice is superseded by a freshly-completed pairing - most relevant when
+    /// re-pairing with the same person after they unpaired - but that notice lives in ChatCommandListener,
     /// not here, so this is an event rather than a direct call.
     public event Action? PairingActivated;
     public event Action? PairingEnded;
@@ -464,15 +464,6 @@ public sealed class PairingService
         return true;
     }
 
-    /// Local-only disable, used by panic - never touches anything beyond this client's own config.
-    public void EndPairingLocally(PairingState pairing)
-    {
-        pairing.Paired = false;
-        config.PendingRelayOperations.RemoveAll(o => o.Kind.StartsWith("pair-", StringComparison.Ordinal));
-        config.Save();
-        PairingEnded?.Invoke();
-    }
-
     public void EndFromVerifiedPeerNotice(PairingState pairing)
     {
         if (!pairing.IsPaired) return;
@@ -510,11 +501,11 @@ public sealed class PairingService
         identity.ResetIdentity();
     }
 
-    /// Owner-only manual release of one specific pairing (see UI). Clears the captured peer identity
-    /// entirely, unlike EndPairingLocally, which panic uses and which deliberately leaves PeerName/World
-    /// cached. Local teardown (clearing config) completes fully before the best-effort revocation publish is
-    /// even attempted, same ordering guarantee as PanicHandler. Never touches any other pairing this device
-    /// holds.
+    /// Deliberate manual release of one specific pairing (any direction, Owner-side or Sub-side - see
+    /// PanicHandler.ReleasePairing, which wraps this with the same local-state revert panic itself does).
+    /// Clears the captured peer identity entirely. Local teardown (clearing config) completes fully before
+    /// the best-effort revocation publish is even attempted, same ordering guarantee as PanicHandler always
+    /// used. Never touches any other pairing this device holds.
     public void ReleasePeer(PairingState pairing, bool publishRelayRevocation = true)
     {
         var peerName = pairing.PeerName;

@@ -32,6 +32,8 @@ public class SettingsWindow : Window, IDisposable
     /// direction - true invites as the Owner-side (commanding a prospective Sub), false as the Sub-side.
     private bool inviteAsOwnerSide = true;
     private bool confirmingIdentityReset;
+    private int unpairSelectionIndex;
+    private bool confirmingUnpair;
     private bool confirmingInviteReplace;
     private string triggerPhraseInput = "";
     private string testCommandInput = "";
@@ -291,7 +293,7 @@ public class SettingsWindow : Window, IDisposable
         IconGlyph.HelpMarker("Which of your 8 cross-world linkshells outgoing commands use when the header's channel selector is set to Cross-world Linkshell.");
 
         if (subLocked)
-            IconGlyph.WrappedColored(Theme.TextMuted, "Role, code, and trigger phrase are locked while you hold a Sub-side pairing - trigger /oathboundpanic to release it and change these again.");
+            IconGlyph.WrappedColored(Theme.TextMuted, "Role, code, and trigger phrase are locked while you hold a Sub-side pairing - unpair it below to change these again.");
 
         if (pairingService.LastError is { Length: > 0 } lastError)
             IconGlyph.WrappedColored(Theme.Danger, lastError);
@@ -316,19 +318,12 @@ public class SettingsWindow : Window, IDisposable
                     IconGlyph.WrappedDisabled($"Trigger phrase in effect for this pairing: \"{peerPhrase}\" (from your paired peer).");
                 else
                     IconGlyph.WrappedDisabled($"Trigger phrase in effect for this pairing: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
-                if (p.Direction == PairingDirection.OwnerSide)
-                {
-                    if (ImGui.Button("Release pairing"))
-                        pairingService.ReleasePeer(p);
-                    IconGlyph.HelpMarker("Clears who you're paired with on your own client only - doesn't touch their plugin at all. Fixes a stale/wrong pairing or frees them up to pair with someone else.");
-                }
-                else
-                {
-                    IconGlyph.WrappedDisabled("Locked - only /oathboundpanic (your safeword, below) unpairs, not this screen.");
-                }
                 ImGui.Spacing();
                 ImGui.PopID();
             }
+
+            ImGui.Separator();
+            DrawUnpairSection(activePairings);
         }
         else if (pending is { } request)
         {
@@ -371,14 +366,52 @@ public class SettingsWindow : Window, IDisposable
         {
             var label = delivery switch
             {
-                "delivered" => "Last unpair/panic relay notice was delivered.",
-                "pending" => "Local unpair/panic completed; relay notification is pending retry.",
-                "expired" => "Local unpair/panic completed; its relay notification expired before delivery.",
-                _ => "Local unpair/panic completed; its relay notification failed.",
+                "delivered" => "Last unpair relay notice was delivered.",
+                "pending" => "Local unpair completed; relay notification is pending retry.",
+                "expired" => "Local unpair completed; its relay notification expired before delivery.",
+                _ => "Local unpair completed; its relay notification failed.",
             };
             IconGlyph.WrappedColored(delivery == "delivered" ? Theme.Success : Theme.Warning, label);
         }
     }
+
+    /// collar/pairing "Deliberate unpair, not panic": select any one pairing (Owner-side or Sub-side alike)
+    /// and end just that one - see PanicHandler.ReleasePairing for what this actually does (notify best-
+    /// effort, publish revocation, and revert local restriction state the same way panic itself does).
+    private void DrawUnpairSection(List<PairingState> activePairings)
+    {
+        IconGlyph.Text(FontAwesomeIcon.UserSlash, "Unpair");
+        IconGlyph.WrappedDisabled("Ends one pairing - clears who you're paired with there, notifies them best-effort, and reverts your current outfit/title/collar/movement-lock/restraint state the same way panic does. Every other pairing you hold is untouched.");
+
+        unpairSelectionIndex = Math.Clamp(unpairSelectionIndex, 0, activePairings.Count - 1);
+        var labels = activePairings.Select(PairingLabel).ToArray();
+        ImGui.SetNextItemWidth(320f);
+        ImGui.Combo("##unpairTarget", ref unpairSelectionIndex, labels, labels.Length);
+        ImGui.SameLine();
+        using (ImRaii.Disabled(confirmingUnpair))
+        {
+            if (ImGui.Button("Unpair"))
+                confirmingUnpair = true;
+        }
+
+        if (confirmingUnpair)
+        {
+            var target = activePairings[unpairSelectionIndex];
+            IconGlyph.WrappedColored(Theme.Danger, $"This ends your pairing with {target.PeerName}@{target.PeerWorld} and cannot be undone. Are you sure?");
+            if (ImGui.Button("Confirm unpair"))
+            {
+                plugin.PanicHandler.ReleasePairing(target);
+                confirmingUnpair = false;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel"))
+                confirmingUnpair = false;
+        }
+    }
+
+    private static string PairingLabel(PairingState p) => p.Direction == PairingDirection.OwnerSide
+        ? $"Owns: {p.PeerName}@{p.PeerWorld}"
+        : $"Owned by: {p.PeerName}@{p.PeerWorld}";
 
     private async System.Threading.Tasks.Task SendInvitationAsync(string target)
     {
