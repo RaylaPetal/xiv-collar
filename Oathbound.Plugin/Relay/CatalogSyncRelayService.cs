@@ -27,6 +27,10 @@ public sealed class CatalogSyncRelayService
     /// cleared on startup rather than persisted insecurely or resumed without its decryption key.
     private readonly Dictionary<string, RelayEcKeyPair> pendingOwnerRequests = new();
 
+    /// Owner-side: requestIds a `collarcatalogdenied` tell has already resolved, so the still-running poll
+    /// loop stops silently instead of later overwriting that explanation with a stale timeout error.
+    private readonly HashSet<string> deniedRequestIds = new();
+
     public string? LastError { get; private set; }
     public event Action? LastErrorChanged;
 
@@ -169,6 +173,7 @@ public sealed class CatalogSyncRelayService
             for (var attempt = 0; attempt < 60; attempt++)
             {
                 ct.ThrowIfCancellationRequested();
+                if (deniedRequestIds.Remove(requestId)) return;
                 CatalogRequestEnvelope status;
                 try
                 {
@@ -432,7 +437,12 @@ public sealed class CatalogSyncRelayService
     public void HandlePermissionDeniedTell(string requestId)
     {
         if (pendingOwnerRequests.Remove(requestId, out var key)) key.Dispose();
+        deniedRequestIds.Add(requestId);
+        config.PendingRelayOperations.RemoveAll(o => o.Kind == "catalog-request" && o.OperationId == requestId);
+        config.Save();
         SetError("Your Sub has not enabled catalog synchronization.");
+        SetPhase("Idle");
+        SetInFlight(false);
     }
 
     private static string FormatRemaining(TimeSpan span) => span.TotalHours >= 1 ? $"{span.Hours}h {span.Minutes}m" : $"{span.Minutes}m {span.Seconds}s";
