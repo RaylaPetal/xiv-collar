@@ -441,6 +441,15 @@ public sealed class PairingService
         // means its revocation-sequence counters and Id (so anything already pointing at it, like
         // ActivePairingId or CollarOwningPairingId, stays valid) survive the re-pair.
         var existing = config.Pairings.FirstOrDefault(p => p.PeerDeviceKeyId == peerDeviceKeyId && p.Direction == direction);
+        // collar/multi-pairing: fetch-by-hash (AwaitActivationAsync's accepter-side poll) returns whichever
+        // epoch is currently latest for these two devices, which can be a *stale* epoch of this exact same
+        // direction if this pair was re-established before and the inviter's consume() for the new epoch
+        // hasn't landed yet - owner/sub keys alone can't tell a genuinely new pairing apart from a replay of
+        // an old one in that case, so a fetched epoch older than what's already on file for this peer+
+        // direction is treated as "not ready yet" (false, keep polling) rather than silently regressing this
+        // side's epoch out of sync with the peer's.
+        if (existing is not null && pair.PairEpoch < existing.PairEpoch)
+            return false;
         var pairing = existing ?? new PairingState { Id = pairingId, Direction = direction };
         pairing.PairIdHash = pair.PairIdHash;
         pairing.PairEpoch = pair.PairEpoch;
