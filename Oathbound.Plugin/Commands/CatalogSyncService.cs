@@ -760,7 +760,11 @@ public sealed class CatalogSyncService
             {
                 var command = RestraintCommand.BuildCatalogLockCommand(configured.CatalogId, configured.Name,
                     configured.ItemId!.Value, configured.Rules);
-                if (target.Any(x => x.RestraintCatalogId == configured.CatalogId) || usedCommands.Contains(command))
+                // Dedup/reconcile by the configured entry's own stable Id, not its CatalogId - a Sub can
+                // configure the same mod more than once with different restriction rules (collar/restraints
+                // "create a mod restraint for the same mod"), and each such entry must import as its own
+                // quick command rather than only the first one surviving.
+                if (target.Any(x => x.Target == configured.Id) || usedCommands.Contains(command))
                 {
                     duplicates++;
                     continue;
@@ -770,7 +774,7 @@ public sealed class CatalogSyncService
                     Label = configured.Name,
                     Command = command,
                     Source = ImportSource.Imported,
-                    Target = configured.CatalogId,
+                    Target = configured.Id,
                     RestraintCatalogId = configured.CatalogId,
                     RestraintItemId = configured.ItemId,
                     RestraintRules = configured.Rules,

@@ -1245,11 +1245,14 @@ public class CollarWindow : Window, IDisposable
             {
                 ImGui.TextUnformatted(entry.ModName);
                 ImGui.SameLine();
-                var chosen = configured.Any(x => x.CatalogId == entry.Id);
-                using (ImRaii.Disabled(chosen))
-                if (ImGui.SmallButton($"{(chosen ? "Chosen" : "Choose")}##subRestraint_{entry.Id}"))
+                var alreadyConfiguredCount = configured.Count(x => x.CatalogId == entry.Id);
+                if (ImGui.SmallButton($"{(alreadyConfiguredCount > 0 ? "Choose again" : "Choose")}##subRestraint_{entry.Id}"))
                 {
-                    var created = new ConfiguredModRestraint { CatalogId = entry.Id, Name = entry.ModName };
+                    // A mod can be configured more than once with different restriction rules (collar/
+                    // restraints "create a mod restraint for the same mod") - each gets its own name so the
+                    // Sub can tell entries for the same mod apart in the list below.
+                    var name = alreadyConfiguredCount == 0 ? entry.ModName : $"{entry.ModName} ({alreadyConfiguredCount + 1})";
+                    var created = new ConfiguredModRestraint { CatalogId = entry.Id, Name = name };
                     configured.Add(created);
                     var key = $"submod:{created.Id}";
                     expandedRestraintRuleEditors.Add(key);
@@ -1292,6 +1295,13 @@ public class CollarWindow : Window, IDisposable
             if (expandedRestraintRuleEditors.Contains(key) && restraintRuleEdits.TryGetValue(key, out var edit))
             {
                 ImGui.Indent();
+                var nameBuffer = created.Name;
+                if (ImGui.InputText($"Name##{key}", ref nameBuffer, 80) && nameBuffer.Trim().Length > 0)
+                {
+                    created.Name = nameBuffer;
+                    config.Save();
+                }
+                IconGlyph.HelpMarker("Your own label for this configured restraint - rename it so you can tell entries for the same mod apart.");
                 ImGui.TextUnformatted($"Glamourer item: {(created.ItemId is { } equippedItem ? GetItemName(equippedItem) : "(none chosen)")}");
                 ImGui.SameLine();
                 if (ImGui.SmallButton($"Choose item...##{key}"))
@@ -2293,23 +2303,24 @@ public class CollarWindow : Window, IDisposable
             {
                 ImGui.TextUnformatted(entry.ModName);
                 ImGui.SameLine();
-                var alreadyChosen = quick.Any(x => x.RestraintCatalogId == entry.Id);
-                using (ImRaii.Disabled(alreadyChosen))
+                var alreadyChosenCount = quick.Count(x => x.RestraintCatalogId == entry.Id);
+                if (ImGui.SmallButton($"{(alreadyChosenCount > 0 ? "Choose again" : "Choose")}##restraintMod_{entry.Id}"))
                 {
-                    if (ImGui.SmallButton($"{(alreadyChosen ? "Chosen" : "Choose")}##restraintMod_{entry.Id}"))
+                    // A mod can be chosen more than once with different restriction rules (collar/restraints
+                    // "create a mod restraint for the same mod") - the row below is keyed by Label, so each
+                    // repeat gets a distinct one rather than colliding with the first.
+                    var label = alreadyChosenCount == 0 ? entry.ModName : $"{entry.ModName} ({alreadyChosenCount + 1})";
+                    quick.Add(new QuickCommand
                     {
-                        quick.Add(new QuickCommand
-                        {
-                            Label = entry.ModName,
-                            Command = "",
-                            Source = ImportSource.Manual,
-                            Target = entry.Id,
-                            RestraintCatalogId = entry.Id,
-                        });
-                        plugin.Configuration.Save();
-                        expandedRestraintRuleEditors.Add(entry.ModName);
-                        restraintRuleEdits[entry.ModName] = new RestraintRuleEditState();
-                    }
+                        Label = label,
+                        Command = "",
+                        Source = ImportSource.Manual,
+                        Target = entry.Id,
+                        RestraintCatalogId = entry.Id,
+                    });
+                    plugin.Configuration.Save();
+                    expandedRestraintRuleEditors.Add(label);
+                    restraintRuleEdits[label] = new RestraintRuleEditState();
                 }
             }
         }
@@ -2687,6 +2698,22 @@ public class CollarWindow : Window, IDisposable
         if (expanded && restraintRuleEdits.TryGetValue(cmd.Label, out var edit))
         {
             ImGui.Indent();
+            var labelBuffer = cmd.Label;
+            if (ImGui.InputText("Name##restraintQuickLabel", ref labelBuffer, 80))
+            {
+                var trimmedLabel = labelBuffer.Trim();
+                var oldLabel = cmd.Label;
+                if (trimmedLabel.Length > 0 && !list.Any(x => x != cmd && string.Equals(x.Label, trimmedLabel, StringComparison.OrdinalIgnoreCase)))
+                {
+                    cmd.Label = trimmedLabel;
+                    if (expandedRestraintRuleEditors.Remove(oldLabel))
+                        expandedRestraintRuleEditors.Add(trimmedLabel);
+                    if (restraintRuleEdits.Remove(oldLabel, out var editState))
+                        restraintRuleEdits[trimmedLabel] = editState;
+                    plugin.Configuration.Save();
+                }
+            }
+            IconGlyph.HelpMarker("Your own label for this configured restraint - rename it so you can tell entries for the same mod apart.");
             ImGui.TextUnformatted($"Glamourer item: {(cmd.RestraintItemId is { } equippedItem ? GetItemName(equippedItem) : "(none chosen)")}");
             ImGui.SameLine();
             if (ImGui.SmallButton("Choose item...##restraintQuick"))
