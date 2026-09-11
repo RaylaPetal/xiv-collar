@@ -166,6 +166,8 @@ public class CollarWindow : Window, IDisposable
     {
         public bool ForcedPose;
         public int PoseIndex;
+        public bool ForcedPoseIsMod;
+        public string? ForcedPoseAnimationId;
         public bool WalkOnly;
         public bool ActionBlock;
         public bool GagChat;
@@ -175,6 +177,8 @@ public class CollarWindow : Window, IDisposable
         public string? LegsCuffedAnimationId;
         public bool FullBodyCuffed;
         public string? FullBodyCuffedAnimationId;
+        public bool Gag;
+        public string? GagAnimationId;
     }
 
     /// collar/ui-organization "Category tabs present role-aware content": one tab per shared category
@@ -1331,7 +1335,7 @@ public class CollarWindow : Window, IDisposable
     private static string PoseName(int poseModeId) => poseModeId is >= 1 and <= 3 ? PoseNames[poseModeId - 1] : "unknown";
 
     private static bool HasAnyRule(RestraintRuleEditState edit) =>
-        edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed;
+        edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed || edit.Gag;
 
     private bool BoundAnimationsConfigured(RestraintRuleEditState edit)
     {
@@ -1341,7 +1345,9 @@ public class CollarWindow : Window, IDisposable
         bool Valid(bool enabled, string? id) => !enabled || id is not null && Contains(id);
         return Valid(edit.ArmsCuffed, edit.ArmsCuffedAnimationId)
             && Valid(edit.LegsCuffed, edit.LegsCuffedAnimationId)
-            && Valid(edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId);
+            && Valid(edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId)
+            && Valid(edit.Gag, edit.GagAnimationId)
+            && Valid(edit.ForcedPose && edit.ForcedPoseIsMod, edit.ForcedPoseAnimationId);
     }
 
     /// collar/ui-organization "Restraint rule checkboxes are laid out two per row": shared by the Sub's
@@ -1349,27 +1355,15 @@ public class CollarWindow : Window, IDisposable
     /// one `ImGui.Columns(2)` block per row keeps each checkbox's own dependent controls (pose combo,
     /// bound-animation picker) attached underneath it within its own column, regardless of how tall the
     /// other column's content is.
+    private static readonly string[] ForcedPoseSourceNames = ["Vanilla pose", "Animation mod"];
+
+    /// collar/restraints "Rule picker groups rules under Restraints and Restrictions headers" - a
+    /// presentation-only grouping: every rule still lands in the same single `RestraintRuleEditState`/
+    /// `List<RestraintRuleAssignment>` this method's callers already share, only the layout changed.
     private void DrawRestraintRuleCheckboxes(RestraintRuleEditState edit, string idSuffix)
     {
+        ImGui.TextUnformatted("Restraints");
         ImGui.Columns(2, $"restraintRules_{idSuffix}_row1", false);
-        ImGui.Checkbox($"Forced pose##{idSuffix}", ref edit.ForcedPose);
-        IconGlyph.HelpMarker("Places you into the chosen pose and fully blocks movement input until released.");
-        if (edit.ForcedPose)
-            ImGui.Combo($"Pose##{idSuffix}", ref edit.PoseIndex, PoseNames, PoseNames.Length);
-        ImGui.NextColumn();
-        ImGui.Checkbox($"Walk-only##{idSuffix}", ref edit.WalkOnly);
-        IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
-        ImGui.Columns(1);
-
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row2", false);
-        ImGui.Checkbox($"Action block##{idSuffix}", ref edit.ActionBlock);
-        IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
-        ImGui.NextColumn();
-        ImGui.Checkbox($"Gagged##{idSuffix}", ref edit.GagChat);
-        IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
-        ImGui.Columns(1);
-
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row3", false);
         DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"{idSuffix}Arms");
         IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
         ImGui.NextColumn();
@@ -1377,10 +1371,42 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
         ImGui.Columns(1);
 
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row4", false);
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row2", false);
         DrawBoundAnimationPicker("Full Body Cuffed", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"{idSuffix}FullBody");
         IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
         ImGui.NextColumn();
+        DrawBoundAnimationPicker("Gag", ref edit.Gag, edit.GagAnimationId, id => edit.GagAnimationId = id, $"{idSuffix}Gag");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement, actions, or chat - separate from the Gagged chat-mangling rule below.");
+        ImGui.Columns(1);
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Restrictions");
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row3", false);
+        ImGui.Checkbox($"Forced pose##{idSuffix}", ref edit.ForcedPose);
+        IconGlyph.HelpMarker("Places you into the chosen pose (or holds a chosen animation) and fully blocks movement input until released.");
+        if (edit.ForcedPose)
+        {
+            ImGui.Indent();
+            var sourceIndex = edit.ForcedPoseIsMod ? 1 : 0;
+            if (ImGui.Combo($"Source##{idSuffix}ForcedPose", ref sourceIndex, ForcedPoseSourceNames, ForcedPoseSourceNames.Length))
+                edit.ForcedPoseIsMod = sourceIndex == 1;
+            if (edit.ForcedPoseIsMod)
+                DrawAnimationChooser(edit.ForcedPoseAnimationId, id => edit.ForcedPoseAnimationId = id, $"{idSuffix}ForcedPose");
+            else
+                ImGui.Combo($"Pose##{idSuffix}", ref edit.PoseIndex, PoseNames, PoseNames.Length);
+            ImGui.Unindent();
+        }
+        ImGui.NextColumn();
+        ImGui.Checkbox($"Walk-only##{idSuffix}", ref edit.WalkOnly);
+        IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
+        ImGui.Columns(1);
+
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row4", false);
+        ImGui.Checkbox($"Action block##{idSuffix}", ref edit.ActionBlock);
+        IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
+        ImGui.NextColumn();
+        ImGui.Checkbox($"Gagged##{idSuffix}", ref edit.GagChat);
+        IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
         ImGui.Columns(1);
     }
 
@@ -1397,6 +1423,15 @@ public class CollarWindow : Window, IDisposable
             return;
 
         ImGui.Indent();
+        DrawAnimationChooser(currentAnimationId, onChosen, idSuffix);
+        ImGui.Unindent();
+    }
+
+    /// The animation-choosing half of `DrawBoundAnimationPicker`, without its own enabling checkbox - used
+    /// where a rule already has its own checkbox with a separate vanilla/mod source toggle (mod-sourced
+    /// Forced Pose), so this only ever gets called once that toggle has already picked "mod".
+    private void DrawAnimationChooser(string? currentAnimationId, Action<string> onChosen, string idSuffix)
+    {
         var ownerMode = ResolveOwnerModeView();
         var localCatalog = plugin.Configuration.GestureMapping.LocalCatalog;
         var peerCatalog = plugin.Configuration.GestureMapping.ImportedPeerCatalog;
@@ -1434,7 +1469,6 @@ public class CollarWindow : Window, IDisposable
             ImGui.SetTooltip(chosenLabel);
         if (chosenMode.Length > 0)
             IconGlyph.WrappedDisabled(chosenMode);
-        ImGui.Unindent();
     }
 
 
@@ -2761,7 +2795,15 @@ public class CollarWindow : Window, IDisposable
             {
                 case RestraintRuleKind.ForcedPose:
                     edit.ForcedPose = true;
-                    edit.PoseIndex = Math.Clamp(rule.PoseModeId - 1, 0, PoseNames.Length - 1);
+                    if (rule.PoseModeId == 0)
+                    {
+                        edit.ForcedPoseIsMod = true;
+                        edit.ForcedPoseAnimationId = rule.AnimationId;
+                    }
+                    else
+                    {
+                        edit.PoseIndex = Math.Clamp(rule.PoseModeId - 1, 0, PoseNames.Length - 1);
+                    }
                     break;
                 case RestraintRuleKind.WalkOnly: edit.WalkOnly = true; break;
                 case RestraintRuleKind.ActionBlock: edit.ActionBlock = true; break;
@@ -2769,6 +2811,7 @@ public class CollarWindow : Window, IDisposable
                 case RestraintRuleKind.ArmsCuffed: edit.ArmsCuffed = true; edit.ArmsCuffedAnimationId = rule.AnimationId; break;
                 case RestraintRuleKind.LegsCuffed: edit.LegsCuffed = true; edit.LegsCuffedAnimationId = rule.AnimationId; break;
                 case RestraintRuleKind.FullBodyCuffed: edit.FullBodyCuffed = true; edit.FullBodyCuffedAnimationId = rule.AnimationId; break;
+                case RestraintRuleKind.Gag: edit.Gag = true; edit.GagAnimationId = rule.AnimationId; break;
             }
         }
         return edit;
@@ -2785,7 +2828,9 @@ public class CollarWindow : Window, IDisposable
                 ? CommandSelector.GestureLabel(local.ModName, local.GroupName, local.AnimationName, local.Trigger) : null;
         }
         var rules = new List<RestraintRuleAssignment>();
-        if (edit.ForcedPose)
+        if (edit.ForcedPose && edit.ForcedPoseIsMod)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = 0, AnimationId = edit.ForcedPoseAnimationId, AnimationLabel = LabelFor(edit.ForcedPoseAnimationId) });
+        else if (edit.ForcedPose)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = edit.PoseIndex + 1 });
         if (edit.WalkOnly)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.WalkOnly });
@@ -2799,6 +2844,8 @@ public class CollarWindow : Window, IDisposable
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = edit.LegsCuffedAnimationId, AnimationLabel = LabelFor(edit.LegsCuffedAnimationId) });
         if (edit.FullBodyCuffed)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = edit.FullBodyCuffedAnimationId, AnimationLabel = LabelFor(edit.FullBodyCuffedAnimationId) });
+        if (edit.Gag)
+            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.Gag, AnimationId = edit.GagAnimationId, AnimationLabel = LabelFor(edit.GagAnimationId) });
         return rules;
     }
 

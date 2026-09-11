@@ -277,7 +277,8 @@ public sealed class RestraintCommand
             LastFailureReason = $"{unavailable} enforcement is unavailable";
             return false;
         }
-        var boundRules = rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed).ToList();
+        var boundRules = rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed or RestraintRuleKind.Gag
+            || (r.Kind == RestraintRuleKind.ForcedPose && r.PoseModeId == 0)).ToList();
         if (boundRules.Any(r => ResolveAnimation(r.AnimationId) is null))
         {
             LastFailureReason = "a selected cuff animation is missing, stale, or ambiguous";
@@ -399,7 +400,8 @@ public sealed class RestraintCommand
             Plugin.Log.Warning($"Restraint apply refused for '{device.Name}': pose state is unavailable.");
             return false;
         }
-        var boundRules = device.Rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed).ToList();
+        var boundRules = device.Rules.Where(r => r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed or RestraintRuleKind.Gag
+            || (r.Kind == RestraintRuleKind.ForcedPose && r.PoseModeId == 0)).ToList();
         if (boundRules.Any(r => ResolveAnimation(r.AnimationId) is null))
         {
             LastFailureReason = "a selected cuff animation is missing, stale, or ambiguous; edit the restraint and select it again";
@@ -617,13 +619,14 @@ public sealed class RestraintCommand
     {
         var tokens = rules.Select(r => r.Kind switch
         {
-            RestraintRuleKind.ForcedPose => $"pose={r.PoseModeId}",
+            RestraintRuleKind.ForcedPose => r.PoseModeId == 0 ? $"posemod={ReadableAnimation(r)}" : $"pose={r.PoseModeId}",
             RestraintRuleKind.WalkOnly => "walkonly",
             RestraintRuleKind.ActionBlock => "actionblock",
             RestraintRuleKind.GagChat => "gag",
             RestraintRuleKind.ArmsCuffed => $"armscuffed={ReadableAnimation(r)}",
             RestraintRuleKind.LegsCuffed => $"legscuffed={ReadableAnimation(r)}",
             RestraintRuleKind.FullBodyCuffed => $"fullbodycuffed={ReadableAnimation(r)}",
+            RestraintRuleKind.Gag => $"gagwear={ReadableAnimation(r)}",
             _ => "",
         }).Where(t => t.Length > 0);
 
@@ -704,13 +707,14 @@ public sealed class RestraintCommand
     {
         var tokens = rules.Select(r => r.Kind switch
         {
-            RestraintRuleKind.ForcedPose => $"pose={r.PoseModeId}",
+            RestraintRuleKind.ForcedPose => r.PoseModeId == 0 ? $"posemod={ReadableAnimation(r)}" : $"pose={r.PoseModeId}",
             RestraintRuleKind.WalkOnly => "walkonly",
             RestraintRuleKind.ActionBlock => "actionblock",
             RestraintRuleKind.GagChat => "gag",
             RestraintRuleKind.ArmsCuffed => $"armscuffed={ReadableAnimation(r)}",
             RestraintRuleKind.LegsCuffed => $"legscuffed={ReadableAnimation(r)}",
             RestraintRuleKind.FullBodyCuffed => $"fullbodycuffed={ReadableAnimation(r)}",
+            RestraintRuleKind.Gag => $"gagwear={ReadableAnimation(r)}",
             _ => "",
         }).Where(t => t.Length > 0);
 
@@ -780,7 +784,9 @@ public sealed class RestraintCommand
         var rules = new List<RestraintRuleAssignment>();
         foreach (var token in tokens.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (token.StartsWith("pose=", StringComparison.OrdinalIgnoreCase) && int.TryParse(token.AsSpan(5), out var poseId))
+            if (token.StartsWith("posemod=", StringComparison.OrdinalIgnoreCase))
+                rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = 0, AnimationId = token["posemod=".Length..] });
+            else if (token.StartsWith("pose=", StringComparison.OrdinalIgnoreCase) && int.TryParse(token.AsSpan(5), out var poseId))
                 rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ForcedPose, PoseModeId = poseId });
             else if (token.Equals("walkonly", StringComparison.OrdinalIgnoreCase))
                 rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.WalkOnly });
@@ -794,6 +800,8 @@ public sealed class RestraintCommand
                 rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = token["legscuffed=".Length..] });
             else if (token.StartsWith("fullbodycuffed=", StringComparison.OrdinalIgnoreCase))
                 rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = token["fullbodycuffed=".Length..] });
+            else if (token.StartsWith("gagwear=", StringComparison.OrdinalIgnoreCase))
+                rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.Gag, AnimationId = token["gagwear=".Length..] });
         }
         return rules;
     }

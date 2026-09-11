@@ -405,7 +405,9 @@ public class PermissionSet
     public bool Teleport { get; set; }
 }
 
-/// collar/restraints: the fixed set of restriction rule kinds a restraint device may carry.
+/// collar/restraints: the fixed set of restriction rule kinds a restraint device may carry. `Gag` is the
+/// wearable/bound-animation rule (mechanically identical to ArmsCuffed/LegsCuffed) - distinct from
+/// `GagChat`, the chat-mangling rule, which it has no effect on and no relation to beyond the name.
 public enum RestraintRuleKind
 {
     ForcedPose,
@@ -415,13 +417,15 @@ public enum RestraintRuleKind
     ArmsCuffed,
     LegsCuffed,
     FullBodyCuffed,
+    Gag,
 }
 
-/// One restriction rule assigned to a device. `PoseModeId` only matters for ForcedPose (1=GroundSit,
-/// 2=Sit, 3=Doze - the same EmoteModeId values GestureTrigger already uses). `AnimationId` only matters
-/// for ArmsCuffed/LegsCuffed/FullBodyCuffed - a `GestureCatalogEntry.Id` (collar/gesture) identifying the
-/// chosen animation to temporarily activate and hold for as long as the rule stays active. Both are
-/// ignored by every rule kind that doesn't use them.
+/// One restriction rule assigned to a device. `PoseModeId` only matters for ForcedPose: 1=GroundSit,
+/// 2=Sit, 3=Doze (the same EmoteModeId values GestureTrigger already uses) select a vanilla pose; 0 is the
+/// sentinel for a mod-sourced pose, in which case `AnimationId` carries the chosen animation instead.
+/// `AnimationId` also matters for ArmsCuffed/LegsCuffed/FullBodyCuffed/Gag - a `GestureCatalogEntry.Id`
+/// (collar/gesture) identifying the chosen animation to temporarily activate and hold for as long as the
+/// rule stays active. Both fields are ignored by every rule kind that doesn't use them.
 [Serializable]
 public class RestraintRuleAssignment
 {

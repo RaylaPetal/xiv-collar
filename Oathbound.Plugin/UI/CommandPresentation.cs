@@ -20,13 +20,14 @@ public static class CommandPresentation
 
     public static string Rule(RestraintRuleAssignment rule) => rule.Kind switch
     {
-        RestraintRuleKind.ForcedPose => $"Forced Pose · {Pose(rule.PoseModeId)}",
+        RestraintRuleKind.ForcedPose => rule.PoseModeId == 0 ? "Forced Pose · Animation mod" : $"Forced Pose · {Pose(rule.PoseModeId)}",
         RestraintRuleKind.WalkOnly => "Walking Only",
         RestraintRuleKind.ActionBlock => "Actions Blocked",
         RestraintRuleKind.GagChat => "Gagged",
         RestraintRuleKind.ArmsCuffed => "Arms Cuffed",
         RestraintRuleKind.LegsCuffed => "Legs Cuffed",
         RestraintRuleKind.FullBodyCuffed => "Full Body Cuffed",
+        RestraintRuleKind.Gag => "Gag",
         _ => "Unknown rule",
     };
 

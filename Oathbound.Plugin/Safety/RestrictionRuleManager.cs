@@ -38,11 +38,12 @@ public sealed class RestrictionRuleManager
     {
         foreach (var rule in rules)
         {
-            // Arms/Legs Cuffed are animation-managed rules: RestraintCommand preflights their catalog
-            // identity and performs their transactional Penumbra activation. They deliberately have no
-            // IRestrictionEnforcer. Full Body Cuffed is different because it additionally owns an
-            // immobilization claim, so it must retain a registered, available enforcer.
-            if (rule.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed)
+            // Arms/Legs Cuffed and Gag are animation-managed rules: RestraintCommand preflights their
+            // catalog identity and performs their transactional Penumbra activation. They deliberately
+            // have no IRestrictionEnforcer. Full Body Cuffed (and a mod-sourced Forced Pose) are different
+            // because they additionally own an immobilization claim, so they must retain a registered,
+            // available enforcer.
+            if (rule.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.Gag)
                 continue;
 
             if (!enforcers.TryGetValue(rule.Kind, out var enforcer) || !enforcer.IsAvailable)
@@ -55,13 +56,13 @@ public sealed class RestrictionRuleManager
         return true;
     }
 
-    /// The per-instance configuration a rule kind conflict-checks on - ForcedPose's pose target,
-    /// ArmsCuffed/LegsCuffed/FullBodyCuffed's chosen animation id. Null for kinds with no such
-    /// configuration (WalkOnly/ActionBlock/GagChat are never conflict-checked).
+    /// The per-instance configuration a rule kind conflict-checks on - ForcedPose's pose target (or, when
+    /// mod-sourced, its chosen animation), ArmsCuffed/LegsCuffed/FullBodyCuffed/Gag's chosen animation id.
+    /// Null for kinds with no such configuration (WalkOnly/ActionBlock/GagChat are never conflict-checked).
     private static string? ConfigKey(RestraintRuleAssignment rule) => rule.Kind switch
     {
-        RestraintRuleKind.ForcedPose => rule.PoseModeId.ToString(),
-        RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed => rule.AnimationId,
+        RestraintRuleKind.ForcedPose => rule.PoseModeId == 0 ? $"mod:{rule.AnimationId}" : rule.PoseModeId.ToString(),
+        RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed or RestraintRuleKind.Gag => rule.AnimationId,
         _ => null,
     };
 
