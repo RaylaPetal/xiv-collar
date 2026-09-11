@@ -439,8 +439,8 @@ public class RestraintDeviceDefinition
 {
     public RestraintSourceKind SourceKind { get; set; } = RestraintSourceKind.Item;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
-    public ApiEquipSlot Slot { get; set; }
-    public ulong ItemId { get; set; }
+    public ApiEquipSlot? Slot { get; set; }
+    public ulong? ItemId { get; set; }
     public byte Stain { get; set; }
     public byte Stain2 { get; set; }
     public string Name { get; set; } = "";

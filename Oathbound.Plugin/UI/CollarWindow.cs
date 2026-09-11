@@ -93,7 +93,8 @@ public class CollarWindow : Window, IDisposable
     private QuickCommand? editingOwnerBundle;
 
     private string newDeviceName = "";
-    private int newDeviceSlotIndex;
+    private string? newDeviceModCatalogId;
+    private ApiEquipSlot? newDeviceSlot;
     private ulong? newDeviceItemId;
     private readonly RestraintRuleEditState newDeviceRuleEdit = new();
     private string? editingDeviceId;
@@ -103,9 +104,11 @@ public class CollarWindow : Window, IDisposable
     private string subRestraintSearch = "";
     private int newRestraintDeviceIndex;
 
-    /// Owner-side ad-hoc device draft (collar/restraints "Owner-authored ad-hoc restraint device") - a
-    /// slot+item picked directly, with no Sub-side captured device to reference by name.
-    private int newAdHocSlotIndex;
+    /// Owner-side ad-hoc device draft (collar/restraints "Owner-authored ad-hoc restraint device") - an
+    /// optional mod-filtered slot+item picked directly, with no Sub-side captured device to reference by
+    /// name. Gear is optional - a rules-only ad-hoc device leaves the mod/slot/item unset.
+    private string? newAdHocModCatalogId;
+    private ApiEquipSlot? newAdHocSlot;
     private ulong? newAdHocItemId;
     private string newAdHocLabel = "";
     private readonly RestraintRuleEditState newAdHocRuleEdit = new();
@@ -1073,7 +1076,8 @@ public class CollarWindow : Window, IDisposable
                 var ruleSummary = string.Join(" · ", device.Rules.Select(CommandPresentation.Rule));
                 ImGui.TextUnformatted($"{device.Name}{(active ? "  • Active" : "")}");
                 ImGui.Indent();
-                IconGlyph.WrappedDisabled($"{device.Slot} · {GetItemName(device.ItemId)}");
+                var gearSummary = device.ItemId is { } deviceItemId ? $"{device.Slot} · {GetItemName(deviceItemId)}" : "No gear - rules only";
+                IconGlyph.WrappedDisabled(gearSummary);
                 IconGlyph.WrappedDisabled(ruleSummary);
                 var staleAnimation = device.Rules.Any(r =>
                     r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed
@@ -1101,22 +1105,55 @@ public class CollarWindow : Window, IDisposable
 
         ImGui.Spacing();
         ImGui.TextUnformatted(editingDeviceId is null ? "Capture a new device" : "Edit captured device");
-        var slotNames = LockableEquipSlots.All.Select(s => s.ToString()).ToArray();
-        newDeviceSlotIndex = Math.Clamp(newDeviceSlotIndex, 0, slotNames.Length - 1);
         ImGui.InputText("Alias##newDevice", ref newDeviceName, 32);
         IconGlyph.HelpMarker("The command name your Owner uses for this restraint. For example, an alias of \"armcuffs\" is applied with \"restraint lock armcuffs\".");
-        ImGui.Combo("Slot##newDevice", ref newDeviceSlotIndex, slotNames, slotNames.Length);
-        IconGlyph.HelpMarker("Which equipment slot this device occupies. Applying it locks only this one slot, the same way a locked Outfit alias locks only the slots its design touches.");
+
+        IconGlyph.WrappedDisabled("Gear is optional - a device can be pure rules (forced pose, walk-only, etc.) with no equipment change at all.");
+        var mods = config.RestraintMapping.LocalCatalog.Values.OrderBy(m => m.ModName).ToList();
+        var modLabel = newDeviceModCatalogId is { } modId && config.RestraintMapping.LocalCatalog.TryGetValue(modId, out var chosenMod) ? chosenMod.ModName : "(none - rules only)";
+        ImGui.TextUnformatted($"Mod: {modLabel}");
+        ImGui.SameLine();
+        using (ImRaii.Disabled(mods.Count == 0))
+        if (ImGui.SmallButton("Choose mod...##newDevice"))
+            ImGui.OpenPopup("newDeviceModPopup");
+        if (ImGui.BeginPopup("newDeviceModPopup"))
+        {
+            if (ImGui.Selectable("(none - rules only)"))
+            {
+                newDeviceModCatalogId = null;
+                newDeviceSlot = null;
+                newDeviceItemId = null;
+            }
+            foreach (var mod in mods)
+            {
+                if (ImGui.Selectable(mod.ModName))
+                {
+                    newDeviceModCatalogId = mod.Id;
+                    newDeviceSlot = null;
+                    newDeviceItemId = null;
+                }
+            }
+            ImGui.EndPopup();
+        }
+        if (mods.Count == 0)
+            IconGlyph.WrappedDisabled("No detected mods yet - scan them above, or leave this a rules-only device.");
 
         var newDeviceChosenLabel = newDeviceItemId is { } id ? GetItemName(id) : "(none chosen)";
         ImGui.TextUnformatted($"Item: {newDeviceChosenLabel}");
         ImGui.SameLine();
-        if (ImGui.SmallButton("Choose item...##newDevice"))
+        using (ImRaii.Disabled(newDeviceModCatalogId is null))
+        if (ImGui.SmallButton("Choose item...##newDevice") && newDeviceModCatalogId is { } catalogId
+            && config.RestraintMapping.LocalCatalog.TryGetValue(catalogId, out var pickerMod))
         {
-            var slot = LockableEquipSlots.All[newDeviceSlotIndex];
-            plugin.ItemPickerWindow.Open(slot, (chosenId, _) => newDeviceItemId = chosenId);
+            plugin.ItemPickerWindow.OpenForItemIds(pickerMod.ModName, pickerMod.ChangedItemIds.ToHashSet(), (chosenId, _) =>
+            {
+                newDeviceItemId = chosenId;
+                newDeviceSlot = GlamourerIpc.GetItemSlot((uint)chosenId);
+            });
         }
-        IconGlyph.HelpMarker("Pick any item valid for the chosen slot - it does not need to be equipped or owned.");
+        IconGlyph.HelpMarker("Pick from the items the chosen mod actually changes - there's no way to guess which item needs to be glamoured otherwise.");
+        if (newDeviceModCatalogId is not null && newDeviceItemId is not null && newDeviceSlot is null)
+            IconGlyph.WrappedColored(Theme.Warning, "That item isn't valid for any lockable equipment slot - choose a different one.");
 
         DrawRestraintRuleCheckboxes(newDeviceRuleEdit, "newDevice");
 
@@ -1133,16 +1170,16 @@ public class CollarWindow : Window, IDisposable
             IconGlyph.WrappedColored(Theme.Warning, "A restraint device already uses this name.");
         if (!safeDeviceCommand)
             IconGlyph.WrappedColored(Theme.Warning, "This restraint name and rule set are too long for a safe command.");
-        using (ImRaii.Disabled(newDeviceName.Trim().Length == 0 || newDeviceItemId is null || !hasAnyRule || !boundAnimationsConfigured || duplicateDeviceName || !safeDeviceCommand))
+        var gearIncomplete = newDeviceModCatalogId is not null && (newDeviceItemId is null || newDeviceSlot is null);
+        using (ImRaii.Disabled(newDeviceName.Trim().Length == 0 || !hasAnyRule || !boundAnimationsConfigured || duplicateDeviceName || !safeDeviceCommand || gearIncomplete))
         {
-            if (ImGui.Button(editingDeviceId is null ? "Capture device" : "Save device") && newDeviceItemId is { } chosenItemId)
+            if (ImGui.Button(editingDeviceId is null ? "Capture device" : "Save device"))
             {
-                var slot = LockableEquipSlots.All[newDeviceSlotIndex];
                 var rules = ToRules(newDeviceRuleEdit);
 
                 var saved = editingDeviceId is null
-                    ? plugin.RestraintCommand.CaptureDeviceFromItem(slot, chosenItemId, newDeviceName, rules)
-                    : SaveDeviceDraft(slot, chosenItemId, rules);
+                    ? plugin.RestraintCommand.CaptureDeviceFromItem(newDeviceSlot, newDeviceItemId, newDeviceName, rules)
+                    : SaveDeviceDraft(newDeviceSlot, newDeviceItemId, rules);
                 if (saved)
                 {
                     ResetDeviceDraft();
@@ -1867,12 +1904,13 @@ public class CollarWindow : Window, IDisposable
     {
         editingDeviceId = device.Id;
         newDeviceName = device.Name;
-        newDeviceSlotIndex = Math.Max(0, LockableEquipSlots.All.ToList().IndexOf(device.Slot));
+        newDeviceModCatalogId = null;
+        newDeviceSlot = device.Slot;
         newDeviceItemId = device.ItemId;
         CopyRuleEdit(FromRules(device.Rules), newDeviceRuleEdit);
     }
 
-    private bool SaveDeviceDraft(ApiEquipSlot slot, ulong itemId, List<RestraintRuleAssignment> rules)
+    private bool SaveDeviceDraft(ApiEquipSlot? slot, ulong? itemId, List<RestraintRuleAssignment> rules)
     {
         if (editingDeviceId is not { } id || !plugin.Configuration.RestraintMapping.Devices.TryGetValue(id, out var device))
             return false;
@@ -1893,6 +1931,8 @@ public class CollarWindow : Window, IDisposable
     {
         editingDeviceId = null;
         newDeviceName = "";
+        newDeviceModCatalogId = null;
+        newDeviceSlot = null;
         newDeviceItemId = null;
         CopyRuleEdit(new RestraintRuleEditState(), newDeviceRuleEdit);
     }
@@ -2302,21 +2342,52 @@ public class CollarWindow : Window, IDisposable
     /// added to the name-based `quick` list, since its full definition already travels in the command text.
     private void DrawAdHocRestraintSection(bool canSend)
     {
-        IconGlyph.WrappedDisabled("Optional advanced control: choose an equipment slot and item directly after configuring any detected mod restraint above.");
+        IconGlyph.WrappedDisabled("Optional advanced control: gear is optional here too - send pure rules (forced pose, walk-only, etc.), or pick an item from one of your Sub's detected mods first.");
 
-        var slotNames = LockableEquipSlots.All.Select(s => s.ToString()).ToArray();
-        newAdHocSlotIndex = Math.Clamp(newAdHocSlotIndex, 0, slotNames.Length - 1);
-        ImGui.SetNextItemWidth(160);
-        ImGui.Combo("Slot##adHocRestraint", ref newAdHocSlotIndex, slotNames, slotNames.Length);
+        var mods = plugin.Configuration.RestraintMapping.ImportedPeerCatalog.Values.OrderBy(m => m.ModName).ToList();
+        var modLabel = newAdHocModCatalogId is { } modId && plugin.Configuration.RestraintMapping.ImportedPeerCatalog.TryGetValue(modId, out var chosenMod) ? chosenMod.ModName : "(none - rules only)";
+        ImGui.TextUnformatted($"Mod: {modLabel}");
+        ImGui.SameLine();
+        using (ImRaii.Disabled(mods.Count == 0))
+        if (ImGui.SmallButton("Choose mod...##adHocRestraint"))
+            ImGui.OpenPopup("adHocRestraintModPopup");
+        if (ImGui.BeginPopup("adHocRestraintModPopup"))
+        {
+            if (ImGui.Selectable("(none - rules only)"))
+            {
+                newAdHocModCatalogId = null;
+                newAdHocSlot = null;
+                newAdHocItemId = null;
+            }
+            foreach (var mod in mods)
+            {
+                if (ImGui.Selectable(mod.ModName))
+                {
+                    newAdHocModCatalogId = mod.Id;
+                    newAdHocSlot = null;
+                    newAdHocItemId = null;
+                }
+            }
+            ImGui.EndPopup();
+        }
+        if (mods.Count == 0)
+            IconGlyph.WrappedDisabled("Your Sub hasn't shared any detected mods yet - leave this a rules-only device.");
 
         var chosenLabel = newAdHocItemId is { } id ? GetItemName(id) : "(none chosen)";
         ImGui.TextUnformatted($"Item: {chosenLabel}");
         ImGui.SameLine();
-        if (ImGui.SmallButton("Choose item...##adHocRestraint"))
+        using (ImRaii.Disabled(newAdHocModCatalogId is null))
+        if (ImGui.SmallButton("Choose item...##adHocRestraint") && newAdHocModCatalogId is { } catalogId
+            && plugin.Configuration.RestraintMapping.ImportedPeerCatalog.TryGetValue(catalogId, out var pickerMod))
         {
-            var slot = LockableEquipSlots.All[newAdHocSlotIndex];
-            plugin.ItemPickerWindow.Open(slot, (chosenId, _) => newAdHocItemId = chosenId);
+            plugin.ItemPickerWindow.OpenForItemIds(pickerMod.ModName, pickerMod.ChangedItemIds.ToHashSet(), (chosenId, _) =>
+            {
+                newAdHocItemId = chosenId;
+                newAdHocSlot = GlamourerIpc.GetItemSlot((uint)chosenId);
+            });
         }
+        if (newAdHocModCatalogId is not null && newAdHocItemId is not null && newAdHocSlot is null)
+            IconGlyph.WrappedColored(Theme.Warning, "That item isn't valid for any lockable equipment slot - choose a different one.");
 
         ImGui.SetNextItemWidth(220);
         ImGui.InputText("Label##adHocRestraint", ref newAdHocLabel, 32);
@@ -2329,18 +2400,18 @@ public class CollarWindow : Window, IDisposable
         if (hasAnyRule && !boundAnimationsConfigured)
             IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before sending.");
 
-        var ready = newAdHocItemId is not null && newAdHocLabel.Trim().Length > 0 && hasAnyRule && boundAnimationsConfigured;
-        if (ready && newAdHocItemId is { } readyItemId)
+        var gearIncomplete = newAdHocModCatalogId is not null && (newAdHocItemId is null || newAdHocSlot is null);
+        var ready = !gearIncomplete && newAdHocLabel.Trim().Length > 0 && hasAnyRule && boundAnimationsConfigured;
+        if (ready)
         {
-            var slot = LockableEquipSlots.All[newAdHocSlotIndex];
-            var command = RestraintCommand.BuildWearCommand(slot, readyItemId, newAdHocLabel.Trim(), ToRules(newAdHocRuleEdit));
+            var command = RestraintCommand.BuildWearCommand(newAdHocSlot, newAdHocItemId, newAdHocLabel.Trim(), ToRules(newAdHocRuleEdit));
             ImGui.TextUnformatted("Send this ad-hoc device:");
             ContinueRowOrWrap(ButtonWidth("Send"));
             DrawSendCopyButtons(command, canSend, "adHocRestraint");
         }
         else
         {
-            IconGlyph.WrappedColored(Theme.Warning, "Choose a slot, an item, a label, and at least one rule before this can be sent.");
+            IconGlyph.WrappedColored(Theme.Warning, "Choose a label and at least one rule before this can be sent (gear is optional).");
         }
     }
 

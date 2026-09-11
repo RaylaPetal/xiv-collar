@@ -230,11 +230,11 @@ public sealed class RestraintCommand
     /// device id is derived deterministically from slot+item (design.md's "Ad-hoc device identity") rather
     /// than a stored `RestraintDeviceDefinition.Id`, so conflict tracking and release work exactly like a
     /// name-referenced device without needing one to exist in the Sub's own catalog.
-    public bool ForceApplyAdHoc(ApiEquipSlot slot, ulong itemId, string label, List<RestraintRuleAssignment> rules)
+    public bool ForceApplyAdHoc(ApiEquipSlot? slot, ulong? itemId, string label, List<RestraintRuleAssignment> rules)
     {
         var device = new RestraintDeviceDefinition
         {
-            Id = $"adhoc:{slot}:{itemId}",
+            Id = slot is not null && itemId is not null ? $"adhoc:{slot}:{itemId}" : $"adhoc:rulesonly:{label}",
             Slot = slot,
             ItemId = itemId,
             Stain = 0,
@@ -371,9 +371,10 @@ public sealed class RestraintCommand
     /// or rule change behind - same "refuse the whole action" guarantee OutfitCommand.ApplyDesign gives.
     private unsafe bool ApplyDevice(string deviceId, RestraintDeviceDefinition device)
     {
-        if (slotLocks.WouldOverlap([device.Slot], Owner))
+        var hasGear = device.Slot is not null && device.ItemId is not null;
+        if (hasGear && slotLocks.WouldOverlap([device.Slot!.Value], Owner))
         {
-            var conflicts = slotLocks.ConflictingLocks([device.Slot], Owner);
+            var conflicts = slotLocks.ConflictingLocks([device.Slot!.Value], Owner);
             LastFailureReason = conflicts.Count > 0
                 ? $"equipment slot {device.Slot} is locked by {conflicts[0].Owner}"
                 : $"equipment slot {device.Slot} is already locked";
@@ -406,12 +407,15 @@ public sealed class RestraintCommand
             return false;
         }
 
-        var value = new SlotLockValue(device.ItemId, device.Stain, device.Stain2);
-        if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [device.Slot] = value }))
+        if (hasGear)
         {
-            LastFailureReason = $"Glamourer could not apply or lock equipment slot {device.Slot}";
-            Plugin.Log.Warning($"Restraint apply failed for \"{device.Name}\": could not apply/lock its slot.");
-            return false;
+            var value = new SlotLockValue(device.ItemId!.Value, device.Stain, device.Stain2);
+            if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [device.Slot!.Value] = value }))
+            {
+                LastFailureReason = $"Glamourer could not apply or lock equipment slot {device.Slot}";
+                Plugin.Log.Warning($"Restraint apply failed for \"{device.Name}\": could not apply/lock its slot.");
+                return false;
+            }
         }
 
         if (device.Rules.Count > 0 && !restrictionRules.TryActivate(deviceId, device.Rules))
@@ -570,12 +574,16 @@ public sealed class RestraintCommand
             slotLocks.Release(Owner);
     }
 
-    /// Sub-side: captures a new restraint device from a slot+item picked in `ItemPickerWindow` - collar/
-    /// restraints "Restraint device captured from a single equipped gear piece." Undyed (stain 0/0) - no
-    /// dye picker in this flow yet (design.md's Non-Goals). Never touches live Glamourer state; the item
-    /// does not need to be currently equipped or owned.
-    public bool CaptureDeviceFromItem(ApiEquipSlot slot, ulong itemId, string name, List<RestraintRuleAssignment> rules)
+    /// Sub-side: captures a new restraint device from an optional slot+item picked in `ItemPickerWindow`
+    /// (mod-filtered - collar/restraints "Restraint device captured from a single equipped gear piece"),
+    /// or from rules alone with no gear at all. Undyed (stain 0/0) - no dye picker in this flow yet
+    /// (design.md's Non-Goals). Never touches live Glamourer state; the item does not need to be currently
+    /// equipped or owned. Refuses to save a device with neither gear nor a rule - it would do nothing.
+    public bool CaptureDeviceFromItem(ApiEquipSlot? slot, ulong? itemId, string name, List<RestraintRuleAssignment> rules)
     {
+        if (slot is null && itemId is null && rules.Count == 0)
+            return false;
+
         var device = new RestraintDeviceDefinition
         {
             Slot = slot,
@@ -682,11 +690,17 @@ public sealed class RestraintCommand
         return deviceName.Length > 0;
     }
 
+    /// A literal placeholder for the `restraint wear` verb's fixed slot/item positional tokens when the
+    /// ad-hoc device carries no gear - see design.md's "Wire format" decision. Keeps token count and order
+    /// fixed rather than making the slot/item tokens' presence variable.
+    private const string NoGearToken = "-";
+
     /// Builds the chat text for an Owner-authored ad-hoc restraint device (collar/restraints "Owner-
     /// authored ad-hoc restraint device"): carries the full slot/item/label/rules definition inline, since
     /// there is no Sub-side name to look up - see design.md's "Wire grammar" decision for why this is a
-    /// separate sub-verb (`wear`) rather than an extension of `lock`'s name-lookup shape.
-    public static string BuildWearCommand(ApiEquipSlot slot, ulong itemId, string label, List<RestraintRuleAssignment> rules)
+    /// separate sub-verb (`wear`) rather than an extension of `lock`'s name-lookup shape. Slot/item are
+    /// optional - a rules-only ad-hoc device emits `NoGearToken` for both positions.
+    public static string BuildWearCommand(ApiEquipSlot? slot, ulong? itemId, string label, List<RestraintRuleAssignment> rules)
     {
         var tokens = rules.Select(r => r.Kind switch
         {
@@ -700,26 +714,42 @@ public sealed class RestraintCommand
             _ => "",
         }).Where(t => t.Length > 0);
 
-        return $"restraint wear {slot} {itemId} \"{label}\" {RulesToken}{string.Join(',', tokens)}";
+        var slotText = slot is null ? NoGearToken : slot.Value.ToString();
+        var itemText = itemId is null ? NoGearToken : itemId.Value.ToString();
+        return $"restraint wear {slotText} {itemText} \"{label}\" {RulesToken}{string.Join(',', tokens)}";
     }
 
-    /// Parses the remainder of a `restraint wear ...` command (after the "wear " prefix) into a slot, item
-    /// id, label, and Owner-assigned rules. Fails closed (returns false) on any malformed segment - an
-    /// ad-hoc device with no rules is meaningless (nothing would activate), so this never silently applies
-    /// a bare gear swap.
-    public static bool TryParseWearCommand(string remainder, out ApiEquipSlot slot, out ulong itemId, out string label, out List<RestraintRuleAssignment> rules)
+    /// Parses the remainder of a `restraint wear ...` command (after the "wear " prefix) into an optional
+    /// slot, optional item id, label, and Owner-assigned rules. Fails closed (returns false) on any
+    /// malformed segment - an ad-hoc device with neither gear nor rules is meaningless (nothing would
+    /// activate), so this never silently applies a bare gear swap. A `NoGearToken` ("-") in either the slot
+    /// or item position means "no gear" - both positions are always present on the wire, only their values
+    /// vary, so an older parser attempting `ulong.TryParse("-", ...)` on an unrecognized token fails closed
+    /// rather than misapplying (design.md's "Risks/Trade-offs" - this is the one BREAKING wire edge).
+    public static bool TryParseWearCommand(string remainder, out ApiEquipSlot? slot, out ulong? itemId, out string label, out List<RestraintRuleAssignment> rules)
     {
-        slot = default;
-        itemId = 0;
+        slot = null;
+        itemId = null;
         label = "";
         rules = [];
 
         var (slotToken, afterSlot) = SplitFirstToken(remainder);
-        if (!Enum.TryParse(slotToken, true, out slot))
-            return false;
+        if (slotToken != NoGearToken)
+        {
+            if (!Enum.TryParse<ApiEquipSlot>(slotToken, true, out var parsedSlot))
+                return false;
+            slot = parsedSlot;
+        }
 
         var (itemToken, afterItem) = SplitFirstToken(afterSlot);
-        if (!ulong.TryParse(itemToken, out itemId))
+        if (itemToken != NoGearToken)
+        {
+            if (!ulong.TryParse(itemToken, out var parsedItemId))
+                return false;
+            itemId = parsedItemId;
+        }
+
+        if ((slot is null) != (itemId is null))
             return false;
 
         var trimmed = afterItem.Trim();
