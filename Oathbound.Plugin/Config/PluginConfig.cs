@@ -490,12 +490,16 @@ public class ToyPattern
 
 /// collar/toy-control "Local automatic toy triggers": which local game-state signal a `ToyTriggerRule`
 /// reacts to. `HealthPercentThreshold` only matters for `HealthPercent`; `RestrictionKind` only matters for
-/// `RestrictionActive`; `PlayerDamage` uses neither.
+/// `RestrictionActive`; `PlayerDamage` uses neither. `SpellCastOnYou` fires on any action (damaging or not)
+/// used on you by another player character, optionally narrowed by `SpellJobIds`/`SpellActionIds` - unlike
+/// `PlayerDamage`, it is not restricted to damage-classified effects (a heal, buff, or debuff cast on you
+/// counts too).
 public enum ToyTriggerKind
 {
     HealthPercent,
     PlayerDamage,
     RestrictionActive,
+    SpellCastOnYou,
 }
 
 /// collar/toy-control "Local automatic toy triggers"/"Automatic triggers are rate-limited per rule": a
@@ -518,10 +522,26 @@ public class ToyTriggerRule
     /// rule (see `Safety.RestrictionRuleManager.IsActive`).
     public RestraintRuleKind RestrictionKind { get; set; }
 
+    /// Only for `SpellCastOnYou`: which caster job(s) (`Lumina.Excel.Sheets.ClassJob.RowId`) this rule
+    /// reacts to. Empty means any job.
+    public List<uint> SpellJobIds { get; set; } = new();
+
+    /// Only for `SpellCastOnYou`: which specific action(s) (`Lumina.Excel.Sheets.Action.RowId`) this rule
+    /// reacts to. Empty means any action. `SpellJobIds` and `SpellActionIds` are independent AND filters -
+    /// both empty means "any action from any player", matching `PlayerDamage` but without the
+    /// damage-classification restriction.
+    public List<uint> SpellActionIds { get; set; } = new();
+
     /// The toy action this rule fires. Exactly one of these two is set - `IntensityPercent` for a plain
     /// vibrate at that intensity, `PatternName` for a built-in or custom named pattern.
     public int? IntensityPercent { get; set; }
     public string? PatternName { get; set; }
+
+    /// Only meaningful alongside `IntensityPercent` (a pattern already carries its own timing via its
+    /// steps and loop flag). Null means the fired vibrate uses `ToyDuration.Unspecified` - the same
+    /// default-ceiling behavior as an Owner's untimed vibrate command; a value clamps to
+    /// `ToyControlCommand.MaxDurationSeconds` exactly like an Owner-requested bounded duration does.
+    public int? DurationSeconds { get; set; }
 
     public int CooldownSeconds { get; set; } = 5;
 }

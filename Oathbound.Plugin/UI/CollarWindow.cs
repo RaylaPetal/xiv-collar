@@ -153,8 +153,14 @@ public class CollarWindow : Window, IDisposable
     private ToyTriggerKind toyTriggerKindInput = ToyTriggerKind.HealthPercent;
     private int toyTriggerHealthThresholdInput = 50;
     private RestraintRuleKind toyTriggerRestrictionKindInput = RestraintRuleKind.Gagged;
+    private readonly HashSet<uint> toyTriggerSpellJobIdsInput = new();
+    private readonly HashSet<uint> toyTriggerSpellActionIdsInput = new();
+    private string toyTriggerSpellJobSearch = "";
+    private string toyTriggerSpellActionSearch = "";
     private bool toyTriggerUsePatternInput;
     private int toyTriggerIntensityInput = 50;
+    private bool toyTriggerHasDurationInput;
+    private int toyTriggerDurationSecondsInput = 10;
     private string toyTriggerPatternNameInput = "";
     private int toyTriggerCooldownInput = 5;
 
@@ -3222,6 +3228,7 @@ public class CollarWindow : Window, IDisposable
                 {
                     ContinueRowOrWrap(ButtonWidth("Send"));
                     DrawSendOnly(ToyControlCommand.BuildCustomSequenceCommand(pattern.Steps, pattern.Loop), canSend, $"toyPatternSend{pattern.Id}", "Send");
+                    IconGlyph.HelpMarker("Sends this pattern's full step sequence directly to your paired Sub, by value - they don't need to have anything saved for this to work, and it doesn't add anything to their own saved pattern list.");
                 }
                 ImGui.Separator();
             }
@@ -3232,7 +3239,9 @@ public class CollarWindow : Window, IDisposable
         IconGlyph.WrappedDisabled(toyPatternEditingId is null ? "New pattern" : "Editing pattern");
         ImGui.SetNextItemWidth(200);
         ImGui.InputText("Name##toyPatternName", ref toyPatternNameInput, 64);
+        IconGlyph.HelpMarker("A name for this pattern, used to select it later - can't match a built-in preset name (weak/medium/strong/pulse) or another custom pattern you've already saved.");
         ImGui.Checkbox("Loop##toyPatternLoop", ref toyPatternLoopInput);
+        IconGlyph.HelpMarker("If checked, the steps below repeat from the start once the last one ends, continuing until stopped, panic, or the safety ceiling. If unchecked, the pattern plays through the steps once and then stops on its own.");
         ImGui.Spacing();
 
         ImGui.Indent();
@@ -3244,12 +3253,14 @@ public class CollarWindow : Window, IDisposable
             var intensity = step.IntensityPercent;
             if (ImGui.SliderInt($"Intensity##toyPatternStep{i}", ref intensity, 0, 100, "%d%%"))
                 step.IntensityPercent = intensity;
+            IconGlyph.HelpMarker("How strong the vibration is while this step is active.");
 
             ContinueRowOrWrap(160);
             ImGui.SetNextItemWidth(120);
             var durationMs = step.DurationMs;
             if (ImGui.InputInt($"ms##toyPatternStepDuration{i}", ref durationMs))
                 step.DurationMs = Math.Max(0, durationMs);
+            IconGlyph.HelpMarker("How long this step lasts, in milliseconds, before moving to the next step. 0 means this step holds indefinitely - it never advances on its own, only stopping at the pattern's overall ceiling, an explicit stop, or panic.");
 
             ContinueRowOrWrap(ButtonWidth("Up"));
             using (ImRaii.Disabled(i == 0))
@@ -3360,6 +3371,7 @@ public class CollarWindow : Window, IDisposable
             IconGlyph.WrappedColored(Theme.Warning, "Triggers are suspended (panic was triggered). They will not fire again until you resume them.");
             if (ImGui.SmallButton("Resume triggers##toyTriggers"))
                 runtimeState.ToyTriggersSuspended = false;
+            IconGlyph.HelpMarker("Re-arms every enabled trigger below. Panic suspends all trigger evaluation on purpose, so nothing can fire again immediately after a panic - this is the only way to turn evaluation back on.");
             ImGui.Spacing();
         }
 
@@ -3394,16 +3406,18 @@ public class CollarWindow : Window, IDisposable
         ImGui.Spacing();
         IconGlyph.WrappedDisabled("New trigger");
         ImGui.Spacing();
-        var kindNames = new[] { "Health drops below %", "Hit by another player", "A restriction becomes active" };
+        var kindNames = new[] { "Health drops below %", "Hit by another player (damage)", "A restriction becomes active", "Spell cast on you" };
         var kindIndex = (int)toyTriggerKindInput;
         ImGui.SetNextItemWidth(220);
         if (ImGui.Combo("Condition##toyTriggerKind", ref kindIndex, kindNames, kindNames.Length))
             toyTriggerKindInput = (ToyTriggerKind)kindIndex;
+        IconGlyph.HelpMarker("What local game-state event fires this trigger. Every option runs entirely on your own client - no message is ever sent to or from your Owner.");
 
         if (toyTriggerKindInput == ToyTriggerKind.HealthPercent)
         {
             ImGui.SetNextItemWidth(120);
             ImGui.SliderInt("Threshold %##toyTriggerHealth", ref toyTriggerHealthThresholdInput, 1, 100);
+            IconGlyph.HelpMarker("Fires the first time your health drops to or below this percentage. It won't fire again while health stays below the threshold - it needs to rise back above it first (or the cooldown alone gates a fast in-and-out).");
         }
         else if (toyTriggerKindInput == ToyTriggerKind.RestrictionActive)
         {
@@ -3412,22 +3426,46 @@ public class CollarWindow : Window, IDisposable
             ImGui.SetNextItemWidth(200);
             if (ImGui.Combo("Restriction##toyTriggerRestriction", ref restrictionIndex, restrictionNames, restrictionNames.Length))
                 toyTriggerRestrictionKindInput = (RestraintRuleKind)restrictionIndex;
+            IconGlyph.HelpMarker("Fires the first time this restriction becomes active on you, from any device that applies it - not continuously while it stays active.");
+        }
+        else if (toyTriggerKindInput == ToyTriggerKind.PlayerDamage)
+        {
+            IconGlyph.WrappedDisabled("Fires each time you take damage from another player character - never from an NPC.");
+        }
+        else
+        {
+            IconGlyph.WrappedDisabled("Fires each time an action is used on you by another player character - damage, heal, buff, or debuff alike, never from an NPC. Optionally narrow it to specific job(s) and/or specific spell(s)/skill(s) below; leave both empty to match any action from any player.");
+            DrawToySpellJobFilter();
+            DrawToySpellActionFilter();
         }
 
         ImGui.Checkbox("Named pattern (instead of a fixed intensity)##toyTriggerUsePattern", ref toyTriggerUsePatternInput);
+        IconGlyph.HelpMarker("Off: fire a plain vibration at a fixed intensity (with its own optional duration below). On: fire a named pattern - a built-in preset (weak/medium/strong/pulse) or one of your own saved custom patterns - instead, using that pattern's own timing.");
         if (toyTriggerUsePatternInput)
         {
             ImGui.SetNextItemWidth(180);
             ImGui.InputText("Pattern name##toyTriggerPattern", ref toyTriggerPatternNameInput, 64);
+            IconGlyph.HelpMarker("Must exactly match a built-in preset name (weak/medium/strong/pulse) or one of your saved custom patterns - see the Custom Patterns section above. An unrecognized name means this trigger will fail closed and never actually fire.");
         }
         else
         {
             ImGui.SetNextItemWidth(140);
             ImGui.SliderInt("Intensity##toyTriggerIntensity", ref toyTriggerIntensityInput, 0, 100, "%d%%");
+            IconGlyph.HelpMarker("How strong the vibration is when this trigger fires.");
+
+            ImGui.Checkbox("Duration##toyTriggerHasDuration", ref toyTriggerHasDurationInput);
+            IconGlyph.HelpMarker("How long the vibration runs once this trigger fires, before it stops on its own. Leave unchecked to use the default safety ceiling instead of a specific duration - either way, a hard local ceiling always applies.");
+            if (toyTriggerHasDurationInput)
+            {
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(120);
+                ImGui.SliderInt("seconds##toyTriggerDuration", ref toyTriggerDurationSecondsInput, 1, ToyControlCommand.MaxDurationSeconds);
+            }
         }
 
         ImGui.SetNextItemWidth(120);
         ImGui.SliderInt("Cooldown (s)##toyTriggerCooldown", ref toyTriggerCooldownInput, 2, 300);
+        IconGlyph.HelpMarker("Minimum time between firings of this trigger, even if its condition becomes true again sooner. A 2-second floor always applies regardless of this value.");
 
         ImGui.Spacing();
         if (ImGui.SmallButton("Add trigger##toyTrigger"))
@@ -3438,12 +3476,78 @@ public class CollarWindow : Window, IDisposable
                 Kind = toyTriggerKindInput,
                 HealthPercentThreshold = toyTriggerHealthThresholdInput,
                 RestrictionKind = toyTriggerRestrictionKindInput,
+                SpellJobIds = toyTriggerSpellJobIdsInput.ToList(),
+                SpellActionIds = toyTriggerSpellActionIdsInput.ToList(),
                 IntensityPercent = toyTriggerUsePatternInput ? null : toyTriggerIntensityInput,
                 PatternName = toyTriggerUsePatternInput ? toyTriggerPatternNameInput.Trim() : null,
+                DurationSeconds = toyTriggerUsePatternInput || !toyTriggerHasDurationInput ? null : toyTriggerDurationSecondsInput,
                 CooldownSeconds = Math.Max(2, toyTriggerCooldownInput),
             };
             config.ToyTriggerRules.Add(rule);
             config.Save();
+        }
+    }
+
+    /// collar/toy-control "Spell cast on you": a compact multi-select of playable combat jobs (Lumina's
+    /// `ClassJob` sheet has ~40 rows, small enough to render inline without a search-gated list like the
+    /// action picker below needs) - checking none means "any job".
+    private void DrawToySpellJobFilter()
+    {
+        ImGui.SetNextItemWidth(200);
+        ImGui.InputTextWithHint("##toyTriggerSpellJobSearch", "Filter jobs...", ref toyTriggerSpellJobSearch, 32);
+        IconGlyph.HelpMarker("Which caster job(s) this trigger reacts to. Leave every job unchecked to match any job.");
+
+        using var _ = ImRaii.Child("toyTriggerSpellJobList", new Vector2(0, 90), true);
+        var search = toyTriggerSpellJobSearch.Trim();
+        foreach (var job in Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>()
+                     .Where(j => j.RowId > 0 && j.Role > 0 && j.Abbreviation.ExtractText().Length > 0)
+                     .Where(j => search.Length == 0 || j.Name.ExtractText().Contains(search, StringComparison.OrdinalIgnoreCase) || j.Abbreviation.ExtractText().Contains(search, StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(j => j.Abbreviation.ExtractText()))
+        {
+            var isChecked = toyTriggerSpellJobIdsInput.Contains(job.RowId);
+            if (ImGui.Checkbox($"{job.Abbreviation.ExtractText()} - {job.Name.ExtractText()}##toyTriggerSpellJob{job.RowId}", ref isChecked))
+            {
+                if (isChecked) toyTriggerSpellJobIdsInput.Add(job.RowId);
+                else toyTriggerSpellJobIdsInput.Remove(job.RowId);
+            }
+        }
+    }
+
+    /// collar/toy-control "Spell cast on you": the `Action` sheet has thousands of rows, so this requires
+    /// search text before listing anything (capped at 100 matches) rather than rendering every player
+    /// action inline - checking none means "any action". Restricted to `IsPlayerAction` rows so the list
+    /// is actual castable player skills/spells, not every internal action-table entry.
+    private void DrawToySpellActionFilter()
+    {
+        ImGui.SetNextItemWidth(200);
+        ImGui.InputTextWithHint("##toyTriggerSpellActionSearch", "Search skill/spell name...", ref toyTriggerSpellActionSearch, 32);
+        IconGlyph.HelpMarker("Which specific action(s) this trigger reacts to. Leave every action unchecked to match any action. Type at least part of a skill/spell name to search - the full list is too large to show at once.");
+
+        var search = toyTriggerSpellActionSearch.Trim();
+        if (search.Length == 0)
+        {
+            foreach (var actionId in toyTriggerSpellActionIdsInput.ToList())
+            {
+                var selectedName = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>().GetRowOrDefault(actionId)?.Name.ExtractText() ?? actionId.ToString();
+                ImGui.TextUnformatted($"Selected: {selectedName}");
+                ImGui.SameLine();
+                if (ImGui.SmallButton($"Remove##toyTriggerSpellAction{actionId}"))
+                    toyTriggerSpellActionIdsInput.Remove(actionId);
+            }
+            return;
+        }
+
+        using var _ = ImRaii.Child("toyTriggerSpellActionList", new Vector2(0, 90), true);
+        foreach (var action in Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>()
+                     .Where(a => a.IsPlayerAction && a.Name.ExtractText().Contains(search, StringComparison.OrdinalIgnoreCase))
+                     .Take(100))
+        {
+            var isChecked = toyTriggerSpellActionIdsInput.Contains(action.RowId);
+            if (ImGui.Checkbox($"{action.Name.ExtractText()}##toyTriggerSpellAction{action.RowId}", ref isChecked))
+            {
+                if (isChecked) toyTriggerSpellActionIdsInput.Add(action.RowId);
+                else toyTriggerSpellActionIdsInput.Remove(action.RowId);
+            }
         }
     }
 
@@ -3460,10 +3564,23 @@ public class CollarWindow : Window, IDisposable
             ToyTriggerKind.HealthPercent => $"Health <= {rule.HealthPercentThreshold}%",
             ToyTriggerKind.PlayerDamage => "Hit by another player",
             ToyTriggerKind.RestrictionActive => $"{rule.RestrictionKind} active",
+            ToyTriggerKind.SpellCastOnYou => DescribeSpellFilter(rule),
             _ => rule.Kind.ToString(),
         };
-        var action = rule.PatternName is { Length: > 0 } name ? $"pattern \"{name}\"" : $"{rule.IntensityPercent ?? 0}% vibrate";
+        var action = rule.PatternName is { Length: > 0 } name ? $"pattern \"{name}\"" : $"{rule.IntensityPercent ?? 0}% vibrate{(rule.DurationSeconds is { } d ? $" for {d}s" : "")}";
         return $"{condition} -> {action} (cooldown {rule.CooldownSeconds}s)";
+    }
+
+    private static string DescribeSpellFilter(ToyTriggerRule rule)
+    {
+        if (rule.SpellJobIds.Count == 0 && rule.SpellActionIds.Count == 0)
+            return "Any spell cast on you";
+
+        var jobs = rule.SpellJobIds.Count == 0 ? "any job" :
+            string.Join('/', rule.SpellJobIds.Select(id => Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>().GetRowOrDefault(id)?.Abbreviation.ExtractText() ?? id.ToString()));
+        var actions = rule.SpellActionIds.Count == 0 ? "any action" :
+            string.Join('/', rule.SpellActionIds.Select(id => Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>().GetRowOrDefault(id)?.Name.ExtractText() ?? id.ToString()));
+        return $"Spell cast on you ({jobs}, {actions})";
     }
 
     /// collar/toy-control: the Owner's direct-override controls - an intensity slider with an optional
