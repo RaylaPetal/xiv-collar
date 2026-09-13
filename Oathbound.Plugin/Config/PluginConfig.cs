@@ -761,6 +761,16 @@ public class PluginConfig : IPluginConfiguration
     /// still a hard local stop, just a much longer one. Defaults to 4 hours (14400 seconds).
     public int PermanentBackstopSeconds { get; set; } = 14400;
 
+    /// collar/toy-control "Locally enforced maximum duration": the Sub's own configured ceiling used
+    /// whenever no explicit bounded duration applies - an untimed vibrate command, or any named/custom
+    /// pattern's own outer ceiling (a pattern's steps only govern its rhythm, not how long the whole thing
+    /// runs before the safety stop). Always clamped to `[1, ToyControlCommand.MaxDurationSeconds]` at the
+    /// point it's read (see `ToyControlCommand`'s effective-ceiling resolution) - a Sub can shorten this
+    /// default below the fixed 120s ceiling, but never raise it past it; an explicitly *bounded* Owner
+    /// request (`toy vibrate ... duration:<n>`) is still clamped against the fixed ceiling directly,
+    /// independent of this setting. Defaults to 120, matching the ceiling's own compiled default.
+    public int DefaultMaxDurationSeconds { get; set; } = 120;
+
     /// collar/toy-control "Sub-authored custom vibration patterns": Sub-local, never synced or sent over
     /// the wire - only a pattern's name crosses chat, the same way only an alias name does.
     public List<ToyPattern> ToyPatterns { get; set; } = new();

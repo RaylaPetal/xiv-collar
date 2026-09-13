@@ -231,7 +231,7 @@ public class CollarWindow : Window, IDisposable
 
     public CollarWindow(Plugin plugin) : base("Oathbound###CollarWindow")
     {
-        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(460, 520), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
+        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(465, 520), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
         this.plugin = plugin;
 
         TitleBarButtons.Add(new TitleBarButton
@@ -3144,16 +3144,18 @@ public class CollarWindow : Window, IDisposable
             ImGui.InputText("Intiface address##toyControl", ref toyIntifaceAddress, 128);
         IconGlyph.HelpMarker("Intiface Central's own WebSocket address - the default matches Intiface Central's default listen address, change it only if you've configured Intiface differently.");
 
-        ImGui.SameLine();
         if (intiface.IsConnected)
         {
+            ContinueRowOrWrap(ButtonWidth("Disconnect"));
             if (ImGui.SmallButton("Disconnect##toyControl"))
                 intiface.Disconnect();
         }
         else
         {
+            var connectLabel = intiface.IsConnecting ? "Connecting..." : "Connect";
+            ContinueRowOrWrap(ButtonWidth(connectLabel));
             using (ImRaii.Disabled(intiface.IsConnecting || toyIntifaceAddress.Trim().Length == 0))
-            if (ImGui.SmallButton(intiface.IsConnecting ? "Connecting...##toyControl" : "Connect##toyControl"))
+            if (ImGui.SmallButton($"{connectLabel}##toyControl"))
             {
                 config.IntifaceAddress = toyIntifaceAddress.Trim();
                 config.Save();
@@ -3171,6 +3173,25 @@ public class CollarWindow : Window, IDisposable
         if (ImGui.SmallButton("Stop now##toyControlLocal"))
             plugin.ToyControlCommand.ForceStop();
         IconGlyph.HelpMarker("Stops every connected device immediately, independent of anything your Owner sent - for your own peace of mind, not tied to any permission.");
+
+        ImGui.Spacing();
+        var defaultMaxDuration = config.DefaultMaxDurationSeconds;
+        ImGui.SetNextItemWidth(160);
+        if (ImGui.SliderInt("Default max duration (s)##toyControlDefaultMax", ref defaultMaxDuration, 1, ToyControlCommand.MaxDurationSeconds))
+        {
+            config.DefaultMaxDurationSeconds = defaultMaxDuration;
+            config.Save();
+        }
+        IconGlyph.HelpMarker($"How long a command runs when no duration was specified - an untimed vibrate, or any pattern's own outer ceiling. This can only shorten the {ToyControlCommand.MaxDurationSeconds}s hard ceiling, never lengthen it - an Owner's explicitly timed command is still capped at {ToyControlCommand.MaxDurationSeconds}s regardless of this setting. Permanent-mode commands use the separate setting just below instead.");
+
+        var permanentBackstop = config.PermanentBackstopSeconds;
+        ImGui.SetNextItemWidth(160);
+        if (ImGui.InputInt("Permanent-mode backstop (s)##toyControlPermanentBackstop", ref permanentBackstop))
+        {
+            config.PermanentBackstopSeconds = Math.Max(1, permanentBackstop);
+            config.Save();
+        }
+        IconGlyph.HelpMarker("The hard ceiling a permanent-mode vibrate/pattern command is held to - still a real limit, just a much longer one than the default max duration above. Defaults to 14400 seconds (4 hours). Applies only when a command explicitly requests permanent mode.");
 
         ImGui.Spacing();
         ImGui.Separator();

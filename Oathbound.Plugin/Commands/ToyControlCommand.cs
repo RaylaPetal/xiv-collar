@@ -15,9 +15,11 @@ namespace Oathbound.Plugin.Commands;
 /// rather than any wire round-trip - a plain vibrate is a degenerate one-step sequence, `weak`/`medium`/
 /// `strong` are single-step presets, `pulse` is a two-step loop, and a Sub-authored custom pattern (see
 /// `PluginConfig.ToyPatterns`) is the same shape with more steps. Every command is capped to either the
-/// default `MaxDurationSeconds` ceiling or (only when explicitly requested) the much longer
-/// `PluginConfig.PermanentBackstopSeconds` - the ceiling is enforced entirely by the Sub's own client and
-/// cannot be bypassed by what the Owner (or a local trigger) requested.
+/// Sub's own configured `PluginConfig.DefaultMaxDurationSeconds` (itself never above the fixed compiled
+/// `MaxDurationSeconds`), an explicit bounded duration clamped straight to `MaxDurationSeconds`, or (only
+/// when explicitly requested) the much longer `PluginConfig.PermanentBackstopSeconds` - the ceiling is
+/// enforced entirely by the Sub's own client and cannot be bypassed by what the Owner (or a local trigger)
+/// requested.
 public sealed class ToyControlCommand
 {
     public const int MaxDurationSeconds = 120;
@@ -81,7 +83,7 @@ public sealed class ToyControlCommand
 
         if (BuiltInPatterns.TryGetValue(patternName, out var builtInSteps))
         {
-            StartSequence(builtInSteps, BuiltInLoop[patternName], MaxDurationSeconds);
+            StartSequence(builtInSteps, BuiltInLoop[patternName], EffectiveDefaultCeilingSeconds());
             return true;
         }
 
@@ -89,7 +91,7 @@ public sealed class ToyControlCommand
         if (custom is null || custom.Steps.Count == 0)
             return false;
 
-        StartSequence(custom.Steps, custom.Loop, MaxDurationSeconds);
+        StartSequence(custom.Steps, custom.Loop, EffectiveDefaultCeilingSeconds());
         return true;
     }
 
@@ -104,7 +106,7 @@ public sealed class ToyControlCommand
         if (!intiface.IsConnected || sequence.Count == 0) return false;
 
         var clamped = sequence.Select(s => new PatternStep { IntensityPercent = Math.Clamp(s.IntensityPercent, 0, 100), DurationMs = Math.Max(0, s.DurationMs) }).ToList();
-        StartSequence(clamped, loop, MaxDurationSeconds);
+        StartSequence(clamped, loop, EffectiveDefaultCeilingSeconds());
         return true;
     }
 
@@ -121,18 +123,23 @@ public sealed class ToyControlCommand
         runtimeState.ToyControlForceLocked = true;
     }
 
-    /// collar/toy-control "Locally enforced maximum duration": `Unspecified` uses the default ceiling
-    /// (`MaxDurationSeconds`) exactly as an untimed command always has; `Bounded` clamps into
-    /// `[0, MaxDurationSeconds]` exactly as a timed command always has; `Permanent` is the one new case -
-    /// it does not use `MaxDurationSeconds` at all, but it is never truly unbounded either: it uses the
-    /// separate, much longer `PermanentBackstopSeconds` ceiling instead, so a hard local stop always exists
-    /// regardless of which mode was requested.
+    /// collar/toy-control "Locally enforced maximum duration": `Unspecified` uses the Sub's own configured
+    /// default ceiling (`EffectiveDefaultCeilingSeconds()`) exactly as an untimed command always has;
+    /// `Bounded` clamps into `[0, MaxDurationSeconds]` against the fixed compiled ceiling directly,
+    /// independent of the Sub's own default setting, exactly as a timed command always has; `Permanent` is
+    /// the one case that uses neither - it is never truly unbounded either, using the separate, much longer
+    /// `PermanentBackstopSeconds` ceiling instead, so a hard local stop always exists regardless of which
+    /// mode was requested.
     private int EffectiveCeilingSeconds(ToyDuration duration) => duration.Type switch
     {
         ToyDuration.Kind.Bounded => Math.Clamp(duration.Seconds, 0, MaxDurationSeconds),
         ToyDuration.Kind.Permanent => Math.Max(0, config.PermanentBackstopSeconds),
-        _ => MaxDurationSeconds,
+        _ => EffectiveDefaultCeilingSeconds(),
     };
+
+    /// collar/toy-control: the Sub's own `DefaultMaxDurationSeconds`, clamped so it can shorten the default
+    /// ceiling below `MaxDurationSeconds` but never raise it past the fixed compiled cap.
+    private int EffectiveDefaultCeilingSeconds() => Math.Clamp(config.DefaultMaxDurationSeconds, 1, MaxDurationSeconds);
 
     /// collar/toy-control "Explicit stop command".
     public bool ForceStop()
