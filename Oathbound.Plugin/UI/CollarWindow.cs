@@ -135,6 +135,28 @@ public class CollarWindow : Window, IDisposable
     private string newWardrobeAllowlistFolder = "";
     private bool revealSafeword;
     private int newCollarMoodleStatusIndex;
+    private int toyVibrateIntensity = 50;
+    private bool toyVibrateHasDuration;
+    private bool toyVibrateIsPermanent;
+    private int toyVibrateDurationSeconds = 10;
+    private string toyIntifaceAddress = "";
+
+    /// collar/toy-control: Sub-only custom pattern editor working state - a new pattern under construction
+    /// (or, while non-null, the id of an existing one being edited in place).
+    private string toyPatternNameInput = "";
+    private bool toyPatternLoopInput;
+    private readonly List<PatternStep> toyPatternStepsInput = new();
+    private string? toyPatternEditingId;
+    private string? toyPatternError;
+
+    /// collar/toy-control: Sub-only trigger editor working state for a new/edited ToyTriggerRule.
+    private ToyTriggerKind toyTriggerKindInput = ToyTriggerKind.HealthPercent;
+    private int toyTriggerHealthThresholdInput = 50;
+    private RestraintRuleKind toyTriggerRestrictionKindInput = RestraintRuleKind.Gagged;
+    private bool toyTriggerUsePatternInput;
+    private int toyTriggerIntensityInput = 50;
+    private string toyTriggerPatternNameInput = "";
+    private int toyTriggerCooldownInput = 5;
 
     /// collar/ui-organization: search text filtering the Owner's Gesture quick-command list.
     private string gestureQuickSearch = "";
@@ -170,15 +192,16 @@ public class CollarWindow : Window, IDisposable
         public string? ForcedPoseAnimationId;
         public bool WalkOnly;
         public bool ActionBlock;
-        public bool GagChat;
+        public bool Gagged;
+        public string? GagAnimationId;
+        public string? GagCustomizePresetId;
+        public string? GagCustomizePresetLabel;
         public bool ArmsCuffed;
         public string? ArmsCuffedAnimationId;
         public bool LegsCuffed;
         public string? LegsCuffedAnimationId;
         public bool FullBodyCuffed;
         public string? FullBodyCuffedAnimationId;
-        public bool Gag;
-        public string? GagAnimationId;
     }
 
     /// collar/ui-organization "Category tabs present role-aware content": one tab per shared category
@@ -192,6 +215,7 @@ public class CollarWindow : Window, IDisposable
         ("animation", FontAwesomeIcon.TheaterMasks, "Animation"),
         ("moodles", FontAwesomeIcon.Smile, "Moodles"),
         ("restraints", FontAwesomeIcon.Handcuffs, "Restraints"),
+        ("toycontrol", FontAwesomeIcon.Plug, "Toy Control"),
         ("customtriggers", FontAwesomeIcon.BoltLightning, "Custom Triggers"),
         ("collar", FontAwesomeIcon.Lock, "Collar"),
         ("follow", FontAwesomeIcon.Link, "Follow / Leash"),
@@ -257,6 +281,10 @@ public class CollarWindow : Window, IDisposable
             case "restraints":
                 if (isOwner) DrawRestraintQuickSection(DrawOwnerCanSendBanner());
                 else DrawRestraintsModule();
+                break;
+            case "toycontrol":
+                if (isOwner) DrawToyControlQuickSection(DrawOwnerCanSendBanner());
+                else DrawToyControlModule();
                 break;
             case "customtriggers":
                 if (isOwner)
@@ -943,6 +971,17 @@ public class CollarWindow : Window, IDisposable
                 SavePermission(() => permissions.CustomChatMessages = newCustomChat);
             IconGlyph.HelpMarker("Lets a Custom Trigger's chat action send arbitrary text to any channel (including public chat) as your own character. A materially broader automation surface than Animation's closed set of self-targeting commands - see the README's Automation risk section.");
         }
+
+        ImGui.Spacing();
+        if (!config.ToyControlAcknowledged)
+            IconGlyph.WrappedColored(Theme.Warning, "Toy control requires its own dedicated acknowledgement in Settings (gear icon) first - separate from every other checkbox above.");
+
+        using (ImRaii.Disabled(!config.ToyControlAcknowledged))
+        {
+            if (ImGuiCheckbox("Toy control", permissions.ToyControl, out var newToyControl))
+                SavePermission(() => permissions.ToyControl = newToyControl);
+            IconGlyph.HelpMarker("Lets a paired Owner remotely vibrate or run a pattern on a toy you have connected via Intiface Central, until it stops itself, you stop it, or a maximum duration elapses. Directly actuates a physical device, not just in-game state - the single heaviest automation footprint in this plugin - see the README's Automation risk section.");
+        }
     }
 
     private void DrawTitleModule()
@@ -1159,7 +1198,7 @@ public class CollarWindow : Window, IDisposable
         if (newDeviceModCatalogId is not null && newDeviceItemId is not null && newDeviceSlot is null)
             IconGlyph.WrappedColored(Theme.Warning, "That item isn't valid for any lockable equipment slot - choose a different one.");
 
-        DrawRestraintRuleCheckboxes(newDeviceRuleEdit, "newDevice");
+        DrawRestraintRuleCheckboxes(newDeviceRuleEdit, "newDevice", allowCustomizePreset: true);
 
         var hasAnyRule = HasAnyRule(newDeviceRuleEdit);
         var boundAnimationsConfigured = BoundAnimationsConfigured(newDeviceRuleEdit);
@@ -1317,7 +1356,7 @@ public class CollarWindow : Window, IDisposable
                         config.Save();
                     });
                 }
-                DrawRestraintRuleCheckboxes(edit, key);
+                DrawRestraintRuleCheckboxes(edit, key, allowCustomizePreset: true);
                 var valid = created.ItemId > 0 && GlamourerIpc.GetItemSlot((uint)created.ItemId.Value) is not null && HasAnyRule(edit) && BoundAnimationsConfigured(edit);
                 using (ImRaii.Disabled(!valid || missing))
                 if (ImGui.SmallButton($"Save restraint##{key}"))
@@ -1335,8 +1374,11 @@ public class CollarWindow : Window, IDisposable
     private static string PoseName(int poseModeId) => poseModeId is >= 1 and <= 3 ? PoseNames[poseModeId - 1] : "unknown";
 
     private static bool HasAnyRule(RestraintRuleEditState edit) =>
-        edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.GagChat || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed || edit.Gag;
+        edit.ForcedPose || edit.WalkOnly || edit.ActionBlock || edit.Gagged || edit.ArmsCuffed || edit.LegsCuffed || edit.FullBodyCuffed;
 
+    /// Gagged's animation is deliberately excluded here - unlike Arms/Legs/Full Body Cuffed (which are
+    /// pure animation-hold rules with no effect at all if unconfigured), Gagged's chat-garble restriction
+    /// always applies on its own, so its animation stays optional even while the rule is checked.
     private bool BoundAnimationsConfigured(RestraintRuleEditState edit)
     {
         bool Contains(string id) => ResolveOwnerModeView()
@@ -1346,7 +1388,6 @@ public class CollarWindow : Window, IDisposable
         return Valid(edit.ArmsCuffed, edit.ArmsCuffedAnimationId)
             && Valid(edit.LegsCuffed, edit.LegsCuffedAnimationId)
             && Valid(edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId)
-            && Valid(edit.Gag, edit.GagAnimationId)
             && Valid(edit.ForcedPose && edit.ForcedPoseIsMod, edit.ForcedPoseAnimationId);
     }
 
@@ -1357,31 +1398,17 @@ public class CollarWindow : Window, IDisposable
     /// other column's content is.
     private static readonly string[] ForcedPoseSourceNames = ["Vanilla pose", "Animation mod"];
 
-    /// collar/restraints "Rule picker groups rules under Restraints and Restrictions headers" - a
-    /// presentation-only grouping: every rule still lands in the same single `RestraintRuleEditState`/
-    /// `List<RestraintRuleAssignment>` this method's callers already share, only the layout changed.
-    private void DrawRestraintRuleCheckboxes(RestraintRuleEditState edit, string idSuffix)
+    /// collar/restraints "Unified restriction toggle list": a single flat list of the seven restriction
+    /// toggles - Forced Pose, Arms Cuffed, Legs Cuffed, Walk-only, Gagged, Fully Restrain, Action Block -
+    /// replacing the old "Restraints" vs "Restrictions" header split (there was never a real behavioral
+    /// distinction between them). Every rule still lands in the same single `RestraintRuleEditState`/
+    /// `List<RestraintRuleAssignment>` this method's callers already share; only the layout changed.
+    /// `allowCustomizePreset` is true only for the Sub's own editors (device capture, mod configuration) -
+    /// an Owner-side editor (ad-hoc device, per-quick-command rules) never shows the Customize+ picker,
+    /// since only the Sub's own client can enumerate the Sub's local Customize+ profiles.
+    private void DrawRestraintRuleCheckboxes(RestraintRuleEditState edit, string idSuffix, bool allowCustomizePreset = false)
     {
-        ImGui.TextUnformatted("Restraints");
         ImGui.Columns(2, $"restraintRules_{idSuffix}_row1", false);
-        DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"{idSuffix}Arms");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
-        ImGui.NextColumn();
-        DrawBoundAnimationPicker("Legs Cuffed", ref edit.LegsCuffed, edit.LegsCuffedAnimationId, id => edit.LegsCuffedAnimationId = id, $"{idSuffix}Legs");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
-        ImGui.Columns(1);
-
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row2", false);
-        DrawBoundAnimationPicker("Full Body Cuffed", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"{idSuffix}FullBody");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
-        ImGui.NextColumn();
-        DrawBoundAnimationPicker("Gag", ref edit.Gag, edit.GagAnimationId, id => edit.GagAnimationId = id, $"{idSuffix}Gag");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement, actions, or chat - separate from the Gagged chat-mangling rule below.");
-        ImGui.Columns(1);
-
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Restrictions");
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row3", false);
         ImGui.Checkbox($"Forced pose##{idSuffix}", ref edit.ForcedPose);
         IconGlyph.HelpMarker("Places you into the chosen pose (or holds a chosen animation) and fully blocks movement input until released.");
         if (edit.ForcedPose)
@@ -1397,17 +1424,54 @@ public class CollarWindow : Window, IDisposable
             ImGui.Unindent();
         }
         ImGui.NextColumn();
+        DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"{idSuffix}Arms");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+        ImGui.Columns(1);
+
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row2", false);
+        DrawBoundAnimationPicker("Legs Cuffed", ref edit.LegsCuffed, edit.LegsCuffedAnimationId, id => edit.LegsCuffedAnimationId = id, $"{idSuffix}Legs");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+        ImGui.NextColumn();
         ImGui.Checkbox($"Walk-only##{idSuffix}", ref edit.WalkOnly);
         IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
+        ImGui.Columns(1);
+
+        ImGui.Columns(2, $"restraintRules_{idSuffix}_row3", false);
+        DrawGaggedPicker(edit, idSuffix, allowCustomizePreset);
+        ImGui.NextColumn();
+        DrawBoundAnimationPicker("Fully Restrain", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"{idSuffix}FullBody");
+        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
         ImGui.Columns(1);
 
         ImGui.Columns(2, $"restraintRules_{idSuffix}_row4", false);
         ImGui.Checkbox($"Action block##{idSuffix}", ref edit.ActionBlock);
         IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
         ImGui.NextColumn();
-        ImGui.Checkbox($"Gagged##{idSuffix}", ref edit.GagChat);
-        IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
         ImGui.Columns(1);
+    }
+
+    /// collar/restraints "Gagged toggle chat restriction"/"Optional Customize+ preset on Gagged": the
+    /// chat-garble restriction always applies once checked; the animation and (Sub-side only) Customize+
+    /// preset are both independently optional cosmetic layers on top of it, each individually clearable
+    /// without unchecking the whole rule.
+    private void DrawGaggedPicker(RestraintRuleEditState edit, string idSuffix, bool allowCustomizePreset)
+    {
+        ImGui.Checkbox($"Gagged##{idSuffix}", ref edit.Gagged);
+        IconGlyph.HelpMarker("Garbles your outgoing chat text - the actual transmitted message, not just your own display - until released. See the README's Automation risk section before enabling.");
+        if (!edit.Gagged)
+            return;
+
+        ImGui.Indent();
+        DrawAnimationChooser(edit.GagAnimationId, id => edit.GagAnimationId = id, $"{idSuffix}Gag", () => edit.GagAnimationId = null);
+        if (allowCustomizePreset)
+        {
+            DrawCustomizePresetChooser(edit.GagCustomizePresetId, edit.GagCustomizePresetLabel, (id, label) =>
+            {
+                edit.GagCustomizePresetId = id;
+                edit.GagCustomizePresetLabel = label;
+            }, $"{idSuffix}GagCustomize");
+        }
+        ImGui.Unindent();
     }
 
     /// collar/restraints "Arms Cuffed and Legs Cuffed rules...": a checkbox plus the same searchable
@@ -1430,7 +1494,7 @@ public class CollarWindow : Window, IDisposable
     /// The animation-choosing half of `DrawBoundAnimationPicker`, without its own enabling checkbox - used
     /// where a rule already has its own checkbox with a separate vanilla/mod source toggle (mod-sourced
     /// Forced Pose), so this only ever gets called once that toggle has already picked "mod".
-    private void DrawAnimationChooser(string? currentAnimationId, Action<string> onChosen, string idSuffix)
+    private void DrawAnimationChooser(string? currentAnimationId, Action<string> onChosen, string idSuffix, Action? onCleared = null)
     {
         var ownerMode = ResolveOwnerModeView();
         var localCatalog = plugin.Configuration.GestureMapping.LocalCatalog;
@@ -1463,6 +1527,11 @@ public class CollarWindow : Window, IDisposable
             if (ownerMode) plugin.AnimationPickerWindow.OpenImportedForRestraint(chosen => onChosen(chosen.Id));
             else plugin.AnimationPickerWindow.OpenForRestraint(chosen => onChosen(chosen.Id));
         }
+        if (onCleared is not null && currentAnimationId is not null)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Clear##{idSuffix}")) onCleared();
+        }
         var shortLabel = CommandPresentation.CompactAnimation(chosenLabel);
         ImGui.TextUnformatted(shortLabel);
         if (ImGui.IsItemHovered())
@@ -1471,6 +1540,22 @@ public class CollarWindow : Window, IDisposable
             IconGlyph.WrappedDisabled(chosenMode);
     }
 
+    /// collar/restraints "Optional Customize+ preset on Gagged": the Customize+ counterpart to
+    /// DrawAnimationChooser, but against a flat list of the Sub's own Customize+ profiles (CustomizePresetPickerWindow)
+    /// instead of the mod/group/option/trigger tree AnimationPickerWindow shows - Customize+ profiles have
+    /// no such hierarchy and are never shared via catalog sync (design.md's Non-Goals), so there is no
+    /// Owner/imported-mode branch here at all.
+    private void DrawCustomizePresetChooser(string? currentPresetId, string? currentPresetLabel, Action<string?, string?> onChosen, string idSuffix)
+    {
+        if (ImGui.SmallButton($"{(currentPresetId is null ? "Choose Customize+ preset..." : "Change Customize+ preset...")}##{idSuffix}"))
+            plugin.CustomizePresetPickerWindow.Open(profile => onChosen(profile.UniqueId.ToString(), profile.Name));
+        if (currentPresetId is not null)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"Clear##{idSuffix}")) onChosen(null, null);
+        }
+        ImGui.TextUnformatted(currentPresetId is null ? "(none chosen)" : currentPresetLabel ?? currentPresetId);
+    }
 
     private void DrawGestureModule()
     {
@@ -1987,7 +2072,7 @@ public class CollarWindow : Window, IDisposable
         target.PoseIndex = source.PoseIndex;
         target.WalkOnly = source.WalkOnly;
         target.ActionBlock = source.ActionBlock;
-        target.GagChat = source.GagChat;
+        target.Gagged = source.Gagged;
         target.ArmsCuffed = source.ArmsCuffed;
         target.ArmsCuffedAnimationId = source.ArmsCuffedAnimationId;
         target.LegsCuffed = source.LegsCuffed;
@@ -2807,11 +2892,15 @@ public class CollarWindow : Window, IDisposable
                     break;
                 case RestraintRuleKind.WalkOnly: edit.WalkOnly = true; break;
                 case RestraintRuleKind.ActionBlock: edit.ActionBlock = true; break;
-                case RestraintRuleKind.GagChat: edit.GagChat = true; break;
+                case RestraintRuleKind.Gagged:
+                    edit.Gagged = true;
+                    edit.GagAnimationId = rule.AnimationId;
+                    edit.GagCustomizePresetId = rule.CustomizePresetId;
+                    edit.GagCustomizePresetLabel = rule.CustomizePresetLabel;
+                    break;
                 case RestraintRuleKind.ArmsCuffed: edit.ArmsCuffed = true; edit.ArmsCuffedAnimationId = rule.AnimationId; break;
                 case RestraintRuleKind.LegsCuffed: edit.LegsCuffed = true; edit.LegsCuffedAnimationId = rule.AnimationId; break;
                 case RestraintRuleKind.FullBodyCuffed: edit.FullBodyCuffed = true; edit.FullBodyCuffedAnimationId = rule.AnimationId; break;
-                case RestraintRuleKind.Gag: edit.Gag = true; edit.GagAnimationId = rule.AnimationId; break;
             }
         }
         return edit;
@@ -2836,16 +2925,23 @@ public class CollarWindow : Window, IDisposable
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.WalkOnly });
         if (edit.ActionBlock)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ActionBlock });
-        if (edit.GagChat)
-            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.GagChat });
+        if (edit.Gagged)
+        {
+            rules.Add(new RestraintRuleAssignment
+            {
+                Kind = RestraintRuleKind.Gagged,
+                AnimationId = edit.GagAnimationId,
+                AnimationLabel = LabelFor(edit.GagAnimationId),
+                CustomizePresetId = edit.GagCustomizePresetId,
+                CustomizePresetLabel = edit.GagCustomizePresetLabel,
+            });
+        }
         if (edit.ArmsCuffed)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.ArmsCuffed, AnimationId = edit.ArmsCuffedAnimationId, AnimationLabel = LabelFor(edit.ArmsCuffedAnimationId) });
         if (edit.LegsCuffed)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.LegsCuffed, AnimationId = edit.LegsCuffedAnimationId, AnimationLabel = LabelFor(edit.LegsCuffedAnimationId) });
         if (edit.FullBodyCuffed)
             rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.FullBodyCuffed, AnimationId = edit.FullBodyCuffedAnimationId, AnimationLabel = LabelFor(edit.FullBodyCuffedAnimationId) });
-        if (edit.Gag)
-            rules.Add(new RestraintRuleAssignment { Kind = RestraintRuleKind.Gag, AnimationId = edit.GagAnimationId, AnimationLabel = LabelFor(edit.GagAnimationId) });
         return rules;
     }
 
@@ -3020,6 +3116,403 @@ public class CollarWindow : Window, IDisposable
         using var _ = ImRaii.Child("followQuickList", new Vector2(0, 90), true);
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend);
+    }
+
+    /// collar/toy-control: the Sub's own Intiface connection setup - address, connect/disconnect,
+    /// connected-device count, and a local "stop now" button independent of any Owner command, for the
+    /// Sub's own peace of mind. Direct-override-only category (no alias list) like Restraints/Teleport,
+    /// so there is no "Aliases" sub-section here.
+    private void DrawToyControlModule()
+    {
+        IconGlyph.Text(FontAwesomeIcon.Plug, "Toy Control (Intiface)");
+        var config = plugin.Configuration;
+        if (!config.ToyControlAcknowledged)
+            IconGlyph.WrappedColored(Theme.Warning, "Requires the dedicated Toy Control acknowledgement in Settings (gear icon) and the Toy Control permission (Permissions tab) before an Owner's commands take effect.");
+
+        if (toyIntifaceAddress.Length == 0)
+            toyIntifaceAddress = config.IntifaceAddress;
+
+        var intiface = plugin.IntifaceIpc;
+        ImGui.SetNextItemWidth(260);
+        using (ImRaii.Disabled(intiface.IsConnected || intiface.IsConnecting))
+            ImGui.InputText("Intiface address##toyControl", ref toyIntifaceAddress, 128);
+        IconGlyph.HelpMarker("Intiface Central's own WebSocket address - the default matches Intiface Central's default listen address, change it only if you've configured Intiface differently.");
+
+        ImGui.SameLine();
+        if (intiface.IsConnected)
+        {
+            if (ImGui.SmallButton("Disconnect##toyControl"))
+                intiface.Disconnect();
+        }
+        else
+        {
+            using (ImRaii.Disabled(intiface.IsConnecting || toyIntifaceAddress.Trim().Length == 0))
+            if (ImGui.SmallButton(intiface.IsConnecting ? "Connecting...##toyControl" : "Connect##toyControl"))
+            {
+                config.IntifaceAddress = toyIntifaceAddress.Trim();
+                config.Save();
+                intiface.Connect(config.IntifaceAddress);
+            }
+        }
+
+        var status = intiface.IsConnected ? $"Connected - {intiface.ConnectedDeviceCount} device(s)" : intiface.IsConnecting ? "Connecting..." : "Not connected";
+        IconGlyph.WrappedDisabled(status);
+        if (intiface.LastError is { Length: > 0 } error)
+            IconGlyph.WrappedColored(Theme.Warning, error);
+
+        ImGui.Spacing();
+        using (ImRaii.Disabled(!intiface.IsConnected))
+        if (ImGui.SmallButton("Stop now##toyControlLocal"))
+            plugin.ToyControlCommand.ForceStop();
+        IconGlyph.HelpMarker("Stops every connected device immediately, independent of anything your Owner sent - for your own peace of mind, not tied to any permission.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        DrawToyPatternEditor();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        DrawToyTriggerEditor();
+    }
+
+    /// collar/toy-control "Sub-authored custom vibration patterns": add/edit/delete named step-sequence
+    /// patterns. On the Sub's own client these are usable anywhere a built-in pattern name is (an Owner
+    /// command, or a local trigger). An Owner has the identical editor for their own library of patterns
+    /// to send, but since the Sub's client hasn't necessarily saved any of them, an Owner's saved pattern
+    /// is sent by value (its full step sequence inline in the command, see `ToyControlCommand.
+    /// BuildCustomSequenceCommand`) rather than by name - `ownerCanSend` non-null switches on that "Send"
+    /// button per saved pattern instead of the Sub-only trigger-reference bookkeeping.
+    private void DrawToyPatternEditor(bool? ownerCanSend = null)
+    {
+        if (!ImGui.CollapsingHeader("Custom Patterns##toyPatternHeader"))
+            return;
+
+        var config = plugin.Configuration;
+
+        if (config.ToyPatterns.Count > 0)
+        {
+            ImGui.Indent();
+            foreach (var pattern in config.ToyPatterns.ToList())
+            {
+                ImGui.TextUnformatted($"{pattern.Name} ({pattern.Steps.Count} step(s), {(pattern.Loop ? "loops" : "no loop")})");
+                ImGui.SameLine();
+                if (ImGui.SmallButton($"Edit##toyPattern{pattern.Id}"))
+                {
+                    toyPatternEditingId = pattern.Id;
+                    toyPatternNameInput = pattern.Name;
+                    toyPatternLoopInput = pattern.Loop;
+                    toyPatternStepsInput.Clear();
+                    toyPatternStepsInput.AddRange(pattern.Steps.Select(s => new PatternStep { IntensityPercent = s.IntensityPercent, DurationMs = s.DurationMs }));
+                }
+                ContinueRowOrWrap(ButtonWidth("Delete"));
+                if (ImGui.SmallButton($"Delete##toyPattern{pattern.Id}"))
+                {
+                    config.ToyPatterns.Remove(pattern);
+                    // collar/toy-control "Sub deletes a custom pattern currently referenced by a trigger":
+                    // disable (not silently orphan) any trigger rule that named this pattern. A no-op for
+                    // an Owner's own library - triggers are a Sub-local concept, so an Owner's
+                    // ToyTriggerRules is always empty.
+                    foreach (var rule in config.ToyTriggerRules.Where(r => string.Equals(r.PatternName, pattern.Name, StringComparison.OrdinalIgnoreCase)))
+                        rule.Enabled = false;
+                    config.Save();
+                    if (toyPatternEditingId == pattern.Id)
+                        ResetToyPatternInput();
+                }
+                if (ownerCanSend is { } canSend)
+                {
+                    ContinueRowOrWrap(ButtonWidth("Send"));
+                    DrawSendOnly(ToyControlCommand.BuildCustomSequenceCommand(pattern.Steps, pattern.Loop), canSend, $"toyPatternSend{pattern.Id}", "Send");
+                }
+                ImGui.Separator();
+            }
+            ImGui.Unindent();
+        }
+
+        ImGui.Spacing();
+        IconGlyph.WrappedDisabled(toyPatternEditingId is null ? "New pattern" : "Editing pattern");
+        ImGui.SetNextItemWidth(200);
+        ImGui.InputText("Name##toyPatternName", ref toyPatternNameInput, 64);
+        ImGui.Checkbox("Loop##toyPatternLoop", ref toyPatternLoopInput);
+        ImGui.Spacing();
+
+        ImGui.Indent();
+        for (var i = 0; i < toyPatternStepsInput.Count; i++)
+        {
+            var step = toyPatternStepsInput[i];
+            IconGlyph.WrappedDisabled($"Step {i + 1}");
+            ImGui.SetNextItemWidth(140);
+            var intensity = step.IntensityPercent;
+            if (ImGui.SliderInt($"Intensity##toyPatternStep{i}", ref intensity, 0, 100, "%d%%"))
+                step.IntensityPercent = intensity;
+
+            ContinueRowOrWrap(160);
+            ImGui.SetNextItemWidth(120);
+            var durationMs = step.DurationMs;
+            if (ImGui.InputInt($"ms##toyPatternStepDuration{i}", ref durationMs))
+                step.DurationMs = Math.Max(0, durationMs);
+
+            ContinueRowOrWrap(ButtonWidth("Up"));
+            using (ImRaii.Disabled(i == 0))
+            if (ImGui.SmallButton($"Up##toyPatternStep{i}"))
+            {
+                (toyPatternStepsInput[i - 1], toyPatternStepsInput[i]) = (toyPatternStepsInput[i], toyPatternStepsInput[i - 1]);
+                break;
+            }
+
+            ContinueRowOrWrap(ButtonWidth("Down"));
+            using (ImRaii.Disabled(i == toyPatternStepsInput.Count - 1))
+            if (ImGui.SmallButton($"Down##toyPatternStep{i}"))
+            {
+                (toyPatternStepsInput[i + 1], toyPatternStepsInput[i]) = (toyPatternStepsInput[i], toyPatternStepsInput[i + 1]);
+                break;
+            }
+
+            ContinueRowOrWrap(ButtonWidth("Remove"));
+            if (ImGui.SmallButton($"Remove##toyPatternStep{i}"))
+            {
+                toyPatternStepsInput.RemoveAt(i);
+                break;
+            }
+
+            if (i < toyPatternStepsInput.Count - 1)
+                ImGui.Separator();
+        }
+        ImGui.Unindent();
+
+        ImGui.Spacing();
+        if (ImGui.SmallButton("Add step##toyPattern"))
+            toyPatternStepsInput.Add(new PatternStep { IntensityPercent = 50, DurationMs = 500 });
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        if (ImGui.SmallButton("Save pattern##toyPattern"))
+        {
+            var name = toyPatternNameInput.Trim();
+            if (name.Length == 0)
+                toyPatternError = "A pattern needs a name.";
+            else if (toyPatternStepsInput.Count == 0)
+                toyPatternError = "A pattern needs at least one step.";
+            else if (string.Equals(name, "weak", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "medium", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(name, "strong", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "pulse", StringComparison.OrdinalIgnoreCase))
+                toyPatternError = "That name is reserved for a built-in pattern.";
+            else if (config.ToyPatterns.Any(p => p.Id != toyPatternEditingId && string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)))
+                toyPatternError = "Another custom pattern already has that name.";
+            else
+            {
+                toyPatternError = null;
+                var existing = toyPatternEditingId is { } id ? config.ToyPatterns.FirstOrDefault(p => p.Id == id) : null;
+                var target = existing ?? new ToyPattern();
+                var oldName = existing?.Name;
+                target.Name = name;
+                target.Loop = toyPatternLoopInput;
+                target.Steps = toyPatternStepsInput.Select(s => new PatternStep { IntensityPercent = s.IntensityPercent, DurationMs = s.DurationMs }).ToList();
+                if (existing is null)
+                    config.ToyPatterns.Add(target);
+                else if (!string.Equals(oldName, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var rule in config.ToyTriggerRules.Where(r => string.Equals(r.PatternName, oldName, StringComparison.OrdinalIgnoreCase)))
+                        rule.PatternName = name;
+                }
+                config.Save();
+                ResetToyPatternInput();
+            }
+        }
+        if (toyPatternEditingId is not null)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Cancel##toyPattern"))
+                ResetToyPatternInput();
+        }
+        if (toyPatternError is { Length: > 0 } error)
+            IconGlyph.WrappedColored(Theme.Warning, error);
+    }
+
+    private void ResetToyPatternInput()
+    {
+        toyPatternEditingId = null;
+        toyPatternNameInput = "";
+        toyPatternLoopInput = false;
+        toyPatternStepsInput.Clear();
+        toyPatternError = null;
+    }
+
+    /// collar/toy-control "Local automatic toy triggers": entirely gated on `ToyTriggersAcknowledged` -
+    /// deliberately not on `PermissionSet.ToyControl` (that permission governs Owner-initiated commands
+    /// only) and not on `ToyControlAcknowledged` (that acknowledgement's disclosure is about an Owner
+    /// directly actuating a device, not the Sub's own device self-triggering off local game state).
+    private void DrawToyTriggerEditor()
+    {
+        if (!ImGui.CollapsingHeader("Automatic Triggers##toyTriggerHeader"))
+            return;
+
+        var config = plugin.Configuration;
+
+        if (!config.ToyTriggersAcknowledged)
+        {
+            IconGlyph.WrappedColored(Theme.Warning, "Requires the dedicated Automatic Triggers acknowledgement in Settings (gear icon) first - triggers act on their own, with no per-occurrence click, so they need their own explicit consent separate from Toy Control's.");
+            return;
+        }
+
+        var runtimeState = plugin.RuntimeState;
+        if (runtimeState.ToyTriggersSuspended)
+        {
+            IconGlyph.WrappedColored(Theme.Warning, "Triggers are suspended (panic was triggered). They will not fire again until you resume them.");
+            if (ImGui.SmallButton("Resume triggers##toyTriggers"))
+                runtimeState.ToyTriggersSuspended = false;
+            ImGui.Spacing();
+        }
+
+        if (config.ToyTriggerRules.Count > 0)
+        {
+            ImGui.Indent();
+            foreach (var rule in config.ToyTriggerRules.ToList())
+            {
+                var enabled = rule.Enabled;
+                if (ImGui.Checkbox($"##toyTriggerEnabled{rule.Id}", ref enabled))
+                {
+                    rule.Enabled = enabled;
+                    config.Save();
+                }
+                ImGui.SameLine();
+                ImGui.TextUnformatted(DescribeTrigger(rule));
+                ContinueRowOrWrap(ButtonWidth("Delete"));
+                if (ImGui.SmallButton($"Delete##toyTrigger{rule.Id}"))
+                {
+                    config.ToyTriggerRules.Remove(rule);
+                    config.Save();
+                }
+
+                if (rule.PatternName is { Length: > 0 } targetPattern && !IsKnownPatternName(config, targetPattern))
+                    IconGlyph.WrappedColored(Theme.Warning, $"\"{targetPattern}\" no longer exists - this trigger needs reconfiguration.");
+
+                ImGui.Separator();
+            }
+            ImGui.Unindent();
+        }
+
+        ImGui.Spacing();
+        IconGlyph.WrappedDisabled("New trigger");
+        ImGui.Spacing();
+        var kindNames = new[] { "Health drops below %", "Hit by another player", "A restriction becomes active" };
+        var kindIndex = (int)toyTriggerKindInput;
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.Combo("Condition##toyTriggerKind", ref kindIndex, kindNames, kindNames.Length))
+            toyTriggerKindInput = (ToyTriggerKind)kindIndex;
+
+        if (toyTriggerKindInput == ToyTriggerKind.HealthPercent)
+        {
+            ImGui.SetNextItemWidth(120);
+            ImGui.SliderInt("Threshold %##toyTriggerHealth", ref toyTriggerHealthThresholdInput, 1, 100);
+        }
+        else if (toyTriggerKindInput == ToyTriggerKind.RestrictionActive)
+        {
+            var restrictionNames = Enum.GetNames<RestraintRuleKind>();
+            var restrictionIndex = (int)toyTriggerRestrictionKindInput;
+            ImGui.SetNextItemWidth(200);
+            if (ImGui.Combo("Restriction##toyTriggerRestriction", ref restrictionIndex, restrictionNames, restrictionNames.Length))
+                toyTriggerRestrictionKindInput = (RestraintRuleKind)restrictionIndex;
+        }
+
+        ImGui.Checkbox("Named pattern (instead of a fixed intensity)##toyTriggerUsePattern", ref toyTriggerUsePatternInput);
+        if (toyTriggerUsePatternInput)
+        {
+            ImGui.SetNextItemWidth(180);
+            ImGui.InputText("Pattern name##toyTriggerPattern", ref toyTriggerPatternNameInput, 64);
+        }
+        else
+        {
+            ImGui.SetNextItemWidth(140);
+            ImGui.SliderInt("Intensity##toyTriggerIntensity", ref toyTriggerIntensityInput, 0, 100, "%d%%");
+        }
+
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt("Cooldown (s)##toyTriggerCooldown", ref toyTriggerCooldownInput, 2, 300);
+
+        ImGui.Spacing();
+        if (ImGui.SmallButton("Add trigger##toyTrigger"))
+        {
+            var rule = new ToyTriggerRule
+            {
+                Enabled = true,
+                Kind = toyTriggerKindInput,
+                HealthPercentThreshold = toyTriggerHealthThresholdInput,
+                RestrictionKind = toyTriggerRestrictionKindInput,
+                IntensityPercent = toyTriggerUsePatternInput ? null : toyTriggerIntensityInput,
+                PatternName = toyTriggerUsePatternInput ? toyTriggerPatternNameInput.Trim() : null,
+                CooldownSeconds = Math.Max(2, toyTriggerCooldownInput),
+            };
+            config.ToyTriggerRules.Add(rule);
+            config.Save();
+        }
+    }
+
+    private static readonly string[] BuiltInToyPatternNames = { "weak", "medium", "strong", "pulse" };
+
+    private static bool IsKnownPatternName(PluginConfig config, string name) =>
+        BuiltInToyPatternNames.Contains(name, StringComparer.OrdinalIgnoreCase) ||
+        config.ToyPatterns.Any(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private static string DescribeTrigger(ToyTriggerRule rule)
+    {
+        var condition = rule.Kind switch
+        {
+            ToyTriggerKind.HealthPercent => $"Health <= {rule.HealthPercentThreshold}%",
+            ToyTriggerKind.PlayerDamage => "Hit by another player",
+            ToyTriggerKind.RestrictionActive => $"{rule.RestrictionKind} active",
+            _ => rule.Kind.ToString(),
+        };
+        var action = rule.PatternName is { Length: > 0 } name ? $"pattern \"{name}\"" : $"{rule.IntensityPercent ?? 0}% vibrate";
+        return $"{condition} -> {action} (cooldown {rule.CooldownSeconds}s)";
+    }
+
+    /// collar/toy-control: the Owner's direct-override controls - an intensity slider with an optional
+    /// duration, the fixed named patterns, and an explicit stop, each built via ToyControlCommand's static
+    /// wire-grammar builders and sent through the same single-click DrawSendOnly path every other
+    /// category's Owner quick-section already uses.
+    private void DrawToyControlQuickSection(bool canSend)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Plug, "Toy Control");
+        IconGlyph.WrappedDisabled($"Commands auto-stop after at most {ToyControlCommand.MaxDurationSeconds} seconds, regardless of the duration requested here.");
+
+        ImGui.SetNextItemWidth(200);
+        ImGui.SliderInt("Intensity##toyControl", ref toyVibrateIntensity, 0, 100, "%d%%");
+
+        if (ImGui.Checkbox("Permanent (runs until stopped)##toyControlPermanent", ref toyVibrateIsPermanent) && toyVibrateIsPermanent)
+            toyVibrateHasDuration = false;
+        if (toyVibrateIsPermanent)
+            IconGlyph.WrappedDisabled("Still capped by the Sub's own configured permanent-mode backstop ceiling, not truly unbounded.");
+        else
+        {
+            ImGui.Checkbox("Duration##toyControlHasDuration", ref toyVibrateHasDuration);
+            if (toyVibrateHasDuration)
+            {
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(120);
+                ImGui.SliderInt("seconds##toyControlDuration", ref toyVibrateDurationSeconds, 1, ToyControlCommand.MaxDurationSeconds);
+            }
+        }
+
+        var duration = toyVibrateIsPermanent ? ToyDuration.Permanent : toyVibrateHasDuration ? ToyDuration.Bounded(toyVibrateDurationSeconds) : ToyDuration.Unspecified;
+        var vibrateCommand = ToyControlCommand.BuildVibrateCommand(toyVibrateIntensity, duration);
+        DrawSendOnly(vibrateCommand, canSend, "toyControlVibrate", "Send vibrate");
+
+        ImGui.Spacing();
+        IconGlyph.WrappedDisabled("Patterns");
+        DrawSendOnly(ToyControlCommand.BuildPatternCommand("weak"), canSend, "toyControlWeak", "Weak");
+        ContinueRowOrWrap(ButtonWidth("Medium"));
+        DrawSendOnly(ToyControlCommand.BuildPatternCommand("medium"), canSend, "toyControlMedium", "Medium");
+        ContinueRowOrWrap(ButtonWidth("Strong"));
+        DrawSendOnly(ToyControlCommand.BuildPatternCommand("strong"), canSend, "toyControlStrong", "Strong");
+        ContinueRowOrWrap(ButtonWidth("Pulse"));
+        DrawSendOnly(ToyControlCommand.BuildPatternCommand("pulse"), canSend, "toyControlPulse", "Pulse");
+
+        ImGui.Spacing();
+        DrawSendOnly(ToyControlCommand.BuildStopCommand(), canSend, "toyControlStop", "Send stop");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        DrawToyPatternEditor(canSend);
     }
 
     private void DrawFreeformComposer(bool canSend)

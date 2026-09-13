@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using Oathbound.Plugin.Ipc;
 using Oathbound.Plugin.Safety;
 using Dalamud.Hooking;
 using Dalamud.Utility.Signatures;
@@ -13,14 +14,16 @@ namespace Oathbound.Plugin.Commands;
 
 #pragma warning disable CS0649 // assigned via reflection by Svc.Hook.InitializeFromAttributes, not by the compiler
 
-/// collar/restraints: the gag chat-mangling rule. Intercepts outgoing chat at the same point GagSpeak
-/// hooks it - `ShellCommandModule.ProcessChatInput`, called after Enter is pressed but before the message
-/// is handed off to the server - and rewrites the actually-transmitted text to a garbled variant, not just
-/// the Sub's local display. This is a materially different automation surface from anything else in this
-/// plugin: it rewrites content the Sub themselves typed rather than blocking an input or command (see
-/// design.md's Risks/Trade-offs and the README's ToS-disclosure section). Same signature-hook risk/fail-
-/// closed posture as MovementLockService: if ProcessChatInput's signature doesn't resolve on the current
-/// game version, IsAvailable stays false and chat is never touched.
+/// collar/restraints: the Gagged rule's chat-mangling restriction, plus its optional Customize+ preset.
+/// Intercepts outgoing chat at the same point GagSpeak hooks it - `ShellCommandModule.ProcessChatInput`,
+/// called after Enter is pressed but before the message is handed off to the server - and rewrites the
+/// actually-transmitted text to a garbled variant, not just the Sub's local display. This is a materially
+/// different automation surface from anything else in this plugin: it rewrites content the Sub themselves
+/// typed rather than blocking an input or command (see design.md's Risks/Trade-offs and the README's ToS-
+/// disclosure section). Same signature-hook risk/fail-closed posture as MovementLockService: if
+/// ProcessChatInput's signature doesn't resolve on the current game version, IsAvailable stays false and
+/// chat is never touched - the Customize+ preset calls are independently fail-closed via CustomizePlusIpc's
+/// own try/catch, so a missing Customize+ install never blocks the chat-garble restriction itself.
 public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
 {
     private const string SigProcessChatInput = "E8 ?? ?? ?? ?? FE 87 ?? ?? ?? ?? C7 87";
@@ -30,7 +33,15 @@ public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
     [Signature(SigProcessChatInput, DetourName = nameof(ProcessChatInputDetour), Fallibility = Fallibility.Auto)]
     private readonly Hook<ProcessChatInputDelegate>? processChatInputHook;
 
+    private readonly CustomizePlusIpc customizePlusIpc;
+
     private bool active;
+
+    /// Every device currently holding a Customize+ preset applied via its Gagged rule, keyed by device id
+    /// (or ad-hoc/catalog runtime id) exactly like RestraintCommand.boundAnimations - lets a device's own
+    /// release revert only its own preset even while another device's Gagged rule (with a different or no
+    /// preset) stays active elsewhere.
+    private readonly Dictionary<string, Guid> activeCustomizePresets = new();
 
     private static readonly HashSet<string> ChatChannelCommands = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -39,8 +50,9 @@ public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
         "/novicenetwork", "/n", "/reply", "/r",
     };
 
-    public ChatGagService()
+    public ChatGagService(CustomizePlusIpc customizePlusIpc)
     {
+        this.customizePlusIpc = customizePlusIpc;
         Svc.Hook.InitializeFromAttributes(this);
 
         IsAvailable = processChatInputHook is not null;
@@ -59,6 +71,60 @@ public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
     }
 
     public void Release() => active = false;
+
+    /// collar/restraints "Optional Customize+ preset on Gagged": resolves `selector` (the wire-format
+    /// preset id/label, escaped the same way ReadableAnimation escapes animation labels) against the
+    /// Sub's own Customize+ profiles and applies it, tracked per `deviceId` so releasing one device never
+    /// touches another device's separately-configured preset. Never blocks or rolls back the caller's
+    /// device-apply on failure - a missing/renamed profile or unavailable Customize+ install just means the
+    /// preset silently does not apply, per the "Gagged Customize+ degrades gracefully" spec requirement.
+    public void ApplyCustomizePreset(string deviceId, string? selector)
+    {
+        if (string.IsNullOrWhiteSpace(selector))
+            return;
+        if (ResolveProfile(selector) is not { } profileId)
+        {
+            Plugin.Log.Warning($"Restraint Gagged rule: Customize+ preset '{selector}' is unavailable; continuing without it.");
+            return;
+        }
+        if (customizePlusIpc.ApplyProfile(profileId))
+            activeCustomizePresets[deviceId] = profileId;
+    }
+
+    public void RevertCustomizePreset(string deviceId)
+    {
+        if (!activeCustomizePresets.Remove(deviceId, out var profileId))
+            return;
+        customizePlusIpc.RevertProfile(profileId);
+    }
+
+    /// Mirrors RestraintCommand.ReleaseAllBoundAnimationsForPanic's "drop bookkeeping unconditionally"
+    /// shape - called from there so ForceUnlock and panic teardown both revert every active preset.
+    public void RevertAllCustomizePresetsForPanic()
+    {
+        foreach (var profileId in activeCustomizePresets.Values)
+            customizePlusIpc.RevertProfile(profileId);
+        activeCustomizePresets.Clear();
+    }
+
+    private Guid? ResolveProfile(string selector)
+    {
+        var profiles = customizePlusIpc.GetOwnProfiles().Profiles;
+        if (Guid.TryParse(selector, out var directId) && profiles.Any(p => p.UniqueId == directId))
+            return directId;
+
+        var byName = profiles.FirstOrDefault(p => string.Equals(p.Name, selector, StringComparison.OrdinalIgnoreCase));
+        if (byName.Name is not null)
+            return byName.UniqueId;
+
+        // Same '·'-for-',' escape RestraintCommand.ReadableAnimation applies to animation labels before
+        // they go on the wire - undo it before matching by name, mirroring RestraintCommand.ResolveAnimation.
+        if (!selector.Contains('·'))
+            return null;
+        var unescaped = selector.Replace('·', ',');
+        var match = profiles.FirstOrDefault(p => string.Equals(p.Name, unescaped, StringComparison.OrdinalIgnoreCase));
+        return match.Name is not null ? match.UniqueId : null;
+    }
 
     private void ProcessChatInputDetour(ShellCommandModule* uiModule, Utf8String* message, nint a3)
     {

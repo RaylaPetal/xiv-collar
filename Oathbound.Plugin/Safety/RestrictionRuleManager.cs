@@ -20,9 +20,10 @@ public interface IRestrictionEnforcer
 /// equipment slots to restriction rule kinds. Deliberately diverges from SlotLockManager's strict
 /// one-owner-per-key model: some rule kinds carry per-instance configuration that two simultaneously
 /// active instances can actually disagree on (ForcedPose's pose target; ArmsCuffed/LegsCuffed/
-/// FullBodyCuffed's chosen animation), so those alone are conflict-checked against a string "config key"
-/// (see ConfigKey) - the other kinds (WalkOnly, ActionBlock, GagChat) are reference-counted with no
-/// config-key comparison: any number of devices may hold the same rule kind active at once, and the
+/// FullBodyCuffed's chosen animation; Gagged's chosen Customize+ preset), so those alone are conflict-
+/// checked against a string "config key" (see ConfigKey) - the other kinds (WalkOnly, ActionBlock, and a
+/// Gagged rule with no Customize+ preset) are reference-counted with no config-key comparison: any number
+/// of devices may hold the same rule kind active at once, and the
 /// underlying enforcer only releases once the last holder releases. See design.md's "Decisions" section
 /// for why this diverges from SlotLockManager.
 public sealed class RestrictionRuleManager
@@ -38,12 +39,13 @@ public sealed class RestrictionRuleManager
     {
         foreach (var rule in rules)
         {
-            // Arms/Legs Cuffed and Gag are animation-managed rules: RestraintCommand preflights their
-            // catalog identity and performs their transactional Penumbra activation. They deliberately
-            // have no IRestrictionEnforcer. Full Body Cuffed (and a mod-sourced Forced Pose) are different
-            // because they additionally own an immobilization claim, so they must retain a registered,
-            // available enforcer.
-            if (rule.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.Gag)
+            // Arms/Legs Cuffed are animation-managed rules: RestraintCommand preflights their catalog
+            // identity and performs their transactional Penumbra activation. They deliberately have no
+            // IRestrictionEnforcer. Full Body Cuffed (and a mod-sourced Forced Pose) are different because
+            // they additionally own an immobilization claim, and Gagged always needs ChatGagService for
+            // its chat-garble restriction even when its optional animation is unset - all three must
+            // retain a registered, available enforcer.
+            if (rule.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed)
                 continue;
 
             if (!enforcers.TryGetValue(rule.Kind, out var enforcer) || !enforcer.IsAvailable)
@@ -57,12 +59,16 @@ public sealed class RestrictionRuleManager
     }
 
     /// The per-instance configuration a rule kind conflict-checks on - ForcedPose's pose target (or, when
-    /// mod-sourced, its chosen animation), ArmsCuffed/LegsCuffed/FullBodyCuffed/Gag's chosen animation id.
-    /// Null for kinds with no such configuration (WalkOnly/ActionBlock/GagChat are never conflict-checked).
+    /// mod-sourced, its chosen animation), ArmsCuffed/LegsCuffed/FullBodyCuffed's chosen animation id,
+    /// Gagged's chosen Customize+ preset (its animation is optional/cosmetic and never conflict-checked,
+    /// unlike the other bound-animation kinds, since Gagged's mechanical restriction - chat-garble - never
+    /// depends on it). Null for kinds/instances with no such configuration (WalkOnly/ActionBlock, and a
+    /// Gagged rule with no Customize+ preset, are never conflict-checked).
     private static string? ConfigKey(RestraintRuleAssignment rule) => rule.Kind switch
     {
         RestraintRuleKind.ForcedPose => rule.PoseModeId == 0 ? $"mod:{rule.AnimationId}" : rule.PoseModeId.ToString(),
-        RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed or RestraintRuleKind.Gag => rule.AnimationId,
+        RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed => rule.AnimationId,
+        RestraintRuleKind.Gagged => rule.CustomizePresetId,
         _ => null,
     };
 

@@ -48,7 +48,7 @@ public sealed class ChatCommandListener : IDisposable
     /// Reserved first-tokens that route to the Owner's direct "joker" override grammar instead of alias
     /// lookup (see Resolve/HandleForce*). A Sub alias can never be named one of these - CollarWindow's
     /// alias-creation forms validate against this list so the two paths can never collide.
-    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint", "customtrigger", "teleport"];
+    public static readonly string[] ReservedCategoryWords = ["title", "outfit", "gesture", "collar", "moodle", "restraint", "toy", "customtrigger", "teleport"];
 
     private readonly PluginConfig config;
     private readonly PairingService pairing;
@@ -60,6 +60,7 @@ public sealed class ChatCommandListener : IDisposable
     private readonly CollarCommand collar;
     private readonly MoodlesCommand moodles;
     private readonly RestraintCommand restraints;
+    private readonly ToyControlCommand toyControl;
     private readonly CustomTriggerCommand customTriggers;
     private readonly TeleportCommand teleport;
 
@@ -75,7 +76,7 @@ public sealed class ChatCommandListener : IDisposable
             PeerUnpairedNoticeChanged?.Invoke();
     }
 
-    public ChatCommandListener(PluginConfig config, PairingService pairing, CatalogSyncRelayService catalogSyncRelay, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, CustomTriggerCommand customTriggers, TeleportCommand teleport)
+    public ChatCommandListener(PluginConfig config, PairingService pairing, CatalogSyncRelayService catalogSyncRelay, TitleCommand title, OutfitCommand outfit, GestureCommand gesture, FollowCommand follow, CollarCommand collar, MoodlesCommand moodles, RestraintCommand restraints, ToyControlCommand toyControl, CustomTriggerCommand customTriggers, TeleportCommand teleport)
     {
         this.config = config;
         this.pairing = pairing;
@@ -87,6 +88,7 @@ public sealed class ChatCommandListener : IDisposable
         this.collar = collar;
         this.moodles = moodles;
         this.restraints = restraints;
+        this.toyControl = toyControl;
         this.customTriggers = customTriggers;
         this.teleport = teleport;
 
@@ -364,6 +366,8 @@ public sealed class ChatCommandListener : IDisposable
                 return permissions.Moodles ? HandleForceMoodle(rest) : LocalTestResult.Fail("Moodles permission is not enabled.");
             case "restraint":
                 return permissions.Restraints && config.TosAcknowledged ? HandleForceRestraint(rest) : LocalTestResult.Fail("Restraints permission or the automation-risk acknowledgement is not enabled.");
+            case "toy":
+                return permissions.ToyControl && config.ToyControlAcknowledged ? HandleForceToy(rest) : LocalTestResult.Fail("Toy control permission or its dedicated acknowledgement is not enabled.");
             case "customtrigger":
                 // Deliberately no outer permission gate here, unlike every other case above - a
                 // Custom Trigger bundle mixes categories with independent permissions, so
@@ -561,6 +565,51 @@ public sealed class ChatCommandListener : IDisposable
         }
 
         return LocalTestResult.Fail($"Unrecognized \"restraint\" override \"{rest}\" - expected \"catalog <id> \\\"<label>\\\" rules:...\", \"disable <id>\", \"wear <slot> <itemId> \\\"<label>\\\" rules:...\", or \"unlock\".");
+    }
+
+    private LocalTestResult HandleForceToy(string rest)
+    {
+        if (rest.Equals("stop", StringComparison.OrdinalIgnoreCase))
+        {
+            return toyControl.ForceStop()
+                ? LocalTestResult.Ok("Toy stopped.")
+                : LocalTestResult.Fail("Toy stop failed.");
+        }
+
+        const string patternPrefix = "pattern:";
+        if (rest.StartsWith(patternPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var name = rest[patternPrefix.Length..].Trim();
+            return toyControl.ForceApplyPattern(name)
+                ? LocalTestResult.Ok($"Toy pattern \"{name}\" started.")
+                : LocalTestResult.Fail($"Unrecognized toy pattern \"{name}\", or no toy is connected.");
+        }
+
+        const string vibratePrefix = "vibrate ";
+        if (rest.StartsWith(vibratePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            if (ToyControlCommand.TryParseVibrateCommand(rest[vibratePrefix.Length..], out var intensity, out var duration))
+            {
+                return toyControl.ForceApplyVibrate(intensity, duration)
+                    ? LocalTestResult.Ok($"Toy vibrating at {intensity}%.")
+                    : LocalTestResult.Fail("Toy vibrate failed - no toy is connected.");
+            }
+            return LocalTestResult.Fail("\"toy vibrate\" was malformed - expected \"intensity:<0-100> [duration:<seconds>|duration:permanent]\".");
+        }
+
+        const string sequencePrefix = "sequence ";
+        if (rest.StartsWith(sequencePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            if (ToyControlCommand.TryParseCustomSequenceCommand(rest[sequencePrefix.Length..], out var steps, out var loop))
+            {
+                return toyControl.ForceApplyCustomSequence(steps, loop)
+                    ? LocalTestResult.Ok($"Toy playing a {steps.Count}-step custom sequence.")
+                    : LocalTestResult.Fail("Toy sequence failed - no toy is connected.");
+            }
+            return LocalTestResult.Fail("\"toy sequence\" was malformed - expected \"steps:<intensity>=<ms>,... [loop:true]\".");
+        }
+
+        return LocalTestResult.Fail($"Unrecognized \"toy\" override \"{rest}\" - expected \"vibrate intensity:<0-100> [duration:<seconds>|duration:permanent]\", \"pattern:<weak|medium|strong|pulse|a custom pattern name>\", \"sequence steps:<intensity>=<ms>,... [loop:true]\", or \"stop\".");
     }
 
     private LocalTestResult HandleForceCustomTrigger(string rest)

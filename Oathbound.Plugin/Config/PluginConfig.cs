@@ -403,29 +403,36 @@ public class PermissionSet
     /// collar/teleport "Separate opt-in permission for teleport": distinct from every other category,
     /// same independent-opt-in pattern as Follow - never implied by any other permission being on.
     public bool Teleport { get; set; }
+
+    /// collar/toy-control: same independent opt-in pattern as every other category, but this one alone
+    /// also requires `PluginConfig.ToyControlAcknowledged` before it can be enabled at all (see
+    /// CollarWindow.DrawPermissionsCard) - direct physical-device actuation is a materially greater risk
+    /// than anything else this permission set gates.
+    public bool ToyControl { get; set; }
 }
 
-/// collar/restraints: the fixed set of restriction rule kinds a restraint device may carry. `Gag` is the
-/// wearable/bound-animation rule (mechanically identical to ArmsCuffed/LegsCuffed) - distinct from
-/// `GagChat`, the chat-mangling rule, which it has no effect on and no relation to beyond the name.
+/// collar/restraints: the fixed set of restriction rule kinds a restraint device may carry. `Gagged` always
+/// applies its chat-mangling restriction while active; the bound animation on it (like every other
+/// animation-bearing kind) is purely an optional cosmetic layer, not a separate rule.
 public enum RestraintRuleKind
 {
     ForcedPose,
     WalkOnly,
     ActionBlock,
-    GagChat,
+    Gagged,
     ArmsCuffed,
     LegsCuffed,
     FullBodyCuffed,
-    Gag,
 }
 
 /// One restriction rule assigned to a device. `PoseModeId` only matters for ForcedPose: 1=GroundSit,
 /// 2=Sit, 3=Doze (the same EmoteModeId values GestureTrigger already uses) select a vanilla pose; 0 is the
 /// sentinel for a mod-sourced pose, in which case `AnimationId` carries the chosen animation instead.
-/// `AnimationId` also matters for ArmsCuffed/LegsCuffed/FullBodyCuffed/Gag - a `GestureCatalogEntry.Id`
+/// `AnimationId` also matters for ArmsCuffed/LegsCuffed/FullBodyCuffed/Gagged - a `GestureCatalogEntry.Id`
 /// (collar/gesture) identifying the chosen animation to temporarily activate and hold for as long as the
-/// rule stays active. Both fields are ignored by every rule kind that doesn't use them.
+/// rule stays active. `CustomizePresetId`/`CustomizePresetLabel` only matter for Gagged - an optional
+/// Customize+ profile applied to the Sub's character for as long as the rule stays active; unset means no
+/// Customize+ change. All four fields are ignored by every rule kind that doesn't use them.
 [Serializable]
 public class RestraintRuleAssignment
 {
@@ -433,6 +440,8 @@ public class RestraintRuleAssignment
     public int PoseModeId { get; set; }
     public string? AnimationId { get; set; }
     public string? AnimationLabel { get; set; }
+    public string? CustomizePresetId { get; set; }
+    public string? CustomizePresetLabel { get; set; }
 }
 
 /// A single gear piece (collar/restraints) picked from a slot-and-item picker, generalized to any of the
@@ -452,6 +461,70 @@ public class RestraintDeviceDefinition
 }
 
 public enum RestraintSourceKind { Item, PenumbraCatalog }
+
+/// collar/toy-control: one step of a vibration sequence - a fixed intensity held for `DurationMs`
+/// milliseconds, or (when `DurationMs` is 0) held indefinitely until the sequence's own outer ceiling or
+/// an explicit stop/panic. Shared by the fixed built-in patterns (weak/medium/strong/pulse, defined in code)
+/// and Sub-authored custom patterns (`ToyPattern.Steps`, defined here) - `ToyControlCommand` plays both the
+/// same way.
+[Serializable]
+public class PatternStep
+{
+    public int IntensityPercent { get; set; }
+    public int DurationMs { get; set; }
+}
+
+/// collar/toy-control "Sub-authored custom vibration patterns": a named, locally-stored step sequence,
+/// usable anywhere a built-in named pattern (weak/medium/strong/pulse) is usable - an Owner-sent `toy
+/// pattern:<name>` command, or a local automatic trigger's configured action. `Name` cannot collide with a
+/// built-in preset name or another custom pattern's name - enforced at the point a pattern is saved (see
+/// CollarWindow's pattern editor), not here.
+[Serializable]
+public class ToyPattern
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "";
+    public List<PatternStep> Steps { get; set; } = new();
+    public bool Loop { get; set; }
+}
+
+/// collar/toy-control "Local automatic toy triggers": which local game-state signal a `ToyTriggerRule`
+/// reacts to. `HealthPercentThreshold` only matters for `HealthPercent`; `RestrictionKind` only matters for
+/// `RestrictionActive`; `PlayerDamage` uses neither.
+public enum ToyTriggerKind
+{
+    HealthPercent,
+    PlayerDamage,
+    RestrictionActive,
+}
+
+/// collar/toy-control "Local automatic toy triggers"/"Automatic triggers are rate-limited per rule": a
+/// single Sub-configured rule that fires a toy action entirely locally when its condition is met, subject
+/// to its own `CooldownSeconds` (see `ToyTriggerEvaluator`, which also enforces a 2-second floor beneath
+/// whatever value is stored here, defensively, the same clamp-not-reject posture every other numeric input
+/// in this plugin already uses). Exactly one of `IntensityPercent`/`PatternName` is set, matching how a
+/// wire vibrate/pattern command is one or the other, never both.
+[Serializable]
+public class ToyTriggerRule
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public bool Enabled { get; set; }
+    public ToyTriggerKind Kind { get; set; }
+
+    /// Only for `HealthPercent`: fires when current health drops to or below this percentage.
+    public int HealthPercentThreshold { get; set; } = 50;
+
+    /// Only for `RestrictionActive`: which restriction category's "currently active" transition fires this
+    /// rule (see `Safety.RestrictionRuleManager.IsActive`).
+    public RestraintRuleKind RestrictionKind { get; set; }
+
+    /// The toy action this rule fires. Exactly one of these two is set - `IntensityPercent` for a plain
+    /// vibrate at that intensity, `PatternName` for a built-in or custom named pattern.
+    public int? IntensityPercent { get; set; }
+    public string? PatternName { get; set; }
+
+    public int CooldownSeconds { get; set; } = 5;
+}
 
 /// Sub-side: the restraint device catalog, keyed by RestraintDeviceDefinition.Id. No scan step or
 /// allowlist - each device is captured individually from whatever gear piece the Sub currently has
@@ -520,7 +593,7 @@ public class RestraintCatalogExportEntry
 [Serializable]
 public class PluginConfig : IPluginConfiguration
 {
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 6;
 
     public PluginRole Role { get; set; } = PluginRole.Sub;
 
@@ -586,6 +659,7 @@ public class PluginConfig : IPluginConfiguration
     public bool OutfitForceLocked { get; set; }
     public bool CollarForceLocked { get; set; }
     public bool RestraintsForceLocked { get; set; }
+    public bool ToyControlForceLocked { get; set; }
 
     /// Owner-side only in practice (a Sub has no use for their own names here) - see OwnerQuickCommands.
     public OwnerQuickCommands QuickCommands { get; set; } = new();
@@ -651,6 +725,42 @@ public class PluginConfig : IPluginConfiguration
     /// general acknowledgement was written to cover, so it gets its own explicit, dedicated checkbox rather
     /// than silently riding on the existing one.
     public bool CustomChatAcknowledged { get; set; }
+
+    /// collar/toy-control "Toy control requires its own dedicated consent acknowledgment": same rationale
+    /// as `CustomChatAcknowledged` above, but for an even greater risk category - this is the one
+    /// permission in the whole plugin that lets an Owner directly actuate a connected physical device,
+    /// rather than only change in-game state.
+    public bool ToyControlAcknowledged { get; set; }
+
+    /// collar/toy-control: the Sub's local Intiface Central WebSocket address. Defaults to Intiface
+    /// Central's own default listen address - never sent over the wire, purely a local connection setting.
+    public string IntifaceAddress { get; set; } = "ws://127.0.0.1:12345";
+
+    /// collar/toy-control "Locally enforced maximum duration": the ceiling an explicit permanent-mode
+    /// vibrate/pattern command is held to instead of the default `ToyControlCommand.MaxDurationSeconds` -
+    /// still a hard local stop, just a much longer one. Defaults to 4 hours (14400 seconds).
+    public int PermanentBackstopSeconds { get; set; } = 14400;
+
+    /// collar/toy-control "Sub-authored custom vibration patterns": Sub-local, never synced or sent over
+    /// the wire - only a pattern's name crosses chat, the same way only an alias name does.
+    public List<ToyPattern> ToyPatterns { get; set; } = new();
+
+    /// collar/toy-control "Local automatic toy triggers": Sub-local trigger configuration.
+    public List<ToyTriggerRule> ToyTriggerRules { get; set; } = new();
+
+    /// collar/toy-control "Automatic triggers require their own dedicated consent, separate from
+    /// Owner-command permission": a fourth rung on the acknowledgement ladder (TosAcknowledged ->
+    /// CustomChatAcknowledged/ToyControlAcknowledged -> this one). Gates trigger *configuration* directly -
+    /// unlike ToyControlAcknowledged, there is no separate `PermissionSet` flag alongside it, since a
+    /// trigger's own `Enabled` field already plays that role and this is Sub-local automation with no
+    /// Owner-command permission involved at all.
+    public bool ToyTriggersAcknowledged { get; set; }
+
+    /// collar/toy-control "Panic suspends automatic triggers, not just active device output": deliberately
+    /// NOT cleared by SubRuntimeState.Reset() (see that method's comment) - panic sets this true so a
+    /// trigger cannot immediately re-fire the instant panic's own revert sequence finishes; only an explicit
+    /// Sub UI action clears it.
+    public bool ToyTriggersSuspended { get; set; }
 
     [JsonIgnore]
     public Action? SaveOverride { get; set; }
@@ -733,4 +843,39 @@ public class PluginConfig : IPluginConfiguration
     private static List<string> NormalizeFolders(IEnumerable<string> folders) => folders
         .Select(x => x.Trim().Replace('\\', '/').TrimEnd('/')).Where(x => x.Length > 0)
         .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// collar/restraints "Migration of legacy animation-only Gag devices": the old GagChat(3) and
+    /// Gagged(3) share the same ordinal, so a legacy GagChat-only entry already deserializes correctly as
+    /// Gagged with no further action. Only the legacy animation-only Gag(7) - now outside the enum's
+    /// defined range entirely, so it must be matched by its raw ordinal rather than by name - needs an
+    /// explicit merge: fold onto an existing Gagged entry in the same rule list if one is already present
+    /// (from a legacy GagChat), or convert in place otherwise. Chat-garbling becomes active for every
+    /// migrated entry per the confirmed decision, even for a Sub who previously used Gag alone with no
+    /// chat effect.
+    public void MigrateLegacyGagRules()
+    {
+        const int legacyGagOrdinal = 7;
+        void MigrateRules(List<RestraintRuleAssignment> rules)
+        {
+            var legacyGag = rules.FirstOrDefault(r => (int)r.Kind == legacyGagOrdinal);
+            if (legacyGag is null) return;
+            var existingGagged = rules.FirstOrDefault(r => r.Kind == RestraintRuleKind.Gagged && r != legacyGag);
+            if (existingGagged is not null)
+            {
+                existingGagged.AnimationId ??= legacyGag.AnimationId;
+                existingGagged.AnimationLabel ??= legacyGag.AnimationLabel;
+                rules.Remove(legacyGag);
+            }
+            else
+            {
+                legacyGag.Kind = RestraintRuleKind.Gagged;
+            }
+        }
+        foreach (var device in RestraintMapping.Devices.Values)
+            MigrateRules(device.Rules);
+        foreach (var mod in RestraintMapping.ConfiguredMods)
+            MigrateRules(mod.Rules);
+        foreach (var cmd in QuickCommands.Restraints.Where(c => c.RestraintRules is { Count: > 0 }))
+            MigrateRules(cmd.RestraintRules!);
+    }
 }

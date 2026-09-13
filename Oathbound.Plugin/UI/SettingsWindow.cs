@@ -98,6 +98,10 @@ public class SettingsWindow : Window, IDisposable
             ImGui.Spacing();
             DrawCustomChatCard(config);
             ImGui.Spacing();
+            DrawToyControlCard(config);
+            ImGui.Spacing();
+            DrawToyTriggersCard(config);
+            ImGui.Spacing();
             DrawTestCommandCard(config);
             ImGui.EndTabItem();
         }
@@ -583,6 +587,40 @@ public class SettingsWindow : Window, IDisposable
         if (ImGuiCheckbox("I understand a Custom Trigger's chat action can send arbitrary text to any channel, visible to other players, as my own character", config.CustomChatAcknowledged, out var newAck))
         {
             config.CustomChatAcknowledged = newAck;
+            config.Save();
+        }
+    }
+
+    /// collar/toy-control "Toy control requires its own dedicated consent acknowledgment": same rationale
+    /// as DrawCustomChatCard above, but for the single riskiest category in this plugin - unlike every
+    /// other category, this one actuates a real physical device rather than only in-game state.
+    private void DrawToyControlCard(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.BoltLightning, "Toy control");
+        ImGui.Separator();
+        IconGlyph.WrappedColored(Theme.Danger, "Toy Control lets your Owner directly actuate a physical device connected through Intiface Central - a real vibration on real hardware, not just an in-game change. This plugin enforces a maximum duration per command and always stops every device on panic, but Intiface Central itself and your device's own connection are outside this plugin's control. Required before the \"Toy control\" permission (Permissions tab) can be enabled at all.");
+
+        if (ImGuiCheckbox("I understand my Owner can directly actuate a connected physical device through Intiface, and I have reviewed Intiface's own safety settings myself", config.ToyControlAcknowledged, out var newToyAck))
+        {
+            config.ToyControlAcknowledged = newToyAck;
+            config.Save();
+        }
+    }
+
+    /// collar/toy-control "Automatic triggers require their own dedicated consent, separate from
+    /// Owner-command permission": a fourth, distinct rung from DrawToyControlCard above - that one is about
+    /// an Owner's per-occurrence command; this one is about the Sub's own device firing automatically, with
+    /// no per-occurrence click at all, off the Sub's own local game state (health, being hit, a restriction
+    /// state) - a materially different risk shape that needs its own explicit disclosure.
+    private void DrawToyTriggersCard(PluginConfig config)
+    {
+        IconGlyph.Text(FontAwesomeIcon.Bolt, "Automatic toy triggers");
+        ImGui.Separator();
+        IconGlyph.WrappedColored(Theme.Danger, "Automatic Triggers let your own client fire a toy action on its own - with no per-occurrence click from you or your Owner - in reaction to your own local game state (health dropping, being hit by another player, a restriction becoming active). This can fire during combat or other content. Required before any trigger rule (Toy Control tab) can be enabled at all. Panic always suspends every trigger until you explicitly resume them.");
+
+        if (ImGuiCheckbox("I understand my own device can automatically vibrate in reaction to my game state, with no click required each time, and this can happen during combat or other content", config.ToyTriggersAcknowledged, out var newTriggerAck))
+        {
+            config.ToyTriggersAcknowledged = newTriggerAck;
             config.Save();
         }
     }

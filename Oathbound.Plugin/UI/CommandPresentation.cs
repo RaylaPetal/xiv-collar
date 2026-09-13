@@ -23,11 +23,10 @@ public static class CommandPresentation
         RestraintRuleKind.ForcedPose => rule.PoseModeId == 0 ? "Forced Pose · Animation mod" : $"Forced Pose · {Pose(rule.PoseModeId)}",
         RestraintRuleKind.WalkOnly => "Walking Only",
         RestraintRuleKind.ActionBlock => "Actions Blocked",
-        RestraintRuleKind.GagChat => "Gagged",
+        RestraintRuleKind.Gagged => rule.CustomizePresetId is null ? "Gagged" : "Gagged · Customize+",
         RestraintRuleKind.ArmsCuffed => "Arms Cuffed",
         RestraintRuleKind.LegsCuffed => "Legs Cuffed",
-        RestraintRuleKind.FullBodyCuffed => "Full Body Cuffed",
-        RestraintRuleKind.Gag => "Gag",
+        RestraintRuleKind.FullBodyCuffed => "Fully Restrain",
         _ => "Unknown rule",
     };
 

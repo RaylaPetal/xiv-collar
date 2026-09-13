@@ -8,7 +8,7 @@
          `dotnet build` on this csproj, an IDE's default build task, or the .slnx - instead of depending
          on everyone remembering to build through the solution file. -->
     <Platform>x64</Platform>
-    <Version>0.0.3.7</Version>
+    <Version>0.0.4.0</Version>
     <!-- Manifest fields (see https://github.com/goatcorp/DalamudPackager/blob/827d88dc/DalamudPackager/DalamudPackager.cs#L420) -->
     <Author>Rayla Petal</Author>
     <Name>Oathbound</Name>
@@ -30,6 +30,11 @@ service, while all gameplay actions remain local to the Sub's client.</Descripti
          shim does not implement EC key generation (NTE_NOT_SUPPORTED, 0x80090029), which crashes the
          plugin on load for any Wine-hosted install. BouncyCastle never touches an OS crypto API. -->
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+    <!-- collar/toy-control: official Buttplug protocol client for talking to a locally-running Intiface
+         Central over its WebSocket server - a single package bundling Core/Client/the WebSocket
+         connector, depending only on Newtonsoft.Json. Not a Dalamud IPC integration like every other
+         Ipc/ wrapper - Intiface Central is a standalone companion application, not a Dalamud plugin. -->
+    <PackageReference Include="Buttplug" Version="5.0.1" />
   </ItemGroup>
 
   <ItemGroup>

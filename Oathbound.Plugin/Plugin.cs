@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -65,6 +66,7 @@ public sealed class Plugin : IDalamudPlugin
     private SettingsWindow SettingsWindow { get; }
     private WelcomeWindow WelcomeWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
+    public CustomizePresetPickerWindow CustomizePresetPickerWindow { get; }
     public ItemPickerWindow ItemPickerWindow { get; }
     public FavoritesBarButton FavoritesBarButton { get; }
 
@@ -83,12 +85,15 @@ public sealed class Plugin : IDalamudPlugin
     public HonorificIpc HonorificIpc { get; }
     public PenumbraIpc PenumbraIpc { get; }
     public MoodlesIpc MoodlesIpc { get; }
+    public CustomizePlusIpc CustomizePlusIpc { get; }
+    public IntifaceIpc IntifaceIpc { get; }
     public LifestreamIpc LifestreamIpc { get; }
     public MovementLockService MovementLockService { get; }
     public WalkOnlyService WalkOnlyService { get; }
     public ActionBlockService ActionBlockService { get; }
     public ChatGagService ChatGagService { get; }
     public RestrictionRuleManager RestrictionRuleManager { get; }
+    public ToyTriggerEvaluator ToyTriggerEvaluator { get; }
 
     public DeviceIdentityService DeviceIdentityService { get; }
     public RelayClient RelayClient { get; }
@@ -101,6 +106,7 @@ public sealed class Plugin : IDalamudPlugin
     public CollarCommand CollarCommand { get; }
     public MoodlesCommand MoodlesCommand { get; }
     public RestraintCommand RestraintCommand { get; }
+    public ToyControlCommand ToyControlCommand { get; }
     public CustomTriggerCommand CustomTriggerCommand { get; }
     public TeleportCommand TeleportCommand { get; }
     public CatalogSyncService CatalogSyncService { get; }
@@ -137,17 +143,19 @@ public sealed class Plugin : IDalamudPlugin
         HonorificIpc = new HonorificIpc();
         PenumbraIpc = new PenumbraIpc();
         MoodlesIpc = new MoodlesIpc();
+        CustomizePlusIpc = new CustomizePlusIpc();
+        IntifaceIpc = new IntifaceIpc();
         LifestreamIpc = new LifestreamIpc();
         MovementLockService = new MovementLockService();
         WalkOnlyService = new WalkOnlyService();
         ActionBlockService = new ActionBlockService(WalkOnlyService);
         WalkOnlyService.SprintInterceptorAvailable = ActionBlockService.IsAvailable;
-        ChatGagService = new ChatGagService();
+        ChatGagService = new ChatGagService(CustomizePlusIpc);
         RestrictionRuleManager = new RestrictionRuleManager();
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ForcedPose, new MovementLockEnforcer(MovementLockService, "Restraints"));
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.WalkOnly, WalkOnlyService);
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.ActionBlock, ActionBlockService);
-        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.GagChat, ChatGagService);
+        RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.Gagged, ChatGagService);
         RestrictionRuleManager.RegisterEnforcer(RestraintRuleKind.FullBodyCuffed, new MovementLockEnforcer(MovementLockService, "RestraintsFullBody"));
 
         DeviceIdentityService = new DeviceIdentityService(Configuration);
@@ -162,7 +170,9 @@ public sealed class Plugin : IDalamudPlugin
         FollowCommand = new FollowCommand(Configuration, MovementLockService, RuntimeState);
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
-        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings);
+        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings, ChatGagService);
+        ToyControlCommand = new ToyControlCommand(IntifaceIpc, RuntimeState, Configuration);
+        ToyTriggerEvaluator = new ToyTriggerEvaluator(Configuration, ToyControlCommand, RuntimeState, RestrictionRuleManager);
         CustomTriggerCommand = new CustomTriggerCommand(Configuration, TitleCommand, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         TeleportCommand = new TeleportCommand(Configuration, LifestreamIpc, MovementLockService);
         CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
@@ -172,15 +182,16 @@ public sealed class Plugin : IDalamudPlugin
         PairingService.PairingEnded += QueueRestraintCleanup;
         RevocationService.PairingRevoked += QueueRestraintCleanup;
         CatalogSyncRelayService = new CatalogSyncRelayService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CatalogSyncService);
-        ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, CustomTriggerCommand, TeleportCommand);
+        ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, ToyControlCommand, CustomTriggerCommand, TeleportCommand);
 
-        PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, RuntimeState, CollarCommand);
+        PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, ToyControlCommand, RuntimeState, CollarCommand);
 
         CollarWindow = new CollarWindow(this);
         SettingsWindow = new SettingsWindow(this);
         TutorialDriver = new TutorialDriver(this, CollarWindow);
         WelcomeWindow = new WelcomeWindow(this);
         AnimationPickerWindow = new AnimationPickerWindow(this);
+        CustomizePresetPickerWindow = new CustomizePresetPickerWindow(this);
         ItemPickerWindow = new ItemPickerWindow(this);
         FavoritesBarButton = new FavoritesBarButton(this);
 
@@ -194,6 +205,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(SettingsWindow);
         WindowSystem.AddWindow(WelcomeWindow);
         WindowSystem.AddWindow(AnimationPickerWindow);
+        WindowSystem.AddWindow(CustomizePresetPickerWindow);
         WindowSystem.AddWindow(ItemPickerWindow);
         WindowSystem.AddWindow(FavoritesBarButton);
 
@@ -293,6 +305,7 @@ public sealed class Plugin : IDalamudPlugin
         SettingsWindow.Dispose();
         WelcomeWindow.Dispose();
         AnimationPickerWindow.Dispose();
+        CustomizePresetPickerWindow.Dispose();
         ItemPickerWindow.Dispose();
         FavoritesBarButton.Dispose();
         favoritesDtrEntry.Remove();
@@ -309,6 +322,8 @@ public sealed class Plugin : IDalamudPlugin
         MovementLockService.Dispose();
         ActionBlockService.Dispose();
         ChatGagService.Dispose();
+        IntifaceIpc.Dispose();
+        ToyTriggerEvaluator.Dispose();
         SlotLockManager.Dispose();
         GlamourerIpc.Dispose();
 
@@ -359,6 +374,8 @@ public sealed class Plugin : IDalamudPlugin
 
         GestureCommand.OnFrameworkUpdate();
         RestraintCommand.OnFrameworkUpdate();
+        ToyControlCommand.OnFrameworkUpdate();
+        ToyTriggerEvaluator.OnFrameworkUpdate();
         MovementLockService.OnFrameworkUpdate();
         FollowCommand.OnFrameworkUpdate();
         WalkOnlyService.OnFrameworkUpdate();
@@ -427,6 +444,12 @@ public sealed class Plugin : IDalamudPlugin
             }
             Configuration.Pairing = null;
             Configuration.Version = 5;
+            changed = true;
+        }
+        if (Configuration.Version < 6)
+        {
+            Configuration.MigrateLegacyGagRules();
+            Configuration.Version = 6;
             changed = true;
         }
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();

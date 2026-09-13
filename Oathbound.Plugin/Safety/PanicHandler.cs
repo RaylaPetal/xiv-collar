@@ -24,10 +24,11 @@ public sealed class PanicHandler
     private readonly MovementLockService movementLock;
     private readonly RestrictionRuleManager restrictionRules;
     private readonly RestraintCommand restraints;
+    private readonly ToyControlCommand toyControl;
     private readonly SubRuntimeState runtimeState;
     private readonly CollarCommand collar;
 
-    public PanicHandler(PairingService pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, SubRuntimeState runtimeState, CollarCommand collar)
+    public PanicHandler(PairingService pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, ToyControlCommand toyControl, SubRuntimeState runtimeState, CollarCommand collar)
     {
         this.pairing = pairing;
         this.glamourer = glamourer;
@@ -36,6 +37,7 @@ public sealed class PanicHandler
         this.movementLock = movementLock;
         this.restrictionRules = restrictionRules;
         this.restraints = restraints;
+        this.toyControl = toyControl;
         this.runtimeState = runtimeState;
         this.collar = collar;
     }
@@ -76,6 +78,8 @@ public sealed class PanicHandler
         RunStep("release movement lock", movementLock.ReleaseAll);
         RunStep("release restriction rules", restrictionRules.ReleaseAllForPanic);
         RunStep("release restraint bound animations", restraints.ReleaseAllBoundAnimationsForPanic);
+        RunStep("stop toy control", toyControl.ReleaseAllForPanic);
+        RunStep("suspend toy triggers", () => runtimeState.ToyTriggersSuspended = true);
 
         runtimeState.Reset();
     }

@@ -8,6 +8,15 @@
         "resolved": "2.6.2",
         "contentHash": "7oWOcvnntmMKNzDLsdxAYqApt+AjpRpP2CShjMfIa3umZ42UQMvH0tl1qAliYPNYO6vTdcGMqnRrCPmsfzTI1w=="
       },
+      "Buttplug": {
+        "type": "Direct",
+        "requested": "[5.0.1, )",
+        "resolved": "5.0.1",
+        "contentHash": "ZpOrR4qobE7KEGaFO18YovV4uqhzbFKwGoh9Qr1zz5/PO+jIjB0tedgZPjyYYpromD4cRYiD/n6cOx3jEje86w==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.4"
+        }
+      },
       "DalamudPackager": {
         "type": "Direct",
         "requested": "[15.0.0, )",
@@ -87,6 +96,11 @@
         "type": "Transitive",
         "resolved": "9.0.0",
         "contentHash": "N3qEBzmLMYiASUlKxxFIISP4AiwuPTHF5uCh+2CWSwwzAJiIYx0kBJsS30cp1nvhSySFAVi30jecD307jV+8Kg=="
+      },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
       },
       "System.IO.Hashing": {
         "type": "Transitive",

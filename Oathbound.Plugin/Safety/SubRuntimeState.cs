@@ -59,6 +59,26 @@ public sealed class SubRuntimeState
         set { config.RestraintsForceLocked = value; config.Save(); }
     }
 
+    /// collar/toy-control: set while an Owner-initiated vibrate/pattern command is active (either until
+    /// the Sub's own local auto-stop timer fires, an explicit stop is received, or panic). Persisted like
+    /// RestraintsForceLocked so a stuck-vibrating toy after a crash/reload can still be cleared by panic.
+    public bool ToyControlForceLocked
+    {
+        get => config.ToyControlForceLocked;
+        set { config.ToyControlForceLocked = value; config.Save(); }
+    }
+
+    /// collar/toy-control "Panic suspends automatic triggers, not just active device output": deliberately
+    /// excluded from Reset() below - every other force-lock flag is meant to come back the moment its
+    /// underlying condition reasserts itself, but re-arming a trigger the instant panic's own revert
+    /// sequence finishes would let the same trigger immediately re-fire within the same tick that caused
+    /// the panic in the first place. Only an explicit Sub UI action (not Reset/panic) clears this.
+    public bool ToyTriggersSuspended
+    {
+        get => config.ToyTriggersSuspended;
+        set { config.ToyTriggersSuspended = value; config.Save(); }
+    }
+
     public void Reset()
     {
         TitleApplied = false;
@@ -68,5 +88,7 @@ public sealed class SubRuntimeState
         OutfitForceLocked = false;
         CollarForceLocked = false;
         RestraintsForceLocked = false;
+        ToyControlForceLocked = false;
+        // ToyTriggersSuspended is deliberately NOT cleared here - see its own doc comment above.
     }
 }
