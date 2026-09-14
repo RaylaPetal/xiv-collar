@@ -8,7 +8,7 @@
          `dotnet build` on this csproj, an IDE's default build task, or the .slnx - instead of depending
          on everyone remembering to build through the solution file. -->
     <Platform>x64</Platform>
-    <Version>0.0.4.2</Version>
+    <Version>0.0.4.3</Version>
     <!-- Manifest fields (see https://github.com/goatcorp/DalamudPackager/blob/827d88dc/DalamudPackager/DalamudPackager.cs#L420) -->
     <Author>Rayla Petal</Author>
     <Name>Oathbound</Name>
@@ -35,6 +35,17 @@ service, while all gameplay actions remain local to the Sub's client.</Descripti
          connector, depending only on Newtonsoft.Json. Not a Dalamud IPC integration like every other
          Ipc/ wrapper - Intiface Central is a standalone companion application, not a Dalamud plugin. -->
     <PackageReference Include="Buttplug" Version="5.0.1" />
+    <!-- Buttplug (above) transitively pulls in Newtonsoft.Json as a normal copy-local dependency (its
+         nuspec has no net10.0 group, so NuGet falls back to its .NETStandard2.1 group, which declares
+         Newtonsoft.Json directly) - unlike Glamourer.Api, which declares no dependencies at all and has
+         always relied on Dalamud's own shared Newtonsoft.Json.dll. That private copy in our own output
+         gave GlamourerIpc's JObject-returning IPC calls (GetDesignJObject, GetState) two distinct
+         same-named-but-different-assembly Newtonsoft.Json.Linq.JObject types to reconcile, which Dalamud's
+         IPC layer cannot do - it throws "IPC method ... blew up when converting from JObject to
+         Newtonsoft.Json.Linq.JObject". ExcludeAssets="runtime" keeps this only as a compile-time reference
+         (GlamourerIpc.cs uses Newtonsoft.Json.Linq directly) without copying our own DLL, so every plugin
+         in the process stays on Dalamud's single shared copy. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
