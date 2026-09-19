@@ -229,14 +229,31 @@ public sealed unsafe class ChatGagService : IRestrictionEnforcer, IDisposable
            || body.StartsWith("collarpairack ", StringComparison.OrdinalIgnoreCase)
            || body.StartsWith("collarunpair ", StringComparison.OrdinalIgnoreCase);
 
+    /// collar/restraint-restrictions "Gagged toggle chat restriction": text between a pair of `*`
+    /// characters (the FFXIV RP convention for an inline emote/action) passes through unmangled, `*`
+    /// included, so a gagged Sub can still perform an emote inline with garbled speech. Matching is a
+    /// simple left-to-right toggle on each literal `*` - not a "must be closed" parser - so an unmatched
+    /// trailing `*` exempts the rest of the message rather than being treated as an error.
     internal static string Garble(string text)
     {
         var sb = new StringBuilder();
         var syllableIndex = 0;
+        var exempt = false;
         var i = 0;
         while (i < text.Length)
         {
-            if (char.IsLetter(text[i]))
+            if (text[i] == '*')
+            {
+                exempt = !exempt;
+                sb.Append(text[i]);
+                i++;
+            }
+            else if (exempt)
+            {
+                sb.Append(text[i]);
+                i++;
+            }
+            else if (char.IsLetter(text[i]))
             {
                 var wordStart = i;
                 while (i < text.Length && char.IsLetter(text[i]))
