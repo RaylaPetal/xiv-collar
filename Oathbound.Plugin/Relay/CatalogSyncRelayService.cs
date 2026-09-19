@@ -143,7 +143,7 @@ public sealed class CatalogSyncRelayService
             SetError(null);
 
             SetPhase("Waiting for Sub upload");
-            _ = PollAndImportAsync(requestId, pairing, ct);
+            _ = PollAndImportAsync(requestId, envelope.ExpiresAt, pairing, ct);
             pollStarted = true;
             return true;
         }
@@ -166,18 +166,35 @@ public sealed class CatalogSyncRelayService
     /// Owner-side: bounded poll for the Sub's upload, then retrieve/decrypt/decompress/validate/commit.
     /// Never re-enables anything on failure; the prior imported snapshot is always left untouched unless
     /// every check here passes (task 6.4).
-    private async Task PollAndImportAsync(string requestId, PairingState pairing, CancellationToken ct)
+    private async Task PollAndImportAsync(string requestId, long requestExpiresAt, PairingState pairing, CancellationToken ct)
     {
         try
         {
-            for (var attempt = 0; attempt < 60; attempt++)
+            // Bounded by the same expiresAt already sent to the Sub in the request envelope (collar/
+            // catalog-sync "requesting client waits for the full request validity window") - a shorter,
+            // independently-hardcoded poll duration would give up on (and destroy the decryption key for)
+            // a request the Sub could still legitimately answer.
+            while (true)
             {
                 ct.ThrowIfCancellationRequested();
                 if (deniedRequestIds.Remove(requestId)) return;
+                if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= requestExpiresAt)
+                {
+                    SetError("Timed out waiting for your Sub to respond.");
+                    return;
+                }
+
                 CatalogRequestEnvelope status;
                 try
                 {
                     status = await relay.FetchCatalogRequestAsync(requestId, ct).ConfigureAwait(false);
+                }
+                catch (RelayException ex) when (ex.Code is "network" or "service_unavailable")
+                {
+                    // Transient - a single failed status check shouldn't end a wait the Sub could still
+                    // answer within (collar/catalog-sync "single transient error does not end the wait").
+                    await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+                    continue;
                 }
                 catch (RelayException ex)
                 {
@@ -188,7 +205,6 @@ public sealed class CatalogSyncRelayService
                 if (status.Status == "uploaded") break;
                 if (status.Status is "consumed" or "expired") { SetError("The request expired or was already consumed."); return; }
                 await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
-                if (attempt == 59) { SetError("Timed out waiting for your Sub to respond."); return; }
             }
 
             if (!pendingOwnerRequests.TryGetValue(requestId, out var ownerEphemeral))
