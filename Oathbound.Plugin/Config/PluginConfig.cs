@@ -864,10 +864,16 @@ public class PluginConfig : IPluginConfiguration
         _ => SwitchLastUsedOwnerView ? PairingDirection.OwnerSide : PairingDirection.SubSide,
     };
 
+    /// Temporary timing diagnostic for split-catalog-storage-from-config: logs how long the actual
+    /// SavePluginConfig call takes, so a reported freeze on this call can be confirmed (or ruled out) from
+    /// /xllog instead of guessed at. Remove once the dropdown-freeze report is resolved.
     public void Save()
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         if (SaveOverride is not null) SaveOverride();
         else Plugin.PluginInterface.SavePluginConfig(this);
+        sw.Stop();
+        Plugin.Log.Information($"[perf] PluginConfig.Save() took {sw.ElapsedMilliseconds}ms");
     }
 
     public bool MigrateFolderScopes()
