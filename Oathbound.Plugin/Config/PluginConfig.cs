@@ -549,13 +549,25 @@ public class ToyTriggerRule
 /// Sub-side: the restraint device catalog, keyed by RestraintDeviceDefinition.Id. No scan step or
 /// allowlist - each device is captured individually from whatever gear piece the Sub currently has
 /// equipped (collar/restraints), the same way CollarState captures the collar item.
+///
+/// collar/config-performance "Catalogs live outside the hot-saved config file": LocalCatalog/
+/// ImportedPeerCatalog are [JsonIgnore]d and persisted separately by CatalogStore - see GestureMapping's
+/// equivalent comment.
 [Serializable]
 public class RestraintMapping
 {
     public Dictionary<string, RestraintDeviceDefinition> Devices { get; set; } = new();
+
+    [JsonIgnore]
     public Dictionary<string, RestraintCatalogEntry> LocalCatalog { get; set; } = new();
+
+    [JsonIgnore]
     public Dictionary<string, RestraintCatalogExportEntry> ImportedPeerCatalog { get; set; } = new();
+
     public List<ConfiguredModRestraint> ConfiguredMods { get; set; } = new();
+
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? LegacyExtensionData { get; set; }
 }
 
 [Serializable]

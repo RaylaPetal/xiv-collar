@@ -55,6 +55,7 @@ public sealed class Plugin : IDalamudPlugin
     private const string ShorthandCommandName = "/ob";
 
     public PluginConfig Configuration { get; }
+    public CatalogStore CatalogStore { get; } = new();
 
     public readonly WindowSystem WindowSystem = new("Oathbound");
 
@@ -134,6 +135,7 @@ public sealed class Plugin : IDalamudPlugin
         ECommons.ECommonsMain.Init(PluginInterface, this);
 
         Configuration = PluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
+        CatalogStore.LoadOrMigrate(Configuration);
         MigrateConfiguration();
 
         RuntimeState = new SubRuntimeState(Configuration);
@@ -166,16 +168,16 @@ public sealed class Plugin : IDalamudPlugin
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
         var temporaryModSettings = new TemporaryModSettingsCoordinator(PenumbraIpc);
-        GestureCommand = new GestureCommand(Configuration, PenumbraIpc, temporaryModSettings);
+        GestureCommand = new GestureCommand(Configuration, PenumbraIpc, temporaryModSettings, CatalogStore);
         FollowCommand = new FollowCommand(Configuration, MovementLockService, RuntimeState);
-        MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc);
+        MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc, CatalogStore);
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
-        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings, ChatGagService);
+        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings, ChatGagService, CatalogStore);
         ToyControlCommand = new ToyControlCommand(IntifaceIpc, RuntimeState, Configuration);
         ToyTriggerEvaluator = new ToyTriggerEvaluator(Configuration, ToyControlCommand, RuntimeState, RestrictionRuleManager);
         CustomTriggerCommand = new CustomTriggerCommand(Configuration, TitleCommand, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
         TeleportCommand = new TeleportCommand(Configuration, LifestreamIpc, MovementLockService);
-        CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
+        CatalogSyncService = new CatalogSyncService(Configuration, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand, CatalogStore);
         ChatComposer = new ChatComposer(Configuration);
         ChatSender = new ChatSender();
         PairingService = new PairingService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CollarCommand, RevocationService);

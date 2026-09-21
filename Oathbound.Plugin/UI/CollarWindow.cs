@@ -2260,6 +2260,7 @@ public class CollarWindow : Window, IDisposable
             quick.Aliases.Clear();
             plugin.Configuration.GestureMapping.ImportedPeerCatalog.Clear();
             plugin.Configuration.RestraintMapping.ImportedPeerCatalog.Clear();
+            plugin.CatalogStore.Save(plugin.Configuration);
             plugin.Configuration.Save();
             expandedRestraintRuleEditors.Clear();
             restraintRuleEdits.Clear();

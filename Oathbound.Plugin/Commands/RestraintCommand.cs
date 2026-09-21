@@ -35,11 +35,12 @@ public sealed class RestraintCommand
     private readonly GestureCatalogScanner catalogScanner;
     private readonly TemporaryModSettingsCoordinator temporarySettings;
     private readonly ChatGagService chatGagService;
+    private readonly CatalogStore catalogStore;
     public int? LastScanTotalMods { get; private set; }
     public int LastScanMatchedMods { get; private set; }
     public string? LastScanError { get; private set; }
 
-    public RestraintCommand(PluginConfig config, GlamourerIpc glamourer, PenumbraIpc penumbra, SlotLockManager slotLocks, RestrictionRuleManager restrictionRules, SubRuntimeState runtimeState, TemporaryModSettingsCoordinator temporarySettings, ChatGagService chatGagService)
+    public RestraintCommand(PluginConfig config, GlamourerIpc glamourer, PenumbraIpc penumbra, SlotLockManager slotLocks, RestrictionRuleManager restrictionRules, SubRuntimeState runtimeState, TemporaryModSettingsCoordinator temporarySettings, ChatGagService chatGagService, CatalogStore catalogStore)
     {
         this.config = config;
         this.glamourer = glamourer;
@@ -49,6 +50,7 @@ public sealed class RestraintCommand
         this.runtimeState = runtimeState;
         this.temporarySettings = temporarySettings;
         this.chatGagService = chatGagService;
+        this.catalogStore = catalogStore;
         catalogScanner = new GestureCatalogScanner(penumbra, config);
     }
 
@@ -65,7 +67,7 @@ public sealed class RestraintCommand
             Id = e.Id, ModDirectory = e.ModDirectory, ModName = e.ModName,
             GroupSelections = e.SavedSelections, ModEnabled = e.ModEnabled, ChangedItemIds = e.ChangedItemIds.ToList(),
         });
-        config.Save();
+        catalogStore.Save(config);
     }
 
     public string ExportCatalog() => string.Join("\n", config.RestraintMapping.LocalCatalog.Values

@@ -15,16 +15,18 @@ public sealed class MoodlesCommand
 {
     private readonly PluginConfig config;
     private readonly MoodlesIpc moodles;
+    private readonly CatalogStore catalogStore;
 
     /// How many statuses the last scan found - so the UI can say "found N" even before anything is picked.
     public int? LastScanTotalStatuses { get; private set; }
     public MoodlesScanStatus? LastScanStatus { get; private set; }
     public string? LastScanError { get; private set; }
 
-    public MoodlesCommand(PluginConfig config, MoodlesIpc moodles)
+    public MoodlesCommand(PluginConfig config, MoodlesIpc moodles, CatalogStore catalogStore)
     {
         this.config = config;
         this.moodles = moodles;
+        this.catalogStore = catalogStore;
     }
 
     /// Sub-side: rescan the Sub's own registered Moodles statuses (buffs/debuffs), not bundled presets -
@@ -43,7 +45,7 @@ public sealed class MoodlesCommand
         config.MoodlesMapping.LocalCatalog = result.Statuses
             .Select(s => new MoodlesStatusEntry { StatusId = s.Id.ToString(), Name = s.Name })
             .ToDictionary(e => e.StatusId);
-        config.Save();
+        catalogStore.Save(config);
     }
 
     /// The Owner's direct override: matches `statusName` against the Sub's own scanned catalog

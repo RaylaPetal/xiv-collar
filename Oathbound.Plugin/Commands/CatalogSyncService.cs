@@ -87,14 +87,16 @@ public sealed class CatalogSyncService
     private readonly GestureCommand gesture;
     private readonly MoodlesCommand moodles;
     private readonly RestraintCommand restraints;
+    private readonly CatalogStore catalogStore;
 
-    public CatalogSyncService(PluginConfig config, OutfitCommand outfit, GestureCommand gesture, MoodlesCommand moodles, RestraintCommand restraints)
+    public CatalogSyncService(PluginConfig config, OutfitCommand outfit, GestureCommand gesture, MoodlesCommand moodles, RestraintCommand restraints, CatalogStore catalogStore)
     {
         this.config = config;
         this.outfit = outfit;
         this.gesture = gesture;
         this.moodles = moodles;
         this.restraints = restraints;
+        this.catalogStore = catalogStore;
     }
 
     /// collar/catalog-sync "Automatic import replaces one peer snapshot atomically". Unlike ParseImport
@@ -189,7 +191,11 @@ public sealed class CatalogSyncService
             config.GestureMapping.ImportedPeerCatalog = stagedGestureCatalog;
         config.RestraintMapping.ImportedPeerCatalog = stagedRestraintCatalog;
 
-        try { config.Save(); }
+        try
+        {
+            catalogStore.Save(config);
+            config.Save();
+        }
         catch (Exception ex)
         {
             quick.Titles = oldTitles; quick.Outfits = oldOutfits; quick.Gestures = oldGestures;
@@ -524,7 +530,11 @@ public sealed class CatalogSyncService
             if (gestureCatalogRefreshed)
                 config.GestureMapping.ImportedPeerCatalog = stagedGestureCatalog;
             config.RestraintMapping.ImportedPeerCatalog = stagedRestraintCatalog;
-            try { config.Save(); }
+            try
+            {
+                catalogStore.Save(config);
+                config.Save();
+            }
             catch (Exception ex)
             {
                 quick.Titles = oldTitles; quick.Outfits = oldOutfits; quick.Gestures = oldGestures;

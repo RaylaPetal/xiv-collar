@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Oathbound.Plugin.Config;
 
@@ -21,5 +23,12 @@ public class MoodlesMapping
     /// Sub-side: the status catalog this Sub's own scan produced, keyed by status id. Local-only, same
     /// reasoning as GestureMapping.LocalCatalog - the Owner only ever learns status names via the Sub's
     /// own "Copy names" export, never a live push.
+    ///
+    /// collar/config-performance "Catalogs live outside the hot-saved config file": [JsonIgnore]d and
+    /// persisted separately by CatalogStore - see GestureMapping's equivalent comment.
+    [JsonIgnore]
     public Dictionary<string, MoodlesStatusEntry> LocalCatalog { get; set; } = new();
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? LegacyExtensionData { get; set; }
 }

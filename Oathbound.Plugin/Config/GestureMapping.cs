@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Oathbound.Plugin.Config;
 
@@ -34,11 +36,22 @@ public class GestureCatalogEntry
     public string Label => $"{ModName} — {AnimationName}" + (Trigger is null ? " — no playable trigger" : $" — {Trigger.DisplayName}");
 }
 
+/// collar/config-performance "Catalogs live outside the hot-saved config file" (split-catalog-storage-from-
+/// config): LocalCatalog/ImportedPeerCatalog are [JsonIgnore]d and persisted separately by CatalogStore
+/// instead, so an unrelated config.Save() elsewhere in the plugin no longer re-serializes every scanned mod.
+/// LegacyExtensionData exists only so CatalogStore can migrate a pre-upgrade install's inline catalog data
+/// out of GetPluginConfig()'s normal deserialization the first time this loads - see CatalogStore.
 [Serializable]
 public class GestureMapping
 {
+    [JsonIgnore]
     public Dictionary<string, GestureCatalogEntry> LocalCatalog { get; set; } = new();
+
+    [JsonIgnore]
     public Dictionary<string, GestureExportEntry> ImportedPeerCatalog { get; set; } = new();
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? LegacyExtensionData { get; set; }
 }
 
 /// collar/catalog-sync "Exporting every catalog to one file": the slim shape actually serialized into a

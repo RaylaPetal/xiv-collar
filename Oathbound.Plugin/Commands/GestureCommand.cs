@@ -32,6 +32,7 @@ public sealed class GestureCommand
     private readonly PenumbraIpc penumbra;
     private readonly GestureCatalogScanner scanner;
     private readonly TemporaryModSettingsCoordinator temporarySettings;
+    private readonly CatalogStore catalogStore;
 
     private (GestureTrigger Trigger, long ReadyAtTicks)? pendingPlay;
     private (Guid Collection, string ModDirectory, long IdleUntilTicks)? activeTemporary;
@@ -43,11 +44,12 @@ public sealed class GestureCommand
     /// manual Reset control enable/disable itself.
     public bool HasActiveTemporary => activeTemporary is not null;
 
-    public GestureCommand(PluginConfig config, PenumbraIpc penumbra, TemporaryModSettingsCoordinator temporarySettings)
+    public GestureCommand(PluginConfig config, PenumbraIpc penumbra, TemporaryModSettingsCoordinator temporarySettings, CatalogStore catalogStore)
     {
         this.config = config;
         this.penumbra = penumbra;
         this.temporarySettings = temporarySettings;
+        this.catalogStore = catalogStore;
         scanner = new GestureCatalogScanner(penumbra, config);
     }
 
@@ -96,6 +98,7 @@ public sealed class GestureCommand
         foreach (var entry in result.Entries)
             catalog[entry.Id] = entry;
         config.GestureMapping.LocalCatalog = catalog;
+        catalogStore.Save(config);
         MigrateAliases();
         config.Save();
     }
