@@ -368,11 +368,12 @@ public class CollarWindow : Window, IDisposable
         var config = plugin.Configuration;
         var isOwner = config.ResolveActiveDirection() == PairingDirection.OwnerSide;
 
+        // Deliberately no config.Save() here: this only ever matters as a fallback default when no
+        // pairing is active (see ResolveActiveDirection), so forcing an immediate synchronous write every
+        // time it merely tracks the current pairing's own direction - e.g. once per pairing switch - would
+        // double the cost of that switch for no reason. It rides along on whatever save happens next.
         if (config.Role == PluginRole.Switch && config.SwitchLastUsedOwnerView != isOwner)
-        {
             config.SwitchLastUsedOwnerView = isOwner;
-            config.Save();
-        }
         return isOwner;
     }
 
