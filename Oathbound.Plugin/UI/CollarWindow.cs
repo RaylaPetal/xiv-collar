@@ -83,28 +83,57 @@ public class CollarWindow : Window, IDisposable
 
     public void Dispose() { }
 
-    /// A rough, fixed estimate for the character/pairing header's own minimum height - unlike the nav grid
-    /// below it, the header's actual height varies frame to frame (a pending-request banner, multiple
-    /// pairings, the Owner-only outgoing-channel/teleport row), so this can only be an approximation; the
-    /// window still scrolls if a given frame's header needs more room than this leaves it. The nav grid's
-    /// own share of the minimum is computed exactly, from the same formula NavBar.Draw itself uses, in
-    /// PreDraw below - never guessed, so it can't silently clip a row again the way the fixed constant this
-    /// replaced eventually did once a 4th nav row appeared.
-    private const float HeaderMinHeight = 200f;
+    /// The window's total *content-region* height actually used last frame - measured once, at the very end
+    /// of `Draw()`, as `ImGui.GetCursorPosY()` (which already starts at the top WindowPadding and accumulates
+    /// every widget drawn since, including the nav grid's own card). Replaces two earlier, less accurate
+    /// approaches: a single hand-tuned constant (drifted out of sync every time the header's own content
+    /// changed by Role/pairing state), and then a header-only measurement combined with a *separately
+    /// recomputed* `NavBar.RequiredHeight` call (still under-counted, because neither of those two pieces -
+    /// nor the fudge factor between them - ever accounted for the window's own title bar or its bottom
+    /// WindowPadding, both of which `SizeConstraints`/`SetNextWindowSize` need included since they size the
+    /// *whole* window, not just its content region). Measuring the true end-of-content cursor position once
+    /// and adding only the two genuinely-missing pieces (title bar, bottom padding) in `PreDraw` below is
+    /// both simpler and exact. Defaults to a reasonable guess for the very first frame, before `Draw()` has
+    /// ever measured it.
+    private float lastContentHeight = 400f;
 
-    /// Recomputed every frame (not once in the constructor) since the nav's required height depends on the
-    /// live ImGui style (WindowPadding/ItemSpacing) and on how many destinations are visible for the
-    /// current Role.
+    private const float MinWidth = 465f;
+
+    /// Recomputed every frame from last frame's real measurement (see `lastContentHeight`) plus the title
+    /// bar height and bottom window padding - the two pieces outside the content region itself, and so never
+    /// captured by measuring cursor position, but still part of the *outer* window size `SizeConstraints`/
+    /// `SetNextWindowSize` expect.
+    ///
+    /// `SizeConstraints` alone only clamps an *interactive* resize (or the window's very first appearance) -
+    /// it does not retroactively grow a window whose size was already persisted (Dear ImGui's imgui.ini)
+    /// smaller than a minimum that has since grown (Role switch, the Sub Control toggle row, a pending-
+    /// request banner). So: whenever last frame's actual size (`LastSize`, below) is under this frame's
+    /// computed minimum, force it back up once via `SetNextWindowSize`; once it's no longer under, this stops
+    /// firing and the user's own resize (to anything >= the minimum) is never fought.
     public override void PreDraw()
     {
-        var isOwnerRole = plugin.Configuration.Role == PluginRole.Owner;
-        var visibleItemCount = isOwnerRole ? NavItems.Length - 1 : NavItems.Length;
-        var minHeight = HeaderMinHeight + NavBar.RequiredHeight(visibleItemCount);
-        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(465, minHeight), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
+        var titleBarHeight = ImGui.GetFrameHeight();
+        var bottomPadding = ImGui.GetStyle().WindowPadding.Y;
+        var minHeight = titleBarHeight + lastContentHeight + bottomPadding;
+        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(MinWidth, minHeight), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
+
+        if (LastSize.Y > 0 && (LastSize.Y < minHeight || LastSize.X < MinWidth))
+            ImGui.SetNextWindowSize(new Vector2(Math.Max(LastSize.X, MinWidth), Math.Max(LastSize.Y, minHeight)), ImGuiCond.Always);
     }
+
+    /// collar/ui-organization "Sub Control window stays docked to the main window": this frame's actual
+    /// on-screen position/size, read right after Dear ImGui's own `Begin()` (called by Dalamud's
+    /// `DrawInternal` before `Draw()` runs) - `SubControlWindow.PreDraw` reads these every frame to dock
+    /// itself to this window's right edge, the same cross-file "expose live layout data instead of guessing
+    /// a constant" pattern `NavBar.RequiredHeight` already established for this window's own sizing.
+    public Vector2 LastPosition { get; private set; }
+    public Vector2 LastSize { get; private set; }
 
     public override void Draw()
     {
+        LastPosition = ImGui.GetWindowPos();
+        LastSize = ImGui.GetWindowSize();
+
         DrawCharacterHeader();
         ImGui.Spacing();
 
@@ -127,6 +156,8 @@ public class CollarWindow : Window, IDisposable
             else
                 moduleWindow.Show(clicked);
         }
+
+        lastContentHeight = ImGui.GetCursorPosY();
     }
 
     /// Both roles can receive a Pending handshake now (collarpair's role token - see
@@ -191,6 +222,7 @@ public class CollarWindow : Window, IDisposable
         }
 
         DrawPairingsList(config);
+        DrawSubControlToggle();
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -269,6 +301,30 @@ public class CollarWindow : Window, IDisposable
     private static string PairingLabel(PairingState p) => p.Direction == PairingDirection.OwnerSide
         ? $"Owns: {p.PeerName}@{p.PeerWorld}"
         : $"Owned by: {p.PeerName}@{p.PeerWorld}";
+
+    /// collar/ui-organization "Header includes a Sub Control toggle": right-aligned on its own row directly
+    /// below the pairing status line. Reads `plugin.SubControlWindow` lazily through `plugin` rather than a
+    /// constructor-injected reference, since `SubControlWindow` is constructed after this window (it needs
+    /// this window's `LastPosition`/`LastSize` to dock against) - the same lazy-through-`plugin` access this
+    /// window's Favorites nav entry already uses for `plugin.FavoritesWindow`. Owner-side only (revised from
+    /// this change's own spec, which originally had it visible for both roles) - ordering a Sub to do
+    /// something is inherently an Owner action, so a Sub never has a reason to open this window; hidden
+    /// entirely rather than shown-but-empty, matching the same `ResolveActiveDirection() ==
+    /// PairingDirection.OwnerSide` gate the outgoing-channel/Teleport row just below already uses.
+    private void DrawSubControlToggle()
+    {
+        if (plugin.Configuration.ResolveActiveDirection() != PairingDirection.OwnerSide)
+            return;
+
+        const float size = 24f;
+        var isOpen = plugin.SubControlWindow.IsOpen;
+        var icon = isOpen ? FontAwesomeIcon.ArrowLeft : FontAwesomeIcon.ArrowRight;
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - size);
+        if (IconGlyph.Button(icon, new Vector2(size, size)))
+            plugin.SubControlWindow.IsOpen = !isOpen;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(isOpen ? "Close Sub Control" : "Open Sub Control - every configured command in one place");
+    }
 
     /// collar/ui-organization "Header includes a quick Teleport action": relocated here from the Follow /
     /// Leash tab (design.md "Teleport moves, doesn't duplicate") since it's commonly used enough to want in

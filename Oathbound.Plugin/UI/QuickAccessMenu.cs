@@ -205,6 +205,36 @@ public static class QuickAccessMenu
         FixedActions.Where(a => a.Category == category && favoriteIds.Contains(a.Id))
             .Select(a => new QuickCommand { Label = a.Label, Command = a.Command });
 
+    /// collar/ui-organization "Sub Control window lists every configured command ... not only favorites":
+    /// the unfiltered counterpart to `CategorizedFavorites` above - every entry per category (including
+    /// every fixed action, not only favorited ones), so the Sub Control window's "show everything" view and
+    /// this class's "show favorites only" views can never disagree about what a category's commands are.
+    internal static List<(string Label, List<QuickCommand> Commands)> CategorizedAll(OwnerQuickCommands quick)
+    {
+        (string Label, List<QuickCommand> List)[] categories =
+        [
+            ("Title", quick.Titles),
+            ("Outfit", quick.Outfits),
+            ("Animation", quick.Gestures),
+            ("Follow", quick.Follow),
+            ("Moodles", quick.Moodles),
+            ("Restraints", quick.Restraints),
+            ("Custom Trigger Bundles", quick.Aliases),
+        ];
+
+        return categories
+            .Select(c => (c.Label, Commands: c.List
+                .Concat(FixedActionsFor(c.Label))
+                .OrderBy(cmd => cmd.Label, StringComparer.OrdinalIgnoreCase)
+                .ToList()))
+            .ToList();
+    }
+
+    /// Same synthesis as `FavoritedFixedActionsFor`, without the favorite-id filter.
+    private static IEnumerable<QuickCommand> FixedActionsFor(string category) =>
+        FixedActions.Where(a => a.Category == category)
+            .Select(a => new QuickCommand { Label = a.Label, Command = a.Command });
+
     private static void DrawFavoriteMenuItem(Plugin plugin, QuickCommand cmd, bool canSend)
     {
         var composed = plugin.ChatComposer.Compose(cmd.Command);

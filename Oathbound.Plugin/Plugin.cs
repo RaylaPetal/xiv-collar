@@ -65,6 +65,11 @@ public sealed class Plugin : IDalamudPlugin
     public readonly FileDialogManager FileDialogManager = new();
     private CollarWindow CollarWindow { get; }
     public ModuleWindow ModuleWindow { get; }
+    /// collar/ui-organization "Sub Control window stays docked to the main window": must stay registered
+    /// with `WindowSystem` immediately after `CollarWindow` (see the registration call below) so it always
+    /// reads `CollarWindow`'s current-frame position, not the previous frame's - Dear ImGui windows here are
+    /// drawn in registration order.
+    public SubControlWindow SubControlWindow { get; }
     private SettingsWindow SettingsWindow { get; }
     private WelcomeWindow WelcomeWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
@@ -192,6 +197,7 @@ public sealed class Plugin : IDalamudPlugin
 
         ModuleWindow = new ModuleWindow(this);
         CollarWindow = new CollarWindow(this, ModuleWindow);
+        SubControlWindow = new SubControlWindow(this, CollarWindow);
         SettingsWindow = new SettingsWindow(this);
         TutorialDriver = new TutorialDriver(this, CollarWindow);
         WelcomeWindow = new WelcomeWindow(this);
@@ -208,6 +214,10 @@ public sealed class Plugin : IDalamudPlugin
         favoritesDtrEntry.Shown = true;
 
         WindowSystem.AddWindow(CollarWindow);
+        // collar/ui-organization "Sub Control window stays docked to the main window": registered
+        // immediately after CollarWindow so its PreDraw reads this frame's (not last frame's) position -
+        // see SubControlWindow's own field declaration above for the full reasoning.
+        WindowSystem.AddWindow(SubControlWindow);
         WindowSystem.AddWindow(ModuleWindow);
         WindowSystem.AddWindow(SettingsWindow);
         WindowSystem.AddWindow(WelcomeWindow);
