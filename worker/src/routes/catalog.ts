@@ -118,20 +118,35 @@ export async function createCatalogRequest(request: Request, env: Env): Promise<
     .bind(envelope.pairIdHash, envelope.pairEpoch)
     .run();
 
+  // The active-request slot is free either when nothing occupies it, or when the request that does has
+  // already passed its own expiry - self-heals a slot an unresponsive Sub left behind without waiting on
+  // the scheduled cleanup (worker/src/scheduled.ts) to get around to clearing it.
   const claim = await env.RELAY_DB.prepare(
     `UPDATE pair_cooldowns SET active_request_id_hash = ?1
-     WHERE pair_id_hash = ?2 AND pair_epoch = ?3 AND active_request_id_hash IS NULL AND (?4 - last_accepted_sync_at) >= ?5`,
+     WHERE pair_id_hash = ?2 AND pair_epoch = ?3 AND (?4 - last_accepted_sync_at) >= ?5
+       AND NOT EXISTS (
+         SELECT 1 FROM catalog_requests
+         WHERE request_id_hash = pair_cooldowns.active_request_id_hash AND expires_at > ?4
+       )`,
   )
     .bind(requestIdHash, envelope.pairIdHash, envelope.pairEpoch, now, CATALOG_COOLDOWN_SECONDS)
     .run();
 
   if ((claim.meta.changes ?? 0) === 0) {
     const cooldownRow = await env.RELAY_DB.prepare(
-      `SELECT last_accepted_sync_at FROM pair_cooldowns WHERE pair_id_hash = ?1 AND pair_epoch = ?2`,
+      `SELECT last_accepted_sync_at, active_request_id_hash FROM pair_cooldowns WHERE pair_id_hash = ?1 AND pair_epoch = ?2`,
     )
       .bind(envelope.pairIdHash, envelope.pairEpoch)
-      .first<{ last_accepted_sync_at: number }>();
-    const remaining = cooldownRow ? CATALOG_COOLDOWN_SECONDS - (now - cooldownRow.last_accepted_sync_at) : CATALOG_COOLDOWN_SECONDS;
+      .first<{ last_accepted_sync_at: number; active_request_id_hash: string | null }>();
+    let remaining = cooldownRow ? CATALOG_COOLDOWN_SECONDS - (now - cooldownRow.last_accepted_sync_at) : CATALOG_COOLDOWN_SECONDS;
+    // Genuinely blocked by an unanswered pending request, not the post-success cooldown: report the wait
+    // until that request's own expiry instead, since it's what actually gates the next successful claim.
+    if (cooldownRow?.active_request_id_hash) {
+      const activeRequest = await env.RELAY_DB.prepare(`SELECT expires_at FROM catalog_requests WHERE request_id_hash = ?1`)
+        .bind(cooldownRow.active_request_id_hash)
+        .first<{ expires_at: number }>();
+      if (activeRequest) remaining = activeRequest.expires_at - now;
+    }
     throw new RelayError("cooldown_active", Math.max(remaining, 1));
   }
 
