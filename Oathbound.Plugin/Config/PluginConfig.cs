@@ -165,9 +165,19 @@ public class DeviceIdentityState
     public string? PublicKeyX { get; set; }
     public string? PublicKeyY { get; set; }
 
-    /// DPAPI-protected (or, if DPAPI throws, deliberately left null and the caller must regenerate) private
-    /// scalar. Never serialized into an export, tell, or log - see DeviceIdentityService.
+    /// DPAPI-protected private scalar, or (only when DPAPI itself was unavailable at write time, e.g. under
+    /// Wine) the plain scalar. Never serialized into an export, tell, or log - see DeviceIdentityService.
     public byte[]? ProtectedPrivateKey { get; set; }
+
+    /// Whether `ProtectedPrivateKey` was actually DPAPI-protected when written - null for an identity
+    /// generated before this field existed (legacy: DeviceIdentityService falls back to its old exception-
+    /// based guess for those). Lets `Unprotect` tell "this was never protected" (skip DPAPI entirely) apart
+    /// from "this was protected but DPAPI now fails to decrypt it" (a genuinely unrecoverable identity -
+    /// wrong Windows profile, rotated DPAPI master key, etc.) instead of conflating both into the same
+    /// caught `CryptographicException` and silently treating undecryptable ciphertext as if it were the
+    /// plaintext scalar - confirmed in-game as the cause of a `BouncyCastle` "Scalar is not in the interval
+    /// [1, n-1]" crash on Accept, since the resulting "scalar" was actually still-encrypted ciphertext bytes.
+    public bool? IsProtected { get; set; }
 
     /// Cached SHA-256 fingerprint of the public key JWK (see RelayCrypto.DeviceKeyId) - recomputed from
     /// PublicKeyX/Y if absent, never trusted as authoritative on its own.

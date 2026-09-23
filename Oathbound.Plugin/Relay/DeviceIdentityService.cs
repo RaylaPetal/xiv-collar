@@ -71,7 +71,7 @@ public sealed class DeviceIdentityService
         if (!identity.HasIdentity)
             throw new InvalidOperationException("No device identity exists yet; call EnsureIdentity() first.");
 
-        var privateD = Unprotect(identity.ProtectedPrivateKey!);
+        var privateD = Unprotect(identity.ProtectedPrivateKey!, identity.IsProtected);
         var publicKeyJwk = new EcPublicKeyJwk { Kty = "EC", Crv = "P-256", X = identity.PublicKeyX!, Y = identity.PublicKeyY! };
         cachedKey = RelayCrypto.ImportSigningPrivateKey(publicKeyJwk, privateD);
         return cachedKey;
@@ -91,9 +91,11 @@ public sealed class DeviceIdentityService
         var publicKeyJwk = RelayCrypto.ExportPublicKeyJwk(key);
         var privateD = RelayCrypto.ExportPrivateD(key);
 
+        var (protectedPrivateKey, wasProtected) = Protect(privateD);
         config.DeviceIdentity.PublicKeyX = publicKeyJwk.X;
         config.DeviceIdentity.PublicKeyY = publicKeyJwk.Y;
-        config.DeviceIdentity.ProtectedPrivateKey = Protect(privateD);
+        config.DeviceIdentity.ProtectedPrivateKey = protectedPrivateKey;
+        config.DeviceIdentity.IsProtected = wasProtected;
         config.DeviceIdentity.DeviceKeyId = RelayCrypto.DeviceKeyId(publicKeyJwk);
         config.Save();
 
@@ -102,12 +104,12 @@ public sealed class DeviceIdentityService
         cachedKey = null;
     }
 
-    private static byte[] Protect(byte[] plaintext)
+    private static (byte[] Data, bool WasProtected) Protect(byte[] plaintext)
     {
-        if (!OperatingSystem.IsWindows()) return plaintext;
+        if (!OperatingSystem.IsWindows()) return (plaintext, false);
         try
         {
-            return ProtectedData.Protect(plaintext, s_entropy, DataProtectionScope.CurrentUser);
+            return (ProtectedData.Protect(plaintext, s_entropy, DataProtectionScope.CurrentUser), true);
         }
         catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException)
         {
@@ -115,23 +117,38 @@ public sealed class DeviceIdentityService
             // unavailable, fall back to storing the plain scalar rather than failing to create an identity
             // at all. See protocol/docs/threat-model.md - this is documented, not a silent weakening.
             Plugin.Log.Warning(ex, "DPAPI protection unavailable; storing the device private key without OS-level protection.");
-            return plaintext;
+            return (plaintext, false);
         }
     }
 
-    private static byte[] Unprotect(byte[] stored)
+    /// `isProtected` is `DeviceIdentityState.IsProtected` - null for an identity generated before that field
+    /// existed, in which case this keeps the old exception-based guess (try DPAPI, treat any
+    /// `CryptographicException` as "was never protected") rather than risk misclassifying a legacy identity
+    /// whose actual history isn't recorded. For a known value, there's no guessing: `false` skips DPAPI
+    /// entirely, and `true` treats a decrypt failure as what it actually is - a genuinely unrecoverable
+    /// identity (wrong Windows profile, rotated DPAPI master key, etc.) - by throwing
+    /// `DeviceIdentityUnavailableException` instead of silently returning the still-encrypted ciphertext as
+    /// if it were the plaintext scalar (which is what produced the confusing BouncyCastle "Scalar is not in
+    /// the interval [1, n-1]" crash this replaces).
+    private static byte[] Unprotect(byte[] stored, bool? isProtected)
     {
-        if (!OperatingSystem.IsWindows()) return stored;
+        if (!OperatingSystem.IsWindows() || isProtected == false) return stored;
         try
         {
             return ProtectedData.Unprotect(stored, s_entropy, DataProtectionScope.CurrentUser);
         }
-        catch (CryptographicException)
+        catch (CryptographicException ex)
         {
-            // Was stored unprotected (Protect() fell back above) - return as-is.
-            return stored;
+            if (isProtected is null) return stored; // Legacy identity, unknown history - old behavior.
+            throw new DeviceIdentityUnavailableException(
+                "This device's identity key could not be unprotected (it may have been written on a different Windows user profile, or the OS-level protection key changed). Reset the device identity in Settings to recover.", ex);
         }
     }
 
     private static readonly byte[] s_entropy = "oathbound-device-identity-v1"u8.ToArray();
 }
+
+/// See DeviceIdentityService.Unprotect - a device identity whose protected private key can no longer be
+/// unprotected is unrecoverable; the only way forward is an explicit reset (Settings), never a silent
+/// regeneration out from under an existing pairing.
+public sealed class DeviceIdentityUnavailableException(string message, Exception inner) : Exception(message, inner);

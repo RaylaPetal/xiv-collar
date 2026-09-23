@@ -283,8 +283,16 @@ public sealed class PairingService
             // collar/pairing "Accepting a pairing request applies a configured collar": a conditional side
             // effect of acceptance itself, not a separate command - only when this device is becoming the
             // Sub-side of the new pairing (collar/collaring only ever applies to this device's own Neck).
+            // Must run on the game's main thread - unlike ChatCommandListener's own synchronous call to this
+            // same method, this call happens after an `await ... ConfigureAwait(false)` above, so by this
+            // point execution has resumed on an arbitrary thread-pool thread. ForceApply -> ApplyAssignedMoodle
+            // -> MoodlesIpc.ApplyStatus touches Dalamud's ObjectTable.LocalPlayer, which throws
+            // "Not on main thread!" off the main thread - confirmed in-game: this exact exception was aborting
+            // the rest of Accept silently (Pending never cleared, the activation poll below never started),
+            // with no feedback to the user beyond a log line, since AcceptPendingAsync is invoked fire-and-
+            // forget from the Accept button.
             if (direction == PairingDirection.SubSide && config.Permissions.Collar && config.Collar.IsConfigured)
-                collar.ForceApply(pairingId);
+                await Plugin.Framework.RunOnFrameworkThread(() => collar.ForceApply(pairingId)).ConfigureAwait(false);
 
             Pending = null;
             PendingChanged?.Invoke();
@@ -373,7 +381,14 @@ public sealed class PairingService
     public async Task HandleAcknowledgementTellAsync(string invitationId, string proofDigestHex, string senderName, string senderWorld, CancellationToken ct)
     {
         if (outgoingInvitation is not { } outgoing || outgoing.InvitationId != invitationId)
-            return; // Not an invitation we created (or already consumed) - ignore, never activate from claims.
+        {
+            // Not an invitation we created (or already consumed) - ignore, never activate from claims. Logged
+            // (not just silently ignored) since this is otherwise indistinguishable from "the ack never
+            // arrived" from the accepter's perspective - e.g. a second `collarinvite` replaced this one
+            // before the peer's ack for the first arrived.
+            Plugin.Log.Information($"Relay acknowledgement tell ignored: invitationId {invitationId} does not match the current outstanding invitation ({outgoingInvitation?.InvitationId ?? "none"}).");
+            return;
+        }
 
         for (var attempt = 0; ; attempt++)
         {
