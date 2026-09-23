@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -6,57 +5,86 @@ using Dalamud.Interface.Utility.Raii;
 
 namespace Oathbound.Plugin.UI;
 
-/// The persistent icon row used to switch between modules (Home/Wardrobe/Gesture/Follow/...) - the
-/// "scalable" navigation surface: a new module is one more entry in the caller's array, not a wider tab
-/// bar or another accordion buried in the window body.
+/// The persistent icon+label grid used to switch between modules (Title/Wardrobe/Gesture/Follow/...) - the
+/// "scalable" navigation surface: a new module is one more entry in the caller's array, not a wider grid or
+/// another accordion buried in the window body. collar/ui-organization "Navigation shows an icon and a
+/// visible label, wrapped into rows" (redesign-nav-and-modules): three buttons per row, wrapping to a new
+/// row past that - replaces the old single-row, icon-only, tooltip-labeled strip. No "active" highlight -
+/// every destination opens its own window or popup now rather than swapping inline content, so there's no
+/// longer a single "current" entry to distinguish from the rest.
 public static class NavBar
 {
-    public static string? Draw(string activeId, string trailingId, params (string Id, FontAwesomeIcon Icon, string Tooltip)[] items)
+    private const int Columns = 3;
+    private const float ButtonHeight = 36f;
+
+    /// The exact height `Draw` will reserve for `itemCount` items, computed from the same live style values
+    /// `Draw` itself uses - callers (`CollarWindow`'s minimum-size calculation) can use this instead of a
+    /// separately-guessed constant that could silently drift out of sync with this file's own layout.
+    public static float RequiredHeight(int itemCount)
+    {
+        var rows = (itemCount + Columns - 1) / Columns;
+        var spacing = ImGui.GetStyle().ItemSpacing;
+        var padding = ImGui.GetStyle().WindowPadding;
+        return rows * ButtonHeight + (rows - 1) * spacing.Y + padding.Y * 2;
+    }
+
+    public static string? Draw(params (string Id, FontAwesomeIcon Icon, string Tooltip)[] items)
     {
         string? clicked = null;
+        // The top/bottom margin inside the card's child region comes from WindowPadding, not ItemSpacing -
+        // using ItemSpacing here under-reserved that margin and clipped the last row's bottom edge.
+        var spacing = ImGui.GetStyle().ItemSpacing;
+        var cardHeight = RequiredHeight(items.Length);
+        using var card = Card.Begin("navBar", new Vector2(0, cardHeight), noScroll: true);
 
-        // 32px buttons + the card's own top/bottom padding need more than 44px - too tight caused a
-        // few-pixel vertical overflow and a sliver of scrollbar inside the nav bar itself. noScroll is
-        // the hard guarantee; the taller size just avoids clipping the buttons.
-        using var card = Card.Begin("navBar", new Vector2(0, 56), noScroll: true);
-        var leading = items.Where(item => item.Id != trailingId).ToArray();
-        for (var i = 0; i < leading.Length; i++)
+        var available = ImGui.GetContentRegionAvail().X;
+        var buttonWidth = (available - spacing.X * (Columns - 1)) / Columns;
+        var buttonSize = new Vector2(buttonWidth, ButtonHeight);
+
+        for (var i = 0; i < items.Length; i++)
         {
-            var itemClicked = DrawItem(activeId, leading[i]);
+            var itemClicked = DrawItem(items[i], buttonSize);
             if (clicked is null && itemClicked is not null)
                 clicked = itemClicked;
-            if (i < leading.Length - 1)
+
+            if (i < items.Length - 1 && (i + 1) % Columns != 0)
                 ImGui.SameLine();
-        }
-
-        var trailing = items.FirstOrDefault(item => item.Id == trailingId);
-        if (!string.IsNullOrEmpty(trailing.Id))
-        {
-            ImGui.SameLine();
-            var rightX = ImGui.GetWindowContentRegionMax().X - 32f;
-            if (rightX > ImGui.GetCursorPosX())
-                ImGui.SetCursorPosX(rightX);
-            var itemClicked = DrawItem(activeId, trailing);
-            if (clicked is null && itemClicked is not null)
-                clicked = itemClicked;
         }
 
         return clicked;
     }
 
-    private static string? DrawItem(string activeId, (string Id, FontAwesomeIcon Icon, string Tooltip) item)
+    /// Composes an icon (icon font) and a label (default font) into one clickable cell: a full-size button
+    /// first for the click target/background/hover styling, then the icon+label drawn on top - all inside
+    /// one `BeginGroup`/`EndGroup` pair, which is what makes Dear ImGui treat the whole composite as a
+    /// single item afterward. Without the group, `SameLine()`/layout for the *next* button ends up anchored
+    /// to whatever the last widget drawn here was (the small label text), not the full button cell - that
+    /// mismatch is what caused every button after the first to drift diagonally off its actual cell.
+    /// IconGlyph's icon+text helpers can't be reused directly here since neither draws a clickable
+    /// background sized to a fixed grid cell in the first place.
+    private static string? DrawItem((string Id, FontAwesomeIcon Icon, string Tooltip) item, Vector2 size)
     {
-        var active = item.Id == activeId;
-        using (ImRaii.PushColor(ImGuiCol.Button, active ? Theme.Accent : Theme.TileBg))
-        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, active ? Theme.AccentHover : Theme.TileBgHover))
+        string? result = null;
+        using (ImRaii.PushColor(ImGuiCol.Button, Theme.TileBg))
+        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, Theme.TileBgHover))
         using (ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, Theme.TileRounding))
         {
-            if (IconGlyph.Button(item.Icon, new Vector2(32, 32)))
-                return item.Id;
+            ImGui.BeginGroup();
+            var start = ImGui.GetCursorPos();
+            if (ImGui.Button($"##{item.Id}", size))
+                result = item.Id;
+
+            ImGui.SetCursorPos(start + new Vector2(8f, size.Y / 2 - 8f));
+            using (ImRaii.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon))
+                ImGui.TextUnformatted(item.Icon.ToIconString());
+            ImGui.SameLine();
+            ImGui.TextUnformatted(item.Tooltip);
+            ImGui.EndGroup();
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(item.Tooltip);
         }
 
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(item.Tooltip);
-        return null;
+        return result;
     }
 }

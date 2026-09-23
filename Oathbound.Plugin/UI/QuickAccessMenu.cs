@@ -162,8 +162,9 @@ public static class QuickAccessMenu
     /// resolved live - see DrawTeleportMenuItem) - collar/ui-organization "Owner can favorite ... built-in
     /// fixed-action row[s]". Grouped under the same category label its `DrawFixedQuickRow` call site lives
     /// under in CollarWindow, so a favorited "Collar lock" appears in the same submenu as any favorited
-    /// Collar QuickCommand.
-    private static readonly (string Id, string Label, string Category, string Command)[] FixedActions =
+    /// Collar QuickCommand. Internal (not private) - FavoritesWindow's own persistent-window rendering
+    /// reuses this same data shaping rather than duplicating it, only drawing it differently.
+    internal static readonly (string Id, string Label, string Category, string Command)[] FixedActions =
     [
         (FixedActionIds.CollarLock, "Collar lock", "Collar", "collar lock"),
         (FixedActionIds.CollarUnlock, "Collar unlock", "Collar", "collar unlock"),
@@ -175,7 +176,7 @@ public static class QuickAccessMenu
         (FixedActionIds.UnleashDefault, "Unleash (default)", "Follow", "unleash"),
     ];
 
-    private static List<(string Label, List<QuickCommand> Favorites)> CategorizedFavorites(OwnerQuickCommands quick)
+    internal static List<(string Label, List<QuickCommand> Favorites)> CategorizedFavorites(OwnerQuickCommands quick)
     {
         (string Label, List<QuickCommand> List)[] categories =
         [

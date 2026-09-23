@@ -1,0 +1,110 @@
+using System;
+using Oathbound.Plugin.Commands;
+using Oathbound.Plugin.Config;
+using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.ImGuiNotification;
+using Dalamud.Interface.Utility.Raii;
+using Dalamud.Interface.Windowing;
+using System.Numerics;
+
+namespace Oathbound.Plugin.UI;
+
+/// collar/ui-organization "Favorites destination reuses the existing favorites menu" (redesign-nav-and-
+/// modules), reworked: the main window's Favorites nav entry opens this dedicated, persistent window
+/// instead of QuickAccessMenu's popup. QuickAccessMenu's own "Open main window"/"Open settings" fallback
+/// links exist for its original callers (the floating on-screen button and the DTR bar entry, both useful
+/// even when the main window is closed) - from a nav entry already inside the main window, those links are
+/// meaningless, and for a Sub (who has no favorites concept at all - see QuickAccessMenu's own comment on
+/// why) they were the *only* thing that popup ever showed, which read as broken rather than empty. Reuses
+/// QuickAccessMenu's category-building data logic (CategorizedFavorites/FixedActions) so the two surfaces
+/// can't drift apart on what counts as "favorited"; only the rendering differs (persistent Send rows here,
+/// a popup menu there).
+public sealed class FavoritesWindow : Window, IDisposable
+{
+    private readonly Plugin plugin;
+
+    public FavoritesWindow(Plugin plugin) : base("Favorites###CollarFavoritesWindow")
+    {
+        this.plugin = plugin;
+        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(360, 240), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
+    }
+
+    public void Dispose() { }
+
+    public override void Draw()
+    {
+        var isOwnerMode = plugin.Configuration.ResolveActiveDirection() == PairingDirection.OwnerSide;
+        if (!isOwnerMode)
+        {
+            IconGlyph.WrappedDisabled("Favorited commands are an Owner-side concept - favorite one from any module's Quick section while paired as Owner to see it here.");
+            return;
+        }
+
+        var canSend = plugin.Configuration.ActivePairing is { Direction: PairingDirection.OwnerSide };
+        var favoritesByCategory = QuickAccessMenu.CategorizedFavorites(plugin.Configuration.QuickCommands);
+        var teleportFavorited = plugin.Configuration.QuickCommands.FavoriteFixedActions.Contains(FixedActionIds.Teleport);
+
+        if (favoritesByCategory.Count == 0 && !teleportFavorited)
+        {
+            IconGlyph.WrappedDisabled("Nothing favorited yet - favorite a command from any module's Quick section to see it here.");
+            return;
+        }
+
+        if (!canSend)
+            IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until an Owner-side pairing is active.");
+
+        foreach (var (label, favorites) in favoritesByCategory)
+        {
+            if (!ImGui.CollapsingHeader($"{label} ({favorites.Count})###favCategory_{label}", ImGuiTreeNodeFlags.DefaultOpen))
+                continue;
+
+            ImGui.Indent();
+            foreach (var cmd in favorites)
+                DrawFavoriteRow(cmd, canSend);
+            ImGui.Unindent();
+        }
+
+        if (teleportFavorited)
+            DrawTeleportRow(canSend);
+    }
+
+    private void DrawFavoriteRow(QuickCommand cmd, bool canSend)
+    {
+        var composed = plugin.ChatComposer.Compose(cmd.Command);
+        var fits = CommandSelector.Fits(composed);
+        using (ImRaii.Disabled(!canSend || !fits))
+        {
+            if (ImGui.SmallButton($"Send##fav_{cmd.Label}_{cmd.Command}"))
+                plugin.ChatSender.Send(composed);
+        }
+        ImGui.SameLine();
+        ImGui.TextUnformatted(cmd.Label);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+    }
+
+    /// Teleport can't join the regular favorite rows above - it has no static command text, resolved live
+    /// via `TeleportSendAction` instead, matching `QuickAccessMenu.DrawTeleportMenuItem`'s exact reasoning.
+    private void DrawTeleportRow(bool canSend)
+    {
+        using (ImRaii.Disabled(!canSend))
+        {
+            if (ImGui.SmallButton("Send##favTeleport"))
+            {
+                var (success, error) = TeleportSendAction.TryResolveAndSend(plugin);
+                if (!success)
+                    Plugin.NotificationManager.AddNotification(new Notification
+                    {
+                        Title = "Oathbound",
+                        Content = error ?? "Teleport failed.",
+                        Type = NotificationType.Warning,
+                        InitialDuration = TimeSpan.FromSeconds(5),
+                    });
+            }
+        }
+        ImGui.SameLine();
+        ImGui.TextUnformatted("Teleport");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(canSend ? "Teleport your paired Sub to your current position." : "No /tell target yet - pairing hasn't captured your Sub's name.");
+    }
+}

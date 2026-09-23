@@ -64,11 +64,13 @@ public sealed class Plugin : IDalamudPlugin
     /// same "shared, drawn every frame from the UiBuilder.Draw hook" shape WindowSystem already has.
     public readonly FileDialogManager FileDialogManager = new();
     private CollarWindow CollarWindow { get; }
+    public ModuleWindow ModuleWindow { get; }
     private SettingsWindow SettingsWindow { get; }
     private WelcomeWindow WelcomeWindow { get; }
     public AnimationPickerWindow AnimationPickerWindow { get; }
     public CustomizePresetPickerWindow CustomizePresetPickerWindow { get; }
     public ItemPickerWindow ItemPickerWindow { get; }
+    public FavoritesWindow FavoritesWindow { get; }
     public FavoritesBarButton FavoritesBarButton { get; }
 
     /// collar/ui-organization "A server info bar entry always opens the quick-access menu": the
@@ -188,13 +190,15 @@ public sealed class Plugin : IDalamudPlugin
 
         PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, ToyControlCommand, RuntimeState, CollarCommand);
 
-        CollarWindow = new CollarWindow(this);
+        ModuleWindow = new ModuleWindow(this);
+        CollarWindow = new CollarWindow(this, ModuleWindow);
         SettingsWindow = new SettingsWindow(this);
         TutorialDriver = new TutorialDriver(this, CollarWindow);
         WelcomeWindow = new WelcomeWindow(this);
         AnimationPickerWindow = new AnimationPickerWindow(this);
         CustomizePresetPickerWindow = new CustomizePresetPickerWindow(this);
         ItemPickerWindow = new ItemPickerWindow(this);
+        FavoritesWindow = new FavoritesWindow(this);
         FavoritesBarButton = new FavoritesBarButton(this);
 
         favoritesDtrEntry = DtrBar.Get("Oathbound Quick Access");
@@ -204,11 +208,13 @@ public sealed class Plugin : IDalamudPlugin
         favoritesDtrEntry.Shown = true;
 
         WindowSystem.AddWindow(CollarWindow);
+        WindowSystem.AddWindow(ModuleWindow);
         WindowSystem.AddWindow(SettingsWindow);
         WindowSystem.AddWindow(WelcomeWindow);
         WindowSystem.AddWindow(AnimationPickerWindow);
         WindowSystem.AddWindow(CustomizePresetPickerWindow);
         WindowSystem.AddWindow(ItemPickerWindow);
+        WindowSystem.AddWindow(FavoritesWindow);
         WindowSystem.AddWindow(FavoritesBarButton);
 
         // collar/onboarding "Welcome window appears once on first plugin load": shown before CollarWindow
