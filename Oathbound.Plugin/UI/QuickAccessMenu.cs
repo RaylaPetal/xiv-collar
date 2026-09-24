@@ -131,11 +131,6 @@ public static class QuickAccessMenu
             }
             else
             {
-                // collar/attached-moodles: the pick is made in the Favorites window; shown here so a send
-                // from this menu never carries a moodle the Owner can't see.
-                if (OwnerMoodleOverride.FavoritesPick is { } moodlePick)
-                    ImGui.TextDisabled($"Moodle: {moodlePick} (change in Favorites window)");
-
                 foreach (var (label, favorites) in favoritesByCategory)
                 {
                     if (!ImGui.BeginMenu($"{label} ({favorites.Count})"))
@@ -242,7 +237,7 @@ public static class QuickAccessMenu
 
     private static void DrawFavoriteMenuItem(Plugin plugin, QuickCommand cmd, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(cmd.Command, OwnerMoodleOverride.FavoritesPick));
+        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd));
         var fits = CommandSelector.Fits(composed);
         using (ImRaii.Disabled(!canSend || !fits))
         {

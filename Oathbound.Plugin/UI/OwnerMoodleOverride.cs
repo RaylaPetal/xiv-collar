@@ -16,10 +16,16 @@ public static class OwnerMoodleOverride
 {
     private const string MoodleApplyPrefix = "moodle apply ";
 
-    /// The pick shared by the two favorites surfaces: set in the persistent FavoritesWindow, and reused
-    /// read-only by the QuickAccessMenu popup (which deliberately stays combo-free - see its own doc comment
-    /// on keeping popup calls minimal). Session-only, like every other override pick.
-    public static string? FavoritesPick;
+    /// The text actually sent for a command: its own moodle pick when it has one, the saved leash pick for
+    /// the fixed `leash` command, otherwise the command unchanged. Every Owner send surface (module tabs, Sub
+    /// Control, Favorites, the quick-access menu) goes through this, so a moodle always travels with the
+    /// one command it was picked for - never a tab- or window-wide setting.
+    public static string ForSend(PluginConfig config, string command, string? commandMoodle) =>
+        Apply(command, commandMoodle ?? (command.Trim().Equals(ControlWords.Leash, StringComparison.OrdinalIgnoreCase)
+            ? config.QuickCommands.LeashMoodleOverride
+            : null));
+
+    public static string ForSend(PluginConfig config, QuickCommand cmd) => ForSend(config, cmd.Command, cmd.MoodleOverride);
 
     public static IReadOnlyList<(string Label, string Selector)> Choices(PluginConfig config) =>
         config.QuickCommands.Moodles
@@ -68,6 +74,6 @@ public static class OwnerMoodleOverride
             }
             ImGui.EndCombo();
         }
-        IconGlyph.HelpMarker("Which moodle goes on your Sub along with outfit lock / restraints / leash sent from here. \"Sub's default\" uses whatever your Sub attached themselves. A different pick only applies if your Sub has Moodles permission on, and needs your Sub on a plugin version that understands it - older versions ignore the whole command.");
+        IconGlyph.HelpMarker("Which moodle goes on your Sub along with this command. \"Sub's default\" uses whatever your Sub attached themselves. A different pick only applies if your Sub has Moodles permission on, and needs your Sub on a plugin version that understands it - older versions ignore the whole command.");
     }
 }

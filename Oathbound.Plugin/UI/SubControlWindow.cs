@@ -26,7 +26,6 @@ public sealed class SubControlWindow : Window, IDisposable
 
     private string animationSearch = "";
     private string restraintsSearch = "";
-    private string? moodleOverride;
 
     public SubControlWindow(Plugin plugin, CollarWindow collarWindow) : base("Sub Control###CollarSubControlWindow")
     {
@@ -46,8 +45,6 @@ public sealed class SubControlWindow : Window, IDisposable
     /// check happens once per window per frame, ahead of `PreDraw`, so setting `IsOpen = false` here takes
     /// effect starting next frame rather than retroactively skipping this one; an accepted, imperceptible
     /// one-frame trade-off (see design.md's Risks) for not needing a separately-registered close hook.
-    public override void PostDraw() => Theme.PopWindowStyle();
-
     public override void PreDraw()
     {
         Theme.PushWindowStyle();
@@ -59,6 +56,8 @@ public sealed class SubControlWindow : Window, IDisposable
 
         ImGui.SetNextWindowPos(collarWindow.LastPosition + new Vector2(collarWindow.LastSize.X, 0f), ImGuiCond.Always);
     }
+
+    public override void PostDraw() => Theme.PopWindowStyle();
 
     public override void Draw()
     {
@@ -72,9 +71,6 @@ public sealed class SubControlWindow : Window, IDisposable
         var canSend = plugin.Configuration.ActivePairing is { Direction: PairingDirection.OwnerSide };
         if (!canSend)
             IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - every Send below is disabled until an Owner-side pairing is active.");
-
-        // collar/attached-moodles: one pick for every outfit lock / restraint / leash sent from this window.
-        OwnerMoodleOverride.Draw("subControl", plugin.Configuration, ref moodleOverride);
 
         var categorized = QuickAccessMenu.CategorizedAll(plugin.Configuration.QuickCommands);
         foreach (var (label, commands) in categorized)
@@ -114,7 +110,7 @@ public sealed class SubControlWindow : Window, IDisposable
 
         ImGui.Indent();
         foreach (var cmd in commands)
-            DrawSendRow(displayLabel?.Invoke(cmd.Label) ?? cmd.Label, cmd.Command, canSend);
+            DrawSendRow(displayLabel?.Invoke(cmd.Label) ?? cmd.Label, OwnerMoodleOverride.ForSend(plugin.Configuration, cmd), canSend);
         ImGui.Unindent();
     }
 
@@ -140,7 +136,7 @@ public sealed class SubControlWindow : Window, IDisposable
         if (visible.Count == 0)
             IconGlyph.WrappedDisabled("No commands match this search.");
         foreach (var cmd in visible)
-            DrawSendRow(cmd.Label, cmd.Command, canSend);
+            DrawSendRow(cmd.Label, OwnerMoodleOverride.ForSend(plugin.Configuration, cmd), canSend);
         ImGui.Unindent();
     }
 
@@ -215,7 +211,7 @@ public sealed class SubControlWindow : Window, IDisposable
 
     private void DrawSendRow(string label, string command, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(command, moodleOverride));
+        var composed = plugin.ChatComposer.Compose(command);
         var fits = CommandSelector.Fits(composed);
         using (ImRaii.Disabled(!canSend || !fits))
         {

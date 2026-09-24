@@ -652,7 +652,7 @@ public sealed class RestraintCommand
     /// or from rules alone with no gear at all. Undyed (stain 0/0) - no dye picker in this flow yet
     /// (design.md's Non-Goals). Never touches live Glamourer state; the item does not need to be currently
     /// equipped or owned. Refuses to save a device with neither gear nor a rule - it would do nothing.
-    public bool CaptureDeviceFromItem(ApiEquipSlot? slot, ulong? itemId, string name, List<RestraintRuleAssignment> rules)
+    public bool CaptureDeviceFromItem(ApiEquipSlot? slot, ulong? itemId, string name, List<RestraintRuleAssignment> rules, AttachedMoodleRef? attachedMoodle = null)
     {
         if (slot is null && itemId is null && rules.Count == 0)
             return false;
@@ -665,6 +665,7 @@ public sealed class RestraintCommand
             Stain2 = 0,
             Name = name,
             Rules = rules,
+            AttachedMoodle = attachedMoodle,
         };
         config.RestraintMapping.Devices[device.Id] = device;
         config.Save();

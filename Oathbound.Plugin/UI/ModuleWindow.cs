@@ -51,13 +51,11 @@ public sealed class ModuleWindow : Window, IDisposable
     private int newOutfitDesignIndex;
     private AttachedMoodleRef? newOutfitMoodle;
 
-    /// collar/attached-moodles: the Owner's per-section moodle override picks (null = Sub's default), and the
-    /// one in effect while a section is drawing - read by DrawSendCopyButtons/DrawSendOnly, which append it
-    /// only to commands that accept it (OwnerMoodleOverride.Accepts).
-    private string? outfitMoodleOverride;
-    private string? restraintMoodleOverride;
-    private string? leashMoodleOverride;
-    private string? sendMoodleOverride;
+    /// collar/attached-moodles: the Owner's moodle pick for the direct slot/item restraint being built (null =
+    /// no moodle - an ad-hoc device has no Sub-side default). Saved per-command picks live on QuickCommand.
+    private string? adHocMoodleOverride;
+    /// The saved-command editor's moodle pick while editing an outfit command.
+    private string? editingQuickMoodle;
     private bool newOutfitLocked = true;
     private int? selectedOutfitIndex;
 
@@ -109,7 +107,7 @@ public sealed class ModuleWindow : Window, IDisposable
     private QuickCommand? editingOwnerBundle;
 
     private string newDeviceName = "";
-    private string? newDeviceModCatalogId;
+    private AttachedMoodleRef? newDeviceMoodle;
     private ApiEquipSlot? newDeviceSlot;
     private ulong? newDeviceItemId;
     private readonly RestraintRuleEditState newDeviceRuleEdit = new();
@@ -122,9 +120,6 @@ public sealed class ModuleWindow : Window, IDisposable
     /// Owner-side ad-hoc device draft (collar/restraints "Owner-authored ad-hoc restraint device") - an
     /// optional mod-filtered slot+item picked directly, with no Sub-side captured device to reference by
     /// name. Gear is optional - a rules-only ad-hoc device leaves the mod/slot/item unset.
-    private string? newAdHocModCatalogId;
-    private ApiEquipSlot? newAdHocSlot;
-    private ulong? newAdHocItemId;
     private string newAdHocLabel = "";
     private readonly RestraintRuleEditState newAdHocRuleEdit = new();
 
@@ -944,10 +939,14 @@ public sealed class ModuleWindow : Window, IDisposable
 
         DrawSubModRestraints(config);
 
+        // Rules-only restraints: a named set of restriction rules (forced pose, walk-only, gagged...) with no
+        // gear of its own - gear-carrying restraints come from the shared Penumbra mods above. Devices captured
+        // with gear by older versions still work and keep their gear when edited here (the draft carries the
+        // device's existing slot/item through untouched); there's just no way to pick new gear.
         var devices = config.RestraintMapping.Devices.Values.ToList();
         if (devices.Count > 0)
         {
-            var selectedBox = Section.Begin("capturedDevices", "Captured slot / item devices");
+            var selectedBox = Section.Begin("capturedDevices", "Rules-only restraints");
             var selDeviceIndex = selectedDeviceId is { } selId ? devices.FindIndex(d => d.Id == selId) : -1;
             var indexHolder = selDeviceIndex < 0 ? (int?)null : selDeviceIndex;
             var labels = devices.Select(d => $"{d.Name}{(plugin.RestraintCommand.IsActive(d.Id) ? "  • Active" : "")}").ToArray();
@@ -956,26 +955,16 @@ public sealed class ModuleWindow : Window, IDisposable
             selectedDeviceId = device.Id;
 
             ImGui.PushID($"device_{device.Id}");
-            Section.SubHeading("Details");
-            var ruleSummary = string.Join(" · ", device.Rules.Select(CommandPresentation.Rule));
-            var gearSummary = device.ItemId is { } deviceItemId ? $"{device.Slot} · {GetItemName(deviceItemId)}" : "No gear - rules only";
-            IconGlyph.WrappedDisabled($"Gear: {gearSummary}");
-            IconGlyph.WrappedDisabled($"Rules: {ruleSummary}");
+            IconGlyph.WrappedDisabled($"Rules: {string.Join(" · ", device.Rules.Select(CommandPresentation.Rule))}");
+            if (device.ItemId is { } deviceItemId)
+                IconGlyph.WrappedDisabled($"Gear (from an older version): {device.Slot} · {GetItemName(deviceItemId)}");
+            IconGlyph.WrappedDisabled($"Moodle: {(device.AttachedMoodle is { } m ? MoodlesTextFormat.StripMarkup(m.StatusName) : "none")}");
             var staleAnimation = device.Rules.Any(r =>
                 r.Kind is RestraintRuleKind.ArmsCuffed or RestraintRuleKind.LegsCuffed or RestraintRuleKind.FullBodyCuffed
                 && (string.IsNullOrWhiteSpace(r.AnimationId) || !config.GestureMapping.LocalCatalog.ContainsKey(r.AnimationId)));
             if (staleAnimation)
                 IconGlyph.WrappedColored(Theme.Warning, "A cuff animation is stale. Choose Edit and select the animation again before using this restraint.");
 
-            Section.SubHeading("Attached moodle");
-            if (DrawAttachedMoodlePicker($"device_{device.Id}", device.AttachedMoodle, config, out var deviceMoodle))
-            {
-                device.AttachedMoodle = deviceMoodle;
-                config.Save();
-            }
-
-            ImGui.Spacing();
-            ImGui.Separator();
             if (ImGui.SmallButton("Edit"))
                 LoadDeviceDraft(device);
             ImGui.SameLine();
@@ -988,59 +977,12 @@ public sealed class ModuleWindow : Window, IDisposable
             selectedBox.Dispose();
         }
 
-        var formBox = Section.Begin("deviceForm", editingDeviceId is null ? "Capture a new slot / item device" : "Edit captured device");
-        Section.SubHeading("Name");
+        var formBox = Section.Begin("deviceForm", editingDeviceId is null ? "New rules-only restraint" : "Edit rules-only restraint");
         ImGui.InputText("Alias##newDevice", ref newDeviceName, 32);
         IconGlyph.HelpMarker("The word your Owner uses for this restraint. For example, with an alias of \"armcuffs\": sending \"armcuffs\" toggles it on/off, and \"restraint lock armcuffs\" force-applies it.");
         DrawReservedWordWarning(newDeviceName);
-
-        Section.SubHeading("Gear (optional)");
-        IconGlyph.WrappedDisabled("A device can be pure rules (forced pose, walk-only, etc.) with no equipment change at all.");
-        var mods = config.RestraintMapping.LocalCatalog.Values.OrderBy(m => m.ModName).ToList();
-        var modLabel = newDeviceModCatalogId is { } modId && config.RestraintMapping.LocalCatalog.TryGetValue(modId, out var chosenMod) ? chosenMod.ModName : "(none - rules only)";
-        ImGui.TextUnformatted($"Mod: {modLabel}");
-        ImGui.SameLine();
-        using (ImRaii.Disabled(mods.Count == 0))
-        if (ImGui.SmallButton("Choose mod...##newDevice"))
-            ImGui.OpenPopup("newDeviceModPopup");
-        if (ImGui.BeginPopup("newDeviceModPopup"))
-        {
-            if (ImGui.Selectable("(none - rules only)"))
-            {
-                newDeviceModCatalogId = null;
-                newDeviceSlot = null;
-                newDeviceItemId = null;
-            }
-            foreach (var mod in mods)
-            {
-                if (ImGui.Selectable(mod.ModName))
-                {
-                    newDeviceModCatalogId = mod.Id;
-                    newDeviceSlot = null;
-                    newDeviceItemId = null;
-                }
-            }
-            ImGui.EndPopup();
-        }
-        if (mods.Count == 0)
-            IconGlyph.WrappedDisabled("No detected mods yet - scan them above, or leave this a rules-only device.");
-
-        var newDeviceChosenLabel = newDeviceItemId is { } id ? GetItemName(id) : "(none chosen)";
-        ImGui.TextUnformatted($"Item: {newDeviceChosenLabel}");
-        ImGui.SameLine();
-        using (ImRaii.Disabled(newDeviceModCatalogId is null))
-        if (ImGui.SmallButton("Choose item...##newDevice") && newDeviceModCatalogId is { } catalogId
-            && config.RestraintMapping.LocalCatalog.TryGetValue(catalogId, out var pickerMod))
-        {
-            plugin.ItemPickerWindow.OpenForItemIds(pickerMod.ModName, pickerMod.ChangedItemIds.ToHashSet(), (chosenId, _) =>
-            {
-                newDeviceItemId = chosenId;
-                newDeviceSlot = GlamourerIpc.GetItemSlot((uint)chosenId);
-            });
-        }
-        IconGlyph.HelpMarker("Pick from the items the chosen mod actually changes - there's no way to guess which item needs to be glamoured otherwise.");
-        if (newDeviceModCatalogId is not null && newDeviceItemId is not null && newDeviceSlot is null)
-            IconGlyph.WrappedColored(Theme.Warning, "That item isn't valid for any lockable equipment slot - choose a different one.");
+        if (DrawAttachedMoodlePicker("newDevice", newDeviceMoodle, config, out var pickedDeviceMoodle, width: null))
+            newDeviceMoodle = pickedDeviceMoodle;
 
         Section.SubHeading("Restrictions");
         DrawRestraintRuleCheckboxes(newDeviceRuleEdit, "newDevice", allowCustomizePreset: true);
@@ -1048,7 +990,7 @@ public sealed class ModuleWindow : Window, IDisposable
         var hasAnyRule = HasAnyRule(newDeviceRuleEdit);
         var boundAnimationsConfigured = BoundAnimationsConfigured(newDeviceRuleEdit);
         if (hasAnyRule && !boundAnimationsConfigured)
-            IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before capturing.");
+            IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before saving.");
 
         var duplicateDeviceName = devices.Any(d => d.Id != editingDeviceId &&
             string.Equals(d.Name, newDeviceName.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -1059,17 +1001,17 @@ public sealed class ModuleWindow : Window, IDisposable
             IconGlyph.WrappedColored(Theme.Warning, "Another restraint already uses this alias.");
         if (!safeDeviceCommand)
             IconGlyph.WrappedColored(Theme.Warning, "This restraint name and rule set are too long for a safe command.");
-        var gearIncomplete = newDeviceModCatalogId is not null && (newDeviceItemId is null || newDeviceSlot is null);
         ImGui.Spacing();
         ImGui.Separator();
-        using (ImRaii.Disabled(newDeviceName.Trim().Length == 0 || IsReserved(newDeviceName) || !hasAnyRule || !boundAnimationsConfigured || duplicateDeviceName || !safeDeviceCommand || gearIncomplete))
+        using (ImRaii.Disabled(newDeviceName.Trim().Length == 0 || IsReserved(newDeviceName) || !hasAnyRule || !boundAnimationsConfigured || duplicateDeviceName || !safeDeviceCommand))
         {
-            if (ImGui.Button(editingDeviceId is null ? "Capture device" : "Save device"))
+            if (ImGui.Button(editingDeviceId is null ? "Add restraint" : "Save restraint"))
             {
                 var rules = ToRules(newDeviceRuleEdit);
 
+                // New ones never carry gear; an edited older device keeps whatever gear it already had.
                 var saved = editingDeviceId is null
-                    ? plugin.RestraintCommand.CaptureDeviceFromItem(newDeviceSlot, newDeviceItemId, newDeviceName, rules)
+                    ? plugin.RestraintCommand.CaptureDeviceFromItem(null, null, newDeviceName, rules, newDeviceMoodle)
                     : SaveDeviceDraft(newDeviceSlot, newDeviceItemId, rules);
                 if (saved)
                 {
@@ -1905,7 +1847,7 @@ public sealed class ModuleWindow : Window, IDisposable
     {
         editingDeviceId = device.Id;
         newDeviceName = device.Name;
-        newDeviceModCatalogId = null;
+        newDeviceMoodle = device.AttachedMoodle;
         newDeviceSlot = device.Slot;
         newDeviceItemId = device.ItemId;
         CopyRuleEdit(FromRules(device.Rules), newDeviceRuleEdit);
@@ -1921,6 +1863,7 @@ public sealed class ModuleWindow : Window, IDisposable
         device.Slot = slot;
         device.ItemId = itemId;
         device.Rules = rules;
+        device.AttachedMoodle = newDeviceMoodle;
         plugin.Configuration.Save();
         Plugin.Log.Debug($"Edited restraint device '{oldName}' while preserving id {id}.");
         return true;
@@ -1930,7 +1873,7 @@ public sealed class ModuleWindow : Window, IDisposable
     {
         editingDeviceId = null;
         newDeviceName = "";
-        newDeviceModCatalogId = null;
+        newDeviceMoodle = null;
         newDeviceSlot = null;
         newDeviceItemId = null;
         CopyRuleEdit(new RestraintRuleEditState(), newDeviceRuleEdit);
@@ -2281,9 +2224,7 @@ public sealed class ModuleWindow : Window, IDisposable
     /// restraint at the bottom. The former free-text legacy device-name creator is intentionally absent.
     private void DrawRestraintQuickSection(bool canSend)
     {
-        sendMoodleOverride = restraintMoodleOverride;
-        try { DrawRestraintQuickSectionBody(canSend); }
-        finally { sendMoodleOverride = null; }
+        DrawRestraintQuickSectionBody(canSend);
     }
 
     private void DrawRestraintQuickSectionBody(bool canSend)
@@ -2302,8 +2243,6 @@ public sealed class ModuleWindow : Window, IDisposable
 
         using (Section.Begin("restraintQuickCommands", "Commands"))
         {
-            OwnerMoodleOverride.Draw("restraint", plugin.Configuration, ref restraintMoodleOverride);
-            sendMoodleOverride = restraintMoodleOverride;
             DrawFixedQuickRow("Restraint unlock", "restraint unlock", canSend, FixedActionIds.RestraintUnlock);
             IconGlyph.HelpMarker("Force-releases every active restraint device and clears the force-lock, the same as your Sub's panic would for restraints specifically.");
         }
@@ -2355,67 +2294,24 @@ public sealed class ModuleWindow : Window, IDisposable
             }
         }
 
-        using (Section.Begin("restraintQuickAdHoc", "Direct slot / item restraint"))
+        using (Section.Begin("restraintQuickAdHoc", "Rules-only restraint"))
             DrawAdHocRestraintSection(canSend);
     }
 
-    /// collar/restraints "Owner-authored ad-hoc restraint device": lets the Owner pick a slot and item
-    /// directly via `ItemPickerWindow` and assign rules, with no Sub-side captured device to reference by
-    /// name. Sends via the `restraint wear` grammar (RestraintCommand.BuildWearCommand) rather than being
-    /// added to the name-based `quick` list, since its full definition already travels in the command text.
+    /// collar/restraints "Owner-authored ad-hoc restraint device", now rules-only: a one-off set of
+    /// restriction rules sent with no gear (`restraint wear - - "<label>" rules:...`, RestraintCommand.
+    /// BuildWearCommand) rather than being added to the name-based `quick` list, since its full definition
+    /// travels in the command text. Gear-carrying restraints come from the Sub's shared mods above.
     private void DrawAdHocRestraintSection(bool canSend)
     {
-        IconGlyph.WrappedDisabled("Optional advanced control: gear is optional here too - send pure rules (forced pose, walk-only, etc.), or pick an item from one of your Sub's detected mods first.");
-
-        var mods = plugin.Configuration.RestraintMapping.ImportedPeerCatalog.Values.OrderBy(m => m.ModName).ToList();
-        var modLabel = newAdHocModCatalogId is { } modId && plugin.Configuration.RestraintMapping.ImportedPeerCatalog.TryGetValue(modId, out var chosenMod) ? chosenMod.ModName : "(none - rules only)";
-        ImGui.TextUnformatted($"Mod: {modLabel}");
-        ImGui.SameLine();
-        using (ImRaii.Disabled(mods.Count == 0))
-        if (ImGui.SmallButton("Choose mod...##adHocRestraint"))
-            ImGui.OpenPopup("adHocRestraintModPopup");
-        if (ImGui.BeginPopup("adHocRestraintModPopup"))
-        {
-            if (ImGui.Selectable("(none - rules only)"))
-            {
-                newAdHocModCatalogId = null;
-                newAdHocSlot = null;
-                newAdHocItemId = null;
-            }
-            foreach (var mod in mods)
-            {
-                if (ImGui.Selectable(mod.ModName))
-                {
-                    newAdHocModCatalogId = mod.Id;
-                    newAdHocSlot = null;
-                    newAdHocItemId = null;
-                }
-            }
-            ImGui.EndPopup();
-        }
-        if (mods.Count == 0)
-            IconGlyph.WrappedDisabled("Your Sub hasn't shared any detected mods yet - leave this a rules-only device.");
-
-        var chosenLabel = newAdHocItemId is { } id ? GetItemName(id) : "(none chosen)";
-        ImGui.TextUnformatted($"Item: {chosenLabel}");
-        ImGui.SameLine();
-        using (ImRaii.Disabled(newAdHocModCatalogId is null))
-        if (ImGui.SmallButton("Choose item...##adHocRestraint") && newAdHocModCatalogId is { } catalogId
-            && plugin.Configuration.RestraintMapping.ImportedPeerCatalog.TryGetValue(catalogId, out var pickerMod))
-        {
-            plugin.ItemPickerWindow.OpenForItemIds(pickerMod.ModName, pickerMod.ChangedItemIds.ToHashSet(), (chosenId, _) =>
-            {
-                newAdHocItemId = chosenId;
-                newAdHocSlot = GlamourerIpc.GetItemSlot((uint)chosenId);
-            });
-        }
-        if (newAdHocModCatalogId is not null && newAdHocItemId is not null && newAdHocSlot is null)
-            IconGlyph.WrappedColored(Theme.Warning, "That item isn't valid for any lockable equipment slot - choose a different one.");
+        IconGlyph.WrappedDisabled("Send restriction rules on their own (forced pose, walk-only, gagged...) with no gear - gear comes from your Sub's shared restraint mods above.");
 
         ImGui.SetNextItemWidth(220);
         ImGui.InputText("Label##adHocRestraint", ref newAdHocLabel, 32);
-        IconGlyph.HelpMarker("Your own reference name for this device - never matched against anything on your Sub's side.");
+        IconGlyph.HelpMarker("Your own reference name for this restraint - never matched against anything on your Sub's side.");
+        OwnerMoodleOverride.Draw("adHocRestraint", plugin.Configuration, ref adHocMoodleOverride);
 
+        Section.SubHeading("Restrictions");
         DrawRestraintRuleCheckboxes(newAdHocRuleEdit, "adHocRestraint");
 
         var hasAnyRule = HasAnyRule(newAdHocRuleEdit);
@@ -2423,18 +2319,18 @@ public sealed class ModuleWindow : Window, IDisposable
         if (hasAnyRule && !boundAnimationsConfigured)
             IconGlyph.WrappedColored(Theme.Warning, "Choose an animation for every checked Arms/Legs/Full Body Cuffed rule before sending.");
 
-        var gearIncomplete = newAdHocModCatalogId is not null && (newAdHocItemId is null || newAdHocSlot is null);
-        var ready = !gearIncomplete && newAdHocLabel.Trim().Length > 0 && hasAnyRule && boundAnimationsConfigured;
-        if (ready)
+        ImGui.Spacing();
+        ImGui.Separator();
+        if (newAdHocLabel.Trim().Length > 0 && hasAnyRule && boundAnimationsConfigured)
         {
-            var command = RestraintCommand.BuildWearCommand(newAdHocSlot, newAdHocItemId, newAdHocLabel.Trim(), ToRules(newAdHocRuleEdit));
-            ImGui.TextUnformatted("Send this ad-hoc device:");
+            var command = RestraintCommand.BuildWearCommand(null, null, newAdHocLabel.Trim(), ToRules(newAdHocRuleEdit));
+            ImGui.TextUnformatted("Send this restraint:");
             ContinueRowOrWrap(ButtonWidth("Send"));
-            DrawSendCopyButtons(command, canSend, "adHocRestraint");
+            DrawSendCopyButtons(OwnerMoodleOverride.Apply(command, adHocMoodleOverride), canSend, "adHocRestraint");
         }
         else
         {
-            IconGlyph.WrappedColored(Theme.Warning, "Choose a label and at least one rule before this can be sent (gear is optional).");
+            IconGlyph.WrappedColored(Theme.Warning, "Choose a label and at least one rule before this can be sent.");
         }
     }
 
@@ -2668,7 +2564,7 @@ public sealed class ModuleWindow : Window, IDisposable
 
         ImGui.Indent();
         using (ImRaii.Disabled(!hasRules || !hasEquipment || !catalogAvailable))
-            DrawSendOnly(cmd.Command, canSend, $"enable_{cmd.Label}", "Enable & lock");
+            DrawSendOnly(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd), canSend, $"enable_{cmd.Label}", "Enable & lock");
         var configureLabel = hasRules && hasEquipment ? "Edit setup" : "Configure setup";
         ContinueRowOrWrap(ButtonWidth(configureLabel));
         var expanded = expandedRestraintRuleEditors.Contains(cmd.Label);
@@ -2739,6 +2635,16 @@ public sealed class ModuleWindow : Window, IDisposable
             }
             Section.SubHeading("Restrictions");
             DrawRestraintRuleCheckboxes(edit, $"restraintQuickRule_{cmd.Label}");
+
+            // collar/attached-moodles: this restraint's own moodle pick - saved immediately, like the name.
+            Section.SubHeading("Attached moodle");
+            var restraintMoodle = cmd.MoodleOverride;
+            OwnerMoodleOverride.Draw($"restraintQuick_{cmd.Label}", plugin.Configuration, ref restraintMoodle);
+            if (restraintMoodle != cmd.MoodleOverride)
+            {
+                cmd.MoodleOverride = restraintMoodle;
+                plugin.Configuration.Save();
+            }
 
             var hasAnyRule = HasAnyRule(edit);
             var boundAnimationsConfigured = BoundAnimationsConfigured(edit);
@@ -2888,9 +2794,7 @@ public sealed class ModuleWindow : Window, IDisposable
 
     private void DrawOutfitQuickSection(bool canSend)
     {
-        sendMoodleOverride = outfitMoodleOverride;
-        try { DrawOutfitQuickSectionBody(canSend); }
-        finally { sendMoodleOverride = null; }
+        DrawOutfitQuickSectionBody(canSend);
     }
 
     private void DrawOutfitQuickSectionBody(bool canSend)
@@ -2904,8 +2808,6 @@ public sealed class ModuleWindow : Window, IDisposable
 
         using (Section.Begin("outfitQuickFixed", "Commands"))
         {
-            OwnerMoodleOverride.Draw("outfit", plugin.Configuration, ref outfitMoodleOverride);
-            sendMoodleOverride = outfitMoodleOverride;
             DrawFixedQuickRow("Unlock outfit", "outfit unlock", canSend, FixedActionIds.UnlockOutfit);
         }
 
@@ -3003,9 +2905,7 @@ public sealed class ModuleWindow : Window, IDisposable
     {
         IconGlyph.Text(FontAwesomeIcon.Link, "Follow / Leash");
         ImGui.Separator();
-        sendMoodleOverride = leashMoodleOverride;
-        try { DrawFollowQuickSectionBody(canSend); }
-        finally { sendMoodleOverride = null; }
+        DrawFollowQuickSectionBody(canSend);
     }
 
     private void DrawFollowQuickSectionBody(bool canSend)
@@ -3017,9 +2917,18 @@ public sealed class ModuleWindow : Window, IDisposable
         // (listed so they can be removed; a current Sub ignores them).
         using (Section.Begin("followQuickCommands", "Commands"))
         {
-            OwnerMoodleOverride.Draw("leash", plugin.Configuration, ref leashMoodleOverride);
-            sendMoodleOverride = leashMoodleOverride;
             DrawFixedQuickRow("Leash", ControlWords.Leash, canSend, FixedActionIds.LeashDefault);
+            // The leash's own moodle pick, saved - used wherever the Leash command is sent (here, Sub Control,
+            // Favorites, the quick-access menu).
+            var leashMoodle = plugin.Configuration.QuickCommands.LeashMoodleOverride;
+            ImGui.Indent();
+            OwnerMoodleOverride.Draw("leash", plugin.Configuration, ref leashMoodle);
+            ImGui.Unindent();
+            if (leashMoodle != plugin.Configuration.QuickCommands.LeashMoodleOverride)
+            {
+                plugin.Configuration.QuickCommands.LeashMoodleOverride = leashMoodle;
+                plugin.Configuration.Save();
+            }
             DrawFixedQuickRow("Unleash", ControlWords.Unleash, canSend, FixedActionIds.UnleashDefault);
         }
 
@@ -3622,7 +3531,7 @@ public sealed class ModuleWindow : Window, IDisposable
         ContinueRowOrWrap(ButtonWidth("Favorited"));
         DrawFavoriteFixedActionToggle(favoriteId);
         ContinueRowOrWrap(ButtonWidth("Send"));
-        DrawSendCopyButtons(command, canSend, $"fixed_{label}");
+        DrawSendCopyButtons(OwnerMoodleOverride.ForSend(plugin.Configuration, command, null), canSend, $"fixed_{label}");
     }
 
     /// `displayLabel` lets a category-specific caller (e.g. Moodles, see collar/moodles' markup-stripping
@@ -3630,12 +3539,16 @@ public sealed class ModuleWindow : Window, IDisposable
     /// below, and `cmd.Command` all keep using the raw stored value, since only display should ever change.
     private void DrawSavedQuickRow(QuickCommand cmd, List<QuickCommand> list, bool canSend, Func<string, string>? displayLabel = null)
     {
-        ImGui.TextUnformatted(displayLabel?.Invoke(cmd.Label) ?? cmd.Label);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(displayLabel?.Invoke(cmd.Label) ?? cmd.Label);
+        var shownLabel = displayLabel?.Invoke(cmd.Label) ?? cmd.Label;
+        // collar/attached-moodles: a command's own moodle pick shows right on its row.
+        if (cmd.MoodleOverride is { } rowMoodle && OwnerMoodleOverride.Accepts(cmd.Command))
+            shownLabel += $"  · moodle: {rowMoodle}";
+        ImGui.TextUnformatted(shownLabel);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(shownLabel);
         ContinueRowOrWrap(ButtonWidth("Favorited"));
         DrawFavoriteToggle(cmd, $"{cmd.Label}_{cmd.Command}");
         ContinueRowOrWrap(ButtonWidth("Send"));
-        DrawSendCopyButtons(cmd.Command, canSend, $"{cmd.Label}_{cmd.Command}");
+        DrawSendCopyButtons(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd), canSend, $"{cmd.Label}_{cmd.Command}");
         ContinueRowOrWrap(ButtonWidth("Edit"));
         if (ImGui.SmallButton($"Edit##{cmd.Label}_{cmd.Command}"))
         {
@@ -3666,6 +3579,7 @@ public sealed class ModuleWindow : Window, IDisposable
         editingQuickTitleColor = command.TitleColor ?? new Vector3(1, 1, 1);
         editingQuickTitleHasGlow = command.TitleGlow is not null;
         editingQuickTitleGlow = command.TitleGlow ?? new Vector3(1, 1, 1);
+        editingQuickMoodle = command.MoodleOverride;
 
         if (editingQuickCategory == QuickEditCategory.Title &&
             command.Command.StartsWith("title style ", StringComparison.OrdinalIgnoreCase) &&
@@ -3734,6 +3648,7 @@ public sealed class ModuleWindow : Window, IDisposable
             case QuickEditCategory.Outfit:
                 ImGui.SetNextItemWidth(-1);
                 ImGui.InputText("Outfit name##quickEdit", ref editingQuickTarget, 96);
+                OwnerMoodleOverride.Draw("quickEditOutfit", plugin.Configuration, ref editingQuickMoodle);
                 break;
             case QuickEditCategory.Gesture:
                 DrawQuickGestureTargetPicker();
@@ -3775,6 +3690,8 @@ public sealed class ModuleWindow : Window, IDisposable
                 source.Label = editingQuickLabel.Trim();
                 source.Command = draftCommand;
                 source.Target = draftTarget;
+                if (editingQuickCategory == QuickEditCategory.Outfit)
+                    source.MoodleOverride = editingQuickMoodle;
                 if (editingQuickCategory == QuickEditCategory.Title)
                 {
                     source.TitleIsPrefix = editingQuickTitleIsPrefix;
@@ -3908,7 +3825,7 @@ public sealed class ModuleWindow : Window, IDisposable
 
     private void DrawSendCopyButtons(string command, bool canSend, string idSuffix, string sendLabel = "Send")
     {
-        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(command, sendMoodleOverride));
+        var composed = plugin.ChatComposer.Compose(command);
         var fits = CommandSelector.Fits(composed);
 
         using (ImRaii.Disabled(!canSend || !fits))
@@ -3927,7 +3844,7 @@ public sealed class ModuleWindow : Window, IDisposable
 
     private void DrawSendOnly(string command, bool canSend, string idSuffix, string label)
     {
-        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(command, sendMoodleOverride));
+        var composed = plugin.ChatComposer.Compose(command);
         var fits = CommandSelector.Fits(composed);
         using (ImRaii.Disabled(!canSend || !fits))
         {

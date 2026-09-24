@@ -57,9 +57,6 @@ public sealed class FavoritesWindow : Window, IDisposable
         if (!canSend)
             IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until an Owner-side pairing is active.");
 
-        // collar/attached-moodles: also used by the quick-access favorites menu.
-        OwnerMoodleOverride.Draw("favorites", plugin.Configuration, ref OwnerMoodleOverride.FavoritesPick);
-
         foreach (var (label, favorites) in favoritesByCategory)
         {
             if (!ImGui.CollapsingHeader($"{label} ({favorites.Count})###favCategory_{label}", ImGuiTreeNodeFlags.DefaultOpen))
@@ -77,7 +74,7 @@ public sealed class FavoritesWindow : Window, IDisposable
 
     private void DrawFavoriteRow(QuickCommand cmd, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(cmd.Command, OwnerMoodleOverride.FavoritesPick));
+        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd));
         var fits = CommandSelector.Fits(composed);
         using (ImRaii.Disabled(!canSend || !fits))
         {

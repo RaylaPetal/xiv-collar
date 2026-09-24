@@ -299,6 +299,11 @@ public class QuickCommand
     /// separate list - removing/renaming this entry in its own category list already removes/renames it
     /// everywhere it's referenced, so the favorites window just filters all seven lists by this field.
     public bool IsFavorite { get; set; }
+
+    /// collar/attached-moodles: the Owner's moodle pick for this one command (a selector from the Sub's
+    /// imported moodle list), sent as its `moodle:"..."` option. Null = the Sub's own default. Only used on
+    /// commands that accept the option (outfit lock / restraint lock|catalog|wear) - see OwnerMoodleOverride.
+    public string? MoodleOverride { get; set; }
 }
 
 /// Owner-side only in practice. Outfits/Gestures are normally auto-populated by "Add from clipboard" (one
@@ -328,6 +333,10 @@ public class OwnerQuickCommands
     /// these have no backing QuickCommand object to attach a bool to, so favorite state is tracked by the
     /// stable id string instead (see FixedActionIds).
     public HashSet<string> FavoriteFixedActions { get; set; } = new();
+
+    /// collar/attached-moodles: the Owner's moodle pick for the fixed `leash` command (which has no
+    /// QuickCommand of its own to hold it). Null = the Sub's own leash default.
+    public string? LeashMoodleOverride { get; set; }
 }
 
 /// Stable ids for OwnerQuickCommands.FavoriteFixedActions, shared between CollarWindow (which draws the

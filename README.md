@@ -106,8 +106,10 @@ each carry a moodle that goes on with it and comes off when it's cleared - only 
 Sub's others, and never while something else active still holds the same moodle. The Sub picks a default
 per outfit alias (a "Moodle" dropdown when adding it) / device / leash. The Owner can override it per command by appending
 `moodle:"<status name>"` - e.g. `outfit lock "Maid Dress" moodle:"Dressed Up"`,
-`restraint lock "Cuffs" rules:walkonly moodle:"Bound"`, `leash moodle:"Leashed"` - picked from a "Moodle"
-dropdown in the Outfit/Restraints/Leash sections, Sub Control and Favorites. The override only applies if the
+`restraint lock "Cuffs" rules:walkonly moodle:"Bound"`, `leash moodle:"Leashed"` - picked per command:
+each saved outfit (its Edit form), each configured restraint, the direct slot/item form and the Leash row
+have their own "Moodle" dropdown, and that pick travels with that command everywhere it is sent (tabs, Sub
+Control, Favorites). The override only applies if the
 Sub's Moodles permission is on (otherwise the Sub's default is used). An older Sub plugin doesn't understand
 the option and ignores the whole command, so update both sides together. Outfit moodles come off on `unlock` /
 `outfit unlock` (even when nothing was locked - the look itself never changes), when another outfit
