@@ -46,13 +46,15 @@
     "keyAgreement": {
       "curve": "P-256 (ECDH)",
       "ephemeralPerUse": true,
-      "note": "The Owner's ephemeral ECDH key travels in catalog-request; the Sub's ephemeral ECDH key travels in catalog-response. Neither is reused across requests."
+      "note": "The Owner's ephemeral ECDH key travels in catalog-request; the Sub's ephemeral ECDH key travels in catalog-response. Neither is reused across requests.",
+      "pushNote": "catalog-push: the Owner publishes a signed catalog-mailbox-key receive key (rotated on every consume, so each decrypts at most one delivered snapshot); the Sub pairs it with a fresh ephemeral key per upload."
     },
     "kdf": {
       "algorithm": "HKDF-SHA256",
       "salt": "SHA-256(ownerEphemeralPublicKeyRawUncompressed || subEphemeralPublicKeyRawUncompressed)",
       "info": "\"oathbound-relay-catalog-v1\" || pairIdHash || requestId, UTF-8 concatenation",
-      "outputLengthBytes": 32
+      "outputLengthBytes": 32,
+      "pushInfo": "\"oathbound-relay-catalog-push-v1\" || pairIdHash || receiveKeyId, UTF-8 concatenation (catalog-push only; catalog-response keeps the info above)"
     },
     "aead": {
       "algorithm": "AES-256-GCM",
@@ -74,7 +76,9 @@
     "catalogPlaintextMaxBytes": 2097152,
     "catalogCiphertextMaxBytes": 786432,
     "envelopeMaxBytes": 16384,
-    "catalogCooldownSeconds": 14400,
-    "revocationPollMinIntervalSeconds": 21600
+    "revocationPollMinIntervalSeconds": 21600,
+    "catalogMailboxExpirySeconds": 604800,
+    "catalogMailboxMinUploadIntervalSeconds": 60,
+    "catalogMailboxOwnerPollIntervalSeconds": 3600
   }
 }

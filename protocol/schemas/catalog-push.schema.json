@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/catalog-push.schema.json",
+  "title": "CatalogPush",
+  "description": "Authenticated envelope for a Sub-initiated encrypted catalog snapshot left in a pair's mailbox. Same shape as catalog-response, except it names the Owner receive key it was encrypted to (receiveKeyId) instead of a request, and may be retained up to catalogMailboxExpirySeconds. snapshotId shares the pair epoch's monotonic sequence with catalog-response.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "pairIdHash", "pairEpoch", "receiveKeyId",
+    "snapshotId", "senderDeviceKeyId", "recipientDeviceKeyId",
+    "createdAt", "expiresAt", "algorithm", "ciphertextDigest",
+    "ciphertextSizeBytes", "nonce", "senderEphemeralPublicKey", "signature"
+  ],
+  "properties": {
+    "type": { "const": "catalog-push" },
+    "schemaVersion": { "const": 1 },
+    "pairIdHash": { "$ref": "common.schema.json#/$defs/pairIdHash" },
+    "pairEpoch": { "$ref": "common.schema.json#/$defs/pairEpoch" },
+    "receiveKeyId": { "$ref": "catalog-mailbox-key.schema.json#/properties/receiveKeyId" },
+    "snapshotId": { "$ref": "common.schema.json#/$defs/monotonicSequence" },
+    "senderDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "recipientDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "expiresAt": {
+      "$ref": "common.schema.json#/$defs/unixSeconds",
+      "description": "MUST NOT exceed createdAt + catalogMailboxExpirySeconds (see constants.json)."
+    },
+    "algorithm": { "$ref": "common.schema.json#/$defs/aeadAlgorithm" },
+    "ciphertextDigest": { "$ref": "common.schema.json#/$defs/sha256Hex" },
+    "ciphertextSizeBytes": { "type": "integer", "minimum": 1 },
+    "nonce": { "$ref": "common.schema.json#/$defs/aeadNonce" },
+    "senderEphemeralPublicKey": {
+      "$ref": "common.schema.json#/$defs/ecPublicKeyJwk",
+      "description": "Sub's per-upload ephemeral ECDH public key, combined with the Owner receive key named by receiveKeyId. HKDF info is \"oathbound-relay-catalog-push-v1\" || pairIdHash || receiveKeyId; salt and AAD are built exactly as for catalog-response."
+    },
+    "signature": { "$ref": "common.schema.json#/$defs/ecdsaSignature" }
+  }
+}

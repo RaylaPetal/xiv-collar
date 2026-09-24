@@ -171,6 +171,9 @@ public sealed class ModuleWindow : Window, IDisposable
     private string toyTriggerPatternNameInput = "";
     private int toyTriggerCooldownInput = 5;
 
+    /// ImGui frame the Owner Sync tab was last drawn on - a gap means it was just (re)opened.
+    private int lastSyncTabFrame = -10;
+
     /// collar/ui-organization: search text filtering the Owner's Gesture quick-command list.
     private string gestureQuickSearch = "";
     private QuickCommand? editingQuickCommand;
@@ -365,6 +368,13 @@ public sealed class ModuleWindow : Window, IDisposable
             return;
         }
 
+        // collar/catalog-sync "Owner opens the Sync tab": a check the moment the tab becomes visible (not every
+        // frame it stays visible), skipped if the last successful check was under a minute ago.
+        var frame = ImGui.GetFrameCount();
+        if (frame - lastSyncTabFrame > 1 && plugin.Configuration.ActivePairing is { Direction: PairingDirection.OwnerSide } openedPairing)
+            plugin.CatalogAutoSync.RequestOwnerCheck(openedPairing, force: false);
+        lastSyncTabFrame = frame;
+
         using (Section.Begin("catalogRelay"))
             DrawCatalogRelaySection();
 
@@ -394,7 +404,7 @@ public sealed class ModuleWindow : Window, IDisposable
         ImGui.Separator();
 
         using (Section.Begin("subRelayInfo", "Cloud catalog sync"))
-            IconGlyph.WrappedDisabled("Your paired Owner refreshes your shared catalog through the Oathbound Cloudflare relay automatically - there's nothing to click for that here. Whether they're allowed to is the \"Catalog sync (relay)\" toggle in Permissions.");
+            DrawSubAutoSyncInfo(config);
 
         var scanBox = Section.Begin("subScan", "Scan");
         IconGlyph.WrappedDisabled("Scan every catalog at once below, then export your resulting catalog for your Owner.");
@@ -459,6 +469,35 @@ public sealed class ModuleWindow : Window, IDisposable
             IconGlyph.WrappedColored(subExportResult.StartsWith("Export failed", StringComparison.Ordinal) ? Theme.Danger : Theme.Success, subExportResult);
     }
 
+    /// collar/catalog-sync automatic sync, Sub view: what's shared, when it last went out to each Owner, and
+    /// the one control the Sub has over the schedule (periodic rescans). Publishing itself needs no click.
+    private void DrawSubAutoSyncInfo(PluginConfig config)
+    {
+        IconGlyph.WrappedDisabled("Whenever your catalog changes, it's shared with your paired Owner automatically through the Oathbound Cloudflare relay, end-to-end encrypted. No chat messages are sent. Your Owner's plugin picks it up within about an hour.");
+
+        if (ImGuiCheckbox("Automatically rescan every hour", config.AutoRescanCatalogs, out var autoRescan))
+        {
+            config.AutoRescanCatalogs = autoRescan;
+            config.Save();
+        }
+        IconGlyph.HelpMarker("Re-reads your Glamourer designs, Penumbra animation/restraint mods, and Moodles statuses at login and about once an hour, using the selections below - so new additions reach your Owner without a manual rescan. A plugin that isn't loaded is skipped and keeps its previous list.");
+
+        if (!config.Permissions.RelayCatalogSync)
+        {
+            IconGlyph.WrappedColored(Theme.Warning, "\"Catalog sync (relay)\" is off in Permissions, so nothing is shared. Changes go out as soon as you turn it on.");
+            return;
+        }
+
+        foreach (var pairing in config.Pairings.Where(p => p is { Direction: PairingDirection.SubSide, IsPaired: true }))
+        {
+            var name = pairing.PeerName ?? "your Owner";
+            if (pairing.LastPublishedCatalogUnixSeconds > 0)
+                IconGlyph.WrappedDisabled($"Last shared with {name}: {DateTimeOffset.FromUnixTimeSeconds(pairing.LastPublishedCatalogUnixSeconds).LocalDateTime:g}.");
+            else
+                IconGlyph.WrappedDisabled($"Not shared with {name} yet - it goes out once their plugin has checked in (Owners on an older plugin can still use Request refresh).");
+        }
+    }
+
     private void DrawWardrobeScanBody(PluginConfig config)
     {
         IconGlyph.Text(FontAwesomeIcon.Tshirt, "Wardrobe design allowlist & scan");
@@ -480,6 +519,9 @@ public sealed class ModuleWindow : Window, IDisposable
     {
         var wardrobe = plugin.Configuration.WardrobeMapping;
         var lastScanTotal = plugin.OutfitCommand.LastScanTotalDesigns;
+
+        if (plugin.OutfitCommand.LastScanError is { } scanError)
+            IconGlyph.WrappedColored(Theme.Danger, scanError);
 
         if (lastScanTotal is null)
         {
@@ -2118,51 +2160,77 @@ public sealed class ModuleWindow : Window, IDisposable
     private static void RemoveImportedEntries(List<QuickCommand> list) =>
         list.RemoveAll(cmd => cmd.Source == ImportSource.Imported);
 
-    /// collar/catalog-sync "Owner refresh controls": shows current phase, last successful snapshot/counts,
-    /// next allowed time, and actionable failure text; the button itself is disabled during an active
-    /// request or cooldown so it can never be double-clicked into a second one (task 7.3). Only ever
-    /// called from the Sync tab's Owner-role view (DrawSyncTab) - the Sub-role view is a separate,
-    /// dedicated explanation instead of a disabled preview of this one.
+    /// collar/catalog-sync "Owner's Sync tab shows whether the catalog is up to date": one sync state for the
+    /// active Owner-side pairing (warning style for everything but Up to date), when the Sub last published
+    /// and when this device last imported, a no-cooldown "Check now", and the manual "Request refresh"
+    /// fallback (disabled only while a request is already in flight). Only ever called from the Sync tab's
+    /// Owner-role view (DrawSyncTab) - the Sub-role view is a separate, dedicated explanation instead.
     private void DrawCatalogRelaySection()
     {
         var relayService = plugin.CatalogSyncRelayService;
+        var mailbox = plugin.CatalogMailboxService;
         var pairing = plugin.Configuration.ActivePairing;
         IconGlyph.Text(FontAwesomeIcon.CloudDownloadAlt, "Cloud catalog sync");
-        IconGlyph.WrappedDisabled("Securely requests the latest catalog from your paired Sub through the Oathbound Cloudflare relay. No file transfer is needed.");
+        IconGlyph.WrappedDisabled("Your Sub's catalog syncs automatically through the Oathbound Cloudflare relay, end-to-end encrypted: their plugin shares changes as they happen, and this plugin checks about once an hour. No chat messages or file transfers are needed.");
         if (pairing is not { Direction: PairingDirection.OwnerSide })
         {
             IconGlyph.WrappedDisabled("No Owner-side pairing is active - select one above, or pair from Settings first. The offline file fallback remains available below.");
             return;
         }
 
-        var cooldown = relayService.CooldownRemaining(pairing);
-        using (ImRaii.Disabled(relayService.RequestInFlight || cooldown is not null))
+        var (stateColor, stateText) = DescribeCatalogSyncState(pairing, mailbox);
+        IconGlyph.WrappedColored(stateColor, stateText);
+
+        using (ImRaii.Disabled(mailbox.IsChecking(pairing.Id)))
+        {
+            if (ImGui.Button(mailbox.IsChecking(pairing.Id) ? "Checking..." : "Check now"))
+                plugin.CatalogAutoSync.RequestOwnerCheck(pairing, force: true);
+        }
+        IconGlyph.HelpMarker("Checks the relay right away for a newer catalog from your Sub and imports it if there is one. Otherwise this happens automatically about once an hour.");
+
+        ImGui.SameLine();
+        using (ImRaii.Disabled(relayService.RequestInFlight))
         {
             if (ImGui.Button(relayService.RequestInFlight ? "Requesting..." : "Request refresh"))
                 Plugin.FireAndForget(relayService.RequestRefreshAsync(pairing, System.Threading.CancellationToken.None));
         }
-        IconGlyph.HelpMarker("Asks your paired Sub for a fresh, end-to-end encrypted catalog snapshot instead of a manually transferred file - at most once every four hours, enforced by both sides.");
+        IconGlyph.HelpMarker("Manual fallback: asks your Sub's plugin to send its catalog right now over a chat tell. Needs your Sub to be online, and works even if their plugin is too old for automatic sync.");
 
-        IconGlyph.WrappedDisabled($"Status: {relayService.Phase}.");
-
-        if (cooldown is { } remaining)
-            IconGlyph.WrappedDisabled($"Next refresh available in {(remaining.TotalHours >= 1 ? $"{(int)remaining.TotalHours}h {remaining.Minutes}m" : $"{remaining.Minutes}m")}.");
-        else if (pairing.LastAcceptedCatalogSyncUnixSeconds > 0)
-            IconGlyph.WrappedDisabled("Refresh is available now.");
-
+        if (pairing.SubLastPublishedUnixSeconds is { } published)
+            IconGlyph.WrappedDisabled($"Your Sub last shared changes: {DateTimeOffset.FromUnixTimeSeconds(published).LocalDateTime:g}.");
         if (pairing.LastAcceptedCatalogSyncUnixSeconds > 0)
-        {
-            var lastSuccess = DateTimeOffset.FromUnixTimeSeconds(pairing.LastAcceptedCatalogSyncUnixSeconds).LocalDateTime;
-            IconGlyph.WrappedDisabled($"Last successful sync: {lastSuccess:g} (snapshot #{pairing.LastImportedSnapshotId}).");
-        }
+            IconGlyph.WrappedDisabled($"Last imported: {DateTimeOffset.FromUnixTimeSeconds(pairing.LastAcceptedCatalogSyncUnixSeconds).LocalDateTime:g} (snapshot #{pairing.LastImportedSnapshotId}).");
+        if (pairing.LastMailboxCheckOkUnixSeconds > 0)
+            IconGlyph.WrappedDisabled($"Last checked: {DateTimeOffset.FromUnixTimeSeconds(pairing.LastMailboxCheckOkUnixSeconds).LocalDateTime:g}.");
 
-        if (relayService.LastAttemptAt is { } attempted)
-            IconGlyph.WrappedDisabled($"Last relay response: {attempted.LocalDateTime:g}.");
-
+        if (relayService.RequestInFlight)
+            IconGlyph.WrappedDisabled($"Manual refresh: {relayService.Phase}.");
         if (relayService.LastError is { Length: > 0 } lastError)
-            IconGlyph.WrappedColored(Theme.Danger, lastError);
-        else if (relayService.LastImportResult is { Error: null } result && result.Added + result.Updated + result.Removed > 0)
+            IconGlyph.WrappedColored(Theme.Danger, $"Manual refresh: {lastError}");
+
+        var lastResult = mailbox.LastAutoImport is { } auto && auto.PairingId == pairing.Id ? auto.Result : relayService.LastImportResult;
+        if (lastResult is { Error: null } result && result.Added + result.Updated + result.Removed > 0)
             IconGlyph.WrappedColored(Theme.Success, $"Last sync: {result.Added} added, {result.Updated} updated, {result.Removed} removed.");
+    }
+
+    /// The single state line, in the spec's priority order: Syncing > Last sync failed > Out of date (no
+    /// successful check in ~2h) > No automatic updates from Sub > Up to date.
+    private static (Vector4 Color, string Text) DescribeCatalogSyncState(PairingState pairing, Relay.CatalogMailboxService mailbox)
+    {
+        if (mailbox.IsSyncing(pairing.Id))
+            return (Theme.Warning, "Syncing: your Sub's catalog changed - importing it now...");
+        if (pairing.LastMailboxCheckError is { Length: > 0 } error)
+            return (Theme.Warning, $"Last sync failed: {error}");
+
+        var lastOk = pairing.LastMailboxCheckOkUnixSeconds;
+        if (lastOk == 0)
+            return (Theme.Warning, "Out of date: not checked yet since this update - checking shortly.");
+        var sinceOk = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(lastOk);
+        if (sinceOk > TimeSpan.FromHours(2))
+            return (Theme.Warning, $"Out of date: couldn't reach the relay since {DateTimeOffset.FromUnixTimeSeconds(lastOk).LocalDateTime:g}. Your Sub may have changed things since.");
+        if (pairing.SubLastPublishedUnixSeconds is null)
+            return (Theme.Warning, "No automatic updates from your Sub yet: their plugin may be too old, or their \"Catalog sync (relay)\" permission is off. Request refresh still works.");
+        return (Theme.Success, "Up to date.");
     }
 
     /// collar/ui-organization: draws a section's icon+title, then (if `showClearAll`) a "Clear all" button

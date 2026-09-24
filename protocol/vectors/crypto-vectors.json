@@ -104,5 +104,38 @@
     "ciphertextWithTagBase64Url": "okJEQbPNE7Hku4IfpPHbWl1fudTiXAbW-SpRB5tT0SwOUty0_fXICuwA8zbZZ8izO3d7AqQ",
     "ciphertextDigestSha256Hex": "58b54fcf8c2d20ad1877f1196d00c8ea78c79ec7a988b1022313711aece26737",
     "roundTripDecryptMatchesPlaintext": true
+  },
+  "catalogMailboxKeySignature": {
+    "description": "catalog-mailbox-key envelope signed by the ecdsaSignRequest key (the Owner's device key). `canonical` is JCS of the envelope without `signature`; the receive key is ecdhHkdfAesGcmCatalogEnvelope's owner ephemeral key. Only verification success is asserted across runtimes (ECDSA is randomized).",
+    "unsigned": {
+      "type": "catalog-mailbox-key",
+      "schemaVersion": 1,
+      "pairIdHash": "65628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59f",
+      "pairEpoch": 3,
+      "receiveKeyId": "rKeyIDrKeyIDrKeyIDrKey",
+      "ownerDeviceKeyId": "369655f502eec5bc1c4c0daea35bacdf3485d7e505f58f08a1941c2379776add",
+      "receivePublicKey": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "62O6DLPjQNPyMIJmcbA5NlTchtovEzaFP8eiB6x40cQ",
+        "y": "rG5CJixxa3cWgTrTFEiSpZxecT-muaQUdQkheRPqCc0"
+      },
+      "createdAt": 1700002000
+    },
+    "canonical": "{\"createdAt\":1700002000,\"ownerDeviceKeyId\":\"369655f502eec5bc1c4c0daea35bacdf3485d7e505f58f08a1941c2379776add\",\"pairEpoch\":3,\"pairIdHash\":\"65628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59f\",\"receiveKeyId\":\"rKeyIDrKeyIDrKeyIDrKey\",\"receivePublicKey\":{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"62O6DLPjQNPyMIJmcbA5NlTchtovEzaFP8eiB6x40cQ\",\"y\":\"rG5CJixxa3cWgTrTFEiSpZxecT-muaQUdQkheRPqCc0\"},\"schemaVersion\":1,\"type\":\"catalog-mailbox-key\"}",
+    "signatureBase64Url": "kCicYzTR2BlHOGGnYvjsuu3u2XFwkvbhiXUoYsno2g-ysUJioRqaCy5NB5EzQGyaz2AertprRxd2I7bcfnY0Zg",
+    "verifiesWithPublicKey": true
+  },
+  "ecdhHkdfAesGcmCatalogPush": {
+    "description": "catalog-push encryption: ECDH between the Owner receive key (ecdhHkdfAesGcmCatalogEnvelope's owner ephemeral key) and the Sub's per-upload ephemeral key (its sub ephemeral key), HKDF-SHA256 with the push-specific info label, and AES-256-GCM over a sample plaintext bound to catalog-push metadata as AAD (ciphertextDigest/nonce/signature removed, ciphertextSizeBytes 0).",
+    "saltSha256Hex": "959f8d8ccbfb1f2e6a1d0cfc72805d873ca68b94720ed2cdbf40e634178d5101",
+    "infoUtf8": "oathbound-relay-catalog-push-v165628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59frKeyIDrKeyIDrKeyIDrKey",
+    "derivedAesKeyHex": "48c5de67ce2cf3edc32b72e0d65663b6df3a5e35ad4992090353d8f5585491a0",
+    "nonceBase64Url": "cHVzaE5vbmNlMTIz",
+    "additionalAuthenticatedDataCanonicalJson": "{\"algorithm\":\"ECDH-P256+HKDF-SHA256+AES-256-GCM\",\"ciphertextSizeBytes\":0,\"createdAt\":1700002100,\"expiresAt\":1700606900,\"pairEpoch\":3,\"pairIdHash\":\"65628a9e671c78cf2dd85ef5e9522f0bac3e6bb33ad4673ba8a4acf7e846b59f\",\"receiveKeyId\":\"rKeyIDrKeyIDrKeyIDrKey\",\"recipientDeviceKeyId\":\"369655f502eec5bc1c4c0daea35bacdf3485d7e505f58f08a1941c2379776add\",\"schemaVersion\":1,\"senderDeviceKeyId\":\"f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5\",\"senderEphemeralPublicKey\":{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"RMSWdueu7KFvkDguI8jNM9bBlo68dkF9XsWXFvP5XHs\",\"y\":\"9yAYneLqXPN2muh-OXTiasvOXO5Q0QJW8Cj1pVoX38M\"},\"snapshotId\":8,\"type\":\"catalog-push\"}",
+    "plaintextUtf8": "{\"catalog\":\"sample pushed snapshot\"}",
+    "ciphertextWithTagBase64Url": "g8QcFWsVnaWTQKTasVlhUVxz1Z4rd3dNP_JjvNLg5z7ybBoE3rQl4-XWWP4yGMaehCurXg",
+    "ciphertextDigestSha256Hex": "903d09d9906b72693a36ab4743add71281aa10b7a2c49413486c6f61e7fe9668",
+    "roundTripDecryptMatchesPlaintext": true
   }
 }

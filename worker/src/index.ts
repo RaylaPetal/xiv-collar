@@ -5,6 +5,7 @@ import { acceptInvitation, consumeInvitation, createInvitation, fetchInvitation 
 import { fetchPair } from "./routes/pairs";
 import { checkRevocations, publishRevocation } from "./routes/revocations";
 import { consumeCatalogResponse, createCatalogRequest, fetchCatalogRequest, uploadCatalogResponse } from "./routes/catalog";
+import { consumeMailboxSnapshot, fetchMailboxKey, mailboxStatus, publishMailboxKey, uploadMailboxSnapshot } from "./routes/mailbox";
 import { health } from "./routes/health";
 import { runScheduledCleanup } from "./scheduled";
 import { enforceQuota } from "./lib/quotas";
@@ -51,6 +52,15 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (method === "GET" && segments.length === 4) return fetchCatalogRequest(request, env, segments[3]!);
     if (method === "POST" && segments.length === 5 && segments[4] === "upload") return uploadCatalogResponse(request, env, segments[3]!);
     if (method === "POST" && segments.length === 5 && segments[4] === "consume") return consumeCatalogResponse(request, env, segments[3]!);
+  }
+
+  if (segments[1] === "catalog" && segments[2] === "mailbox" && method === "POST") {
+    const action = segments.slice(3).join("/");
+    if (action === "key") return publishMailboxKey(request, env);
+    if (action === "key/fetch") return fetchMailboxKey(request, env);
+    if (action === "upload") return uploadMailboxSnapshot(request, env);
+    if (action === "status") return mailboxStatus(request, env);
+    if (action === "consume") return consumeMailboxSnapshot(request, env);
   }
 
   return new RelayError("not_found").toResponse();

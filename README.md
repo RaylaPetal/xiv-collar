@@ -126,17 +126,39 @@ or a configured mod restraint's optional alias. Sent on its own it toggles that 
 from the old list stop working unless they match a device's alias.
 
 **Sharing is a helper, and what's shared is the Owner's copy.** The Owner can build anything themselves;
-the Sub's sync (relay refresh or export file) just shares their setup. Every shared preset arrives as a
+the Sub's sync (automatic relay sync, a manual refresh, or an export file) just shares their setup. Every shared preset arrives as a
 self-contained Owner command - a title alias as `title style ...`, an outfit alias as `outfit lock "<design>"`
 (or `outfit wear` if the alias doesn't lock), an animation or moodle alias as `gesture ...` / `moodle apply
 ...`, a rules-only restraint as `restraint wear - - "<name>" rules:...`, a custom trigger as one
 `customtrigger cast ...` bundle whose restraints carry their own rules. The alias name stays as the label,
 and an attached moodle becomes that command's moodle pick. So a copy keeps working after the Sub deletes or
-changes the original, until the Owner removes it. Sharing again - a relay refresh, or importing the Sub's
+changes the original, until the Owner removes it. Sharing again - a relay sync, or importing the Sub's
 file while paired as their Owner - replaces that Sub's shared copies with their current set; the Owner's own
 commands are never touched. Copies are Owner commands, so they lock/force-apply like one. A custom trigger
 too long for one chat message isn't shared; the Sub's Sync tab lists which. Needs both sides on this
 version - an older Sub ignores a bundle whose restraints carry rules.
+
+**Catalog sync is automatic.** The Sub's plugin rescans Glamourer designs, Penumbra animation/restraint mods,
+and Moodles statuses at login and about once an hour (the Sub can turn this off on their Sync tab; a plugin
+that isn't loaded is skipped and keeps its previous list). Whenever the Sub's shared catalog actually changes
+- a rescan finds something new, or they edit an alias, trigger, or device - their plugin encrypts it end to
+end and leaves it in that pairing's mailbox on the Oathbound relay, replacing anything already waiting. The
+Owner's plugin checks the mailbox at login, when the Sync tab opens, on **Check now**, and otherwise about once
+an hour, and imports anything newer on its own. No chat message is ever sent for any of this, the two players
+never need to be online at the same time (a waiting catalog is kept up to 7 days), and it only happens while
+the Sub's "Catalog sync (relay)" permission is on. The Owner's Sync tab says whether their copy is up to date,
+syncing, failed, out of date (the relay couldn't be reached for about two hours), or not receiving automatic
+updates at all (the Sub's plugin is older, or their permission is off). There is no cooldown any more:
+**Request refresh** stays as a manual fallback - it asks an online Sub over a tell, including one on an
+older plugin - and is only blocked while a previous request is still waiting for an answer.
+
+**Revert all.** The Owner's header has a **Revert all** button, next to the Sub Control arrow. It takes
+two clicks and sends one `revert all` tell, which puts the active Sub back to nothing: restraints (gear,
+rules, bound animations), outfit (unlocked, and the character reverted to its normal Glamourer look),
+title, leash, playing animation, toy, and every moodle. Each part only happens if the Sub's permission
+for that category is on. The collar is never touched - its piece, lock and moodle all stay - and neither
+is any pairing. That's the difference from panic, the Sub's own safeword, which also clears the collar.
+Needs the Sub on this version.
 
 **Outfits: lock or not.** The Owner's saved-outfit editor has a Lock dropdown: *Locked* sends
 `outfit lock`, *Not locked* sends `outfit wear` (applied, but the Sub can change it freely; older Subs don't

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oathbound.example/relay/schemas/catalog-mailbox-key.schema.json",
+  "title": "CatalogMailboxKey",
+  "description": "An Owner's current receive key for one pair/epoch's catalog mailbox, signed with the Owner's device key so the Sub can verify it came from the paired Owner before encrypting to it. Rotated on every consume (the next key travels in the consume request body), so each receive key decrypts at most one delivered snapshot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "schemaVersion", "pairIdHash", "pairEpoch", "receiveKeyId",
+    "ownerDeviceKeyId", "receivePublicKey", "createdAt", "signature"
+  ],
+  "properties": {
+    "type": { "const": "catalog-mailbox-key" },
+    "schemaVersion": { "const": 1 },
+    "pairIdHash": { "$ref": "common.schema.json#/$defs/pairIdHash" },
+    "pairEpoch": { "$ref": "common.schema.json#/$defs/pairEpoch" },
+    "receiveKeyId": {
+      "type": "string",
+      "description": "Random 128-bit id for this receive key, base64url without padding. Not a secret - it only names which key a catalog-push was encrypted to.",
+      "pattern": "^[A-Za-z0-9_-]{22}$"
+    },
+    "ownerDeviceKeyId": { "$ref": "common.schema.json#/$defs/deviceKeyId" },
+    "receivePublicKey": {
+      "$ref": "common.schema.json#/$defs/ecPublicKeyJwk",
+      "description": "Owner's ECDH P-256 receive public key. Never the Owner's signing key."
+    },
+    "createdAt": { "$ref": "common.schema.json#/$defs/unixSeconds" },
+    "signature": { "$ref": "common.schema.json#/$defs/ecdsaSignature" }
+  }
+}

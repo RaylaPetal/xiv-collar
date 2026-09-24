@@ -142,6 +142,7 @@ public class SettingsWindow : Window, IDisposable
             ("Collar · Lock", "collar lock"),
             ("Collar · Unlock", "collar unlock"),
             ("Restraints · Unlock all", "restraint unlock"),
+            ("Everything · Revert all (keeps collar)", "revert all"),
         };
         savedTriggers.AddRange(aliases.Titles.Select(a => ($"Title · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.Outfits.Select(a => ($"Outfit · {a.Alias}", a.Alias)));

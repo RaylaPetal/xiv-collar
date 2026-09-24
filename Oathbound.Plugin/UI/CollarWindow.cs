@@ -40,6 +40,9 @@ public class CollarWindow : Window, IDisposable
     public void SetActiveModuleForTutorial(string moduleId) => moduleWindow.Show(moduleId);
 
     private string? teleportResolveError;
+
+    /// Header "Revert all": armed (first click) until this time; a second click before it sends.
+    private DateTime revertAllConfirmUntil = DateTime.MinValue;
     private bool revealSafeword;
 
     /// collar/chat-transport "Trigger-phrase command delivery over a selectable channel" - order matches
@@ -327,7 +330,36 @@ public class CollarWindow : Window, IDisposable
         const float size = 24f;
         var isOpen = plugin.SubControlWindow.IsOpen;
         var icon = isOpen ? FontAwesomeIcon.ArrowLeft : FontAwesomeIcon.ArrowRight;
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - size);
+
+        // "Revert all", sharing the arrow's row just to its left. Two clicks: the first arms it for a few
+        // seconds, the second sends - it undoes a lot at once, so a stray click shouldn't.
+        var confirming = DateTime.UtcNow < revertAllConfirmUntil;
+        var revertLabel = confirming ? "Click again to revert" : "Revert all";
+        var revertWidth = ImGui.CalcTextSize(revertLabel).X + ImGui.GetStyle().FramePadding.X * 2f;
+        var canSend = plugin.Configuration.ActivePairing is { Direction: PairingDirection.OwnerSide };
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - size - ImGui.GetStyle().ItemSpacing.X - revertWidth);
+        using (ImRaii.Disabled(!canSend))
+        using (ImRaii.PushColor(ImGuiCol.Button, Theme.Danger, confirming))
+        {
+            if (ImGui.Button($"{revertLabel}##revertAll", new Vector2(revertWidth, size)))
+            {
+                if (confirming)
+                {
+                    plugin.ChatSender.Send(plugin.ChatComposer.Compose("revert all"));
+                    revertAllConfirmUntil = DateTime.MinValue;
+                }
+                else
+                {
+                    revertAllConfirmUntil = DateTime.UtcNow.AddSeconds(5);
+                }
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(canSend
+                ? "Reverts everything on your active Sub back to nothing: restraints, outfit (back to their normal look), title, leash, animation, toy, and moodles.\nThe collar and the pairing are never touched. Each part only applies if your Sub allows that category.\nYour Sub needs this plugin version."
+                : "Select an Owner-side pairing first.");
+        ImGui.SameLine();
+
         if (IconGlyph.Button(icon, new Vector2(size, size)))
             plugin.SubControlWindow.IsOpen = !isOpen;
         if (ImGui.IsItemHovered())

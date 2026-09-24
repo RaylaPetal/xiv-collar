@@ -122,6 +122,8 @@ public sealed class Plugin : IDalamudPlugin
     public TeleportCommand TeleportCommand { get; }
     public CatalogSyncService CatalogSyncService { get; }
     public CatalogSyncRelayService CatalogSyncRelayService { get; }
+    public CatalogMailboxService CatalogMailboxService { get; }
+    public CatalogAutoSync CatalogAutoSync { get; }
     public ChatComposer ChatComposer { get; }
     public ChatSender ChatSender { get; }
     public ChatCommandListener ChatCommandListener { get; }
@@ -196,6 +198,9 @@ public sealed class Plugin : IDalamudPlugin
         PairingService.PairingEnded += QueueRestraintCleanup;
         RevocationService.PairingRevoked += QueueRestraintCleanup;
         CatalogSyncRelayService = new CatalogSyncRelayService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CatalogSyncService);
+        CatalogMailboxService = new CatalogMailboxService(Configuration, RelayClient, DeviceIdentityService, CatalogSyncService);
+        CatalogAutoSync = new CatalogAutoSync(Configuration, CatalogMailboxService, CatalogSyncService, OutfitCommand, GestureCommand, RestraintCommand, MoodlesCommand,
+            () => relayBackgroundWorkCts.Token);
         ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, ToyControlCommand, CustomTriggerCommand, TeleportCommand);
 
         PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, ToyControlCommand, RuntimeState, CollarCommand, ActionBlockService.Visuals, MoodlesCommand.Ledger, GestureCommand);
@@ -290,6 +295,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         nextRevocationCheckUtc = DateTime.UtcNow.AddHours(6);
         FireAndForget(RevocationService.CheckForMissedRevocationAsync(relayBackgroundWorkCts.Token));
+        CatalogAutoSync.OnLogin();
     }
 
     /// collar/relay-service "requests stop on logout": cancels any in-flight recurring relay background
@@ -312,6 +318,7 @@ public sealed class Plugin : IDalamudPlugin
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
         ClientState.Logout -= OnLogout;
+        CatalogAutoSync.Dispose();
         relayBackgroundWorkCts.Cancel();
         relayBackgroundWorkCts.Dispose();
 
@@ -425,6 +432,8 @@ public sealed class Plugin : IDalamudPlugin
             nextRevocationCheckUtc = utcNow.AddHours(6).AddSeconds(Random.Shared.Next(0, 1800));
             FireAndForget(RevocationService.CheckForMissedRevocationAsync(relayBackgroundWorkCts.Token));
         }
+        // collar/catalog-sync automatic sync: hourly Sub rescans/publishes and Owner mailbox checks.
+        CatalogAutoSync.OnFrameworkUpdate();
     }
 
     private void QueueRestraintCleanup() => Interlocked.Exchange(ref pendingRestraintCleanup, 1);

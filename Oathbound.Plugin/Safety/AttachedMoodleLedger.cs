@@ -100,6 +100,23 @@ public sealed class AttachedMoodleLedger
         return true;
     }
 
+    /// The Owner's `revert all`: every moodle goes - manual, outfit, restraint, leash, and any the Sub applied
+    /// themselves - except the collar's own, which is re-applied afterward since the collar is the one thing
+    /// a revert never touches. Same clear-then-reapply shape as ClearUnheld.
+    public bool ClearAllExceptCollar()
+    {
+        foreach (var source in Holds.Keys.Where(k => k != CollarSource).ToList())
+            Holds.Remove(source);
+        config.Save();
+
+        if (!moodles.ClearStatus())
+            return false;
+
+        if (Holds.TryGetValue(CollarSource, out var collarStatus))
+            moodles.ApplyStatus(collarStatus);
+        return true;
+    }
+
     /// Panic: everything goes, held or not.
     public void ClearAllForPanic()
     {

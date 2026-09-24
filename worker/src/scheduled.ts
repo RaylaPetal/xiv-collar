@@ -55,6 +55,35 @@ export async function runScheduledCleanup(env: Env): Promise<void> {
     await env.RELAY_DB.prepare(`DELETE FROM catalog_requests WHERE request_id_hash = ?1`).bind(row.request_id_hash).run();
   }
 
+  // Catalog mailboxes: a waiting snapshot past its own retention is dropped (the key stays, so the Sub can
+  // still publish again); a revoked pair's mailbox goes entirely - it can never be written or read again.
+  const expiredMailboxSnapshots = await env.RELAY_DB.prepare(
+    `SELECT pair_id_hash, pair_epoch, snapshot_r2_key FROM catalog_mailboxes WHERE snapshot_expires_at <= ?1`,
+  )
+    .bind(now)
+    .all<{ pair_id_hash: string; pair_epoch: number; snapshot_r2_key: string | null }>();
+  for (const row of expiredMailboxSnapshots.results) {
+    if (row.snapshot_r2_key) await deleteCiphertext(env, row.snapshot_r2_key);
+    await env.RELAY_DB.prepare(
+      `UPDATE catalog_mailboxes SET snapshot_id = NULL, snapshot_r2_key = NULL, snapshot_envelope = NULL,
+         snapshot_created_at = NULL, snapshot_expires_at = NULL
+       WHERE pair_id_hash = ?1 AND pair_epoch = ?2 AND snapshot_r2_key IS ?3`,
+    )
+      .bind(row.pair_id_hash, row.pair_epoch, row.snapshot_r2_key)
+      .run();
+  }
+  const revokedMailboxes = await env.RELAY_DB.prepare(
+    `SELECT m.pair_id_hash, m.pair_epoch, m.snapshot_r2_key FROM catalog_mailboxes m
+     JOIN pairs p ON p.pair_id_hash = m.pair_id_hash AND p.pair_epoch = m.pair_epoch
+     WHERE p.revoked_at IS NOT NULL`,
+  ).all<{ pair_id_hash: string; pair_epoch: number; snapshot_r2_key: string | null }>();
+  for (const row of revokedMailboxes.results) {
+    if (row.snapshot_r2_key) await deleteCiphertext(env, row.snapshot_r2_key);
+    await env.RELAY_DB.prepare(`DELETE FROM catalog_mailboxes WHERE pair_id_hash = ?1 AND pair_epoch = ?2`)
+      .bind(row.pair_id_hash, row.pair_epoch)
+      .run();
+  }
+
   const removedNonces = await env.RELAY_DB.prepare(
     `DELETE FROM nonces WHERE seen_at <= ?1`,
   )
@@ -69,12 +98,15 @@ export async function runScheduledCleanup(env: Env): Promise<void> {
     .run();
 
   await sweepOrphanCatalogObjects(env);
+  await sweepOrphanMailboxObjects(env);
 
   logEvent("scheduled_cleanup_complete", {
     expiredInvitations: expiredInvitations.meta.changes ?? 0,
     expiredRevocations: expiredRevocations.meta.changes ?? 0,
     removedPendingRequests: removedPendingRequests.meta.changes ?? 0,
     expiredObjects: expiredObjects.results.length,
+    expiredMailboxSnapshots: expiredMailboxSnapshots.results.length,
+    removedRevokedMailboxes: revokedMailboxes.results.length,
     removedNonces: removedNonces.meta.changes ?? 0,
     removedQuotaCounters: removedQuotaCounters.meta.changes ?? 0,
   });
@@ -95,6 +127,22 @@ async function sweepOrphanCatalogObjects(env: Env): Promise<void> {
     const requestIdHash = object.key.slice("catalog/".length);
     const row = await env.RELAY_DB.prepare(`SELECT 1 FROM catalog_objects WHERE request_id_hash = ?1`)
       .bind(requestIdHash)
+      .first();
+    if (!row) {
+      await deleteCiphertext(env, object.key);
+    }
+  }
+}
+
+/**
+ * Same best-effort sweep for mailbox snapshots: an object no mailbox row points at (a crash between the R2
+ * put and the row update, or between a replacement and deleting the object it replaced) is removed.
+ */
+async function sweepOrphanMailboxObjects(env: Env): Promise<void> {
+  const listed = await env.RELAY_CATALOG_BUCKET.list({ prefix: "mailbox/", limit: 200 });
+  for (const object of listed.objects) {
+    const row = await env.RELAY_DB.prepare(`SELECT 1 FROM catalog_mailboxes WHERE snapshot_r2_key = ?1`)
+      .bind(object.key)
       .first();
     if (!row) {
       await deleteCiphertext(env, object.key);

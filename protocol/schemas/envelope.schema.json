@@ -10,6 +10,8 @@
     { "$ref": "revocation.schema.json" },
     { "$ref": "catalog-request.schema.json" },
     { "$ref": "catalog-response.schema.json" },
+    { "$ref": "catalog-mailbox-key.schema.json" },
+    { "$ref": "catalog-push.schema.json" },
     { "$ref": "error.schema.json" },
     { "$ref": "retry.schema.json" }
   ]

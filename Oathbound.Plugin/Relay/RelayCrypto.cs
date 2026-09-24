@@ -240,6 +240,14 @@ public static class RelayCrypto
     public static byte[] BuildCatalogHkdfInfo(string pairIdHash, string requestId) =>
         Encoding.UTF8.GetBytes("oathbound-relay-catalog-v1" + pairIdHash + requestId);
 
+    /// catalog-push only: a distinct label so a mailbox key can never be confused with a request key -
+    /// "oathbound-relay-catalog-push-v1" || pairIdHash || receiveKeyId.
+    public static byte[] BuildCatalogPushHkdfInfo(string pairIdHash, string receiveKeyId) =>
+        Encoding.UTF8.GetBytes("oathbound-relay-catalog-push-v1" + pairIdHash + receiveKeyId);
+
+    /// 128-bit mailbox receive key id (protocol/schemas/catalog-mailbox-key.schema.json `receiveKeyId`).
+    public static string RandomReceiveKeyId() => Base64UrlEncode(RandomBytes(16));
+
     private static RelayEcKeyPair ImportPrivateKey(EcPublicKeyJwk publicKeyJwk, byte[] privateD)
     {
         var d = new BigInteger(1, privateD);

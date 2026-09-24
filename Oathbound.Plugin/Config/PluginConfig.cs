@@ -130,10 +130,9 @@ public class PairingState
     /// poll) - drives the "no more often than every six hours, with jitter" schedule.
     public long LastRevocationCheckUnixSeconds { get; set; }
 
-    /// collar/catalog-sync: Owner-side, unix seconds of the last *accepted* (uploaded, not merely
-    /// requested) catalog synchronization for this pair - mirrors the Worker's own per-pair cooldown so the
-    /// UI can show/enforce the four-hour wait without a round trip, though the server's decision is still
-    /// authoritative (protocol/constants.json catalogCooldownSeconds).
+    /// collar/catalog-sync: Owner-side, unix seconds of the last successfully *imported* catalog snapshot
+    /// for this pair (manual refresh or automatic mailbox pickup) - display only ("last imported"); there is
+    /// no longer any cooldown derived from it.
     public long LastAcceptedCatalogSyncUnixSeconds { get; set; }
 
     /// collar/catalog-sync: Owner-side, the highest snapshotId successfully imported for this pair epoch -
@@ -145,6 +144,35 @@ public class PairingState
     /// this pair - the next uploaded catalog-response envelope uses NextOutgoingSnapshotId + 1, satisfying
     /// the Worker's own strictly-increasing-per-pair-epoch requirement.
     public int NextOutgoingSnapshotId { get; set; }
+
+    /// collar/catalog-sync automatic sync, Owner-side: this pairing's current mailbox receive key - the id
+    /// and public half as published (signed) to the relay, and the private scalar DPAPI-protected like the
+    /// device identity (same disclosed Wine limitation). Rotated on every consume, so it only ever decrypts
+    /// the one snapshot waiting for it. Never exported, logged, or sent anywhere.
+    public string? MailboxReceiveKeyId { get; set; }
+    public string? MailboxReceivePublicKeyX { get; set; }
+    public string? MailboxReceivePublicKeyY { get; set; }
+    public byte[]? MailboxReceivePrivateKey { get; set; }
+    public bool? MailboxReceivePrivateKeyProtected { get; set; }
+
+    /// Owner-side, local display state for the Sync tab's up-to-date indicator (collar/catalog-sync "Sync tab
+    /// shows whether the catalog is up to date"): when the mailbox was last checked successfully, the most
+    /// recent check/import failure (cleared on the next success), and when the Sub last published (null =
+    /// never, i.e. an older Sub plugin or sync permission off).
+    public long LastMailboxCheckOkUnixSeconds { get; set; }
+    public string? LastMailboxCheckError { get; set; }
+    public long? SubLastPublishedUnixSeconds { get; set; }
+
+    /// Sub-side: SHA-256 of the exported catalog last successfully published to this pairing's mailbox - the
+    /// change detector. Recorded only after a successful upload, so any failure leaves the change pending.
+    /// Local only; the relay never sees it. Plus when that last successful publish happened (display only).
+    public string? LastPublishedCatalogDigest { get; set; }
+    public long LastPublishedCatalogUnixSeconds { get; set; }
+
+    /// Sub-side: the snapshotId of that last successful push - compared against the relay's delivery receipt
+    /// (waiting / last consumed) so a push that never reached the Owner (key reset, expired unread, new pair
+    /// epoch) is published again even though the catalog itself hasn't changed since.
+    public int LastPublishedMailboxSnapshotId { get; set; }
 
     /// UI-only delivery state for the most recent local unpair/panic notification. Never controls pairing.
     public string? LastRevocationDeliveryStatus { get; set; }
@@ -761,6 +789,11 @@ public class PluginConfig : IPluginConfiguration
     /// Sub-side: what each alias actually does. Never transmitted - only the alias name crosses chat.
     public AliasBook Aliases { get; set; } = new();
 
+    /// collar/catalog-sync "Sub's catalog is rescanned periodically": when true, Glamourer designs, Penumbra
+    /// animation/restraint mods, and Moodles statuses are rescanned at login and about hourly, using the same
+    /// selections as a manual rescan. Default on; the Sub can turn it off from the Sync tab.
+    public bool AutoRescanCatalogs { get; set; } = true;
+
     /// The always-available local panic hotkey (collar/pairing). NO_KEY means "not bound" - the hotkey
     /// always triggers panic unconditionally (it's already a deliberate physical action, nothing to type),
     /// regardless of whether a PanicSafeword is set below.
@@ -912,7 +945,16 @@ public class PluginConfig : IPluginConfiguration
     {
         if (SaveOverride is not null) SaveOverride();
         else Plugin.PluginInterface.SavePluginConfig(this);
+        NotifyChanged();
     }
+
+    /// collar/catalog-sync automatic sync: raised whenever persisted state is saved - this config, or the
+    /// scanned catalogs CatalogStore keeps in their own file - so the Sub's change detector knows to re-check
+    /// its export (after a quiet period; it compares digests, so a save that changed nothing costs one
+    /// export build and never an upload). A plain event, never serialized.
+    public event Action? Changed;
+
+    public void NotifyChanged() => Changed?.Invoke();
 
     public bool MigrateFolderScopes()
     {

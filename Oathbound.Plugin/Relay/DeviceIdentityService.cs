@@ -104,12 +104,14 @@ public sealed class DeviceIdentityService
         cachedKey = null;
     }
 
-    private static (byte[] Data, bool WasProtected) Protect(byte[] plaintext)
+    /// Also used for each Owner-side pairing's catalog-mailbox receive key (CatalogSyncRelayService), with
+    /// its own entropy so a blob from one purpose can never be unprotected as the other.
+    internal static (byte[] Data, bool WasProtected) Protect(byte[] plaintext, byte[]? entropy = null)
     {
         if (!OperatingSystem.IsWindows()) return (plaintext, false);
         try
         {
-            return (ProtectedData.Protect(plaintext, s_entropy, DataProtectionScope.CurrentUser), true);
+            return (ProtectedData.Protect(plaintext, entropy ?? s_entropy, DataProtectionScope.CurrentUser), true);
         }
         catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException)
         {
@@ -130,12 +132,12 @@ public sealed class DeviceIdentityService
     /// `DeviceIdentityUnavailableException` instead of silently returning the still-encrypted ciphertext as
     /// if it were the plaintext scalar (which is what produced the confusing BouncyCastle "Scalar is not in
     /// the interval [1, n-1]" crash this replaces).
-    private static byte[] Unprotect(byte[] stored, bool? isProtected)
+    internal static byte[] Unprotect(byte[] stored, bool? isProtected, byte[]? entropy = null)
     {
         if (!OperatingSystem.IsWindows() || isProtected == false) return stored;
         try
         {
-            return ProtectedData.Unprotect(stored, s_entropy, DataProtectionScope.CurrentUser);
+            return ProtectedData.Unprotect(stored, entropy ?? s_entropy, DataProtectionScope.CurrentUser);
         }
         catch (CryptographicException ex)
         {

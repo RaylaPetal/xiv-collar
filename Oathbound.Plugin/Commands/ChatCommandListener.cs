@@ -381,9 +381,59 @@ public sealed class ChatCommandListener : IDisposable
                 // Lifestream availability) needs a distinct, reportable reason, so TeleportCommand.Apply
                 // owns all of it (collar/teleport's "Refuses when travel cannot safely happen").
                 return HandleForceTeleport(rest);
+            case "revert":
+                // No outer gate: like customtrigger, each category below checks its own permission.
+                return HandleForceRevert(rest);
         }
 
         return ResolveAlias(commandText, sourcePairing);
+    }
+
+    /// The Owner's `revert all` (header "Revert all"): puts everything the Owner can command back to nothing
+    /// in one tell - restraints (gear, rules, bound animations, their moodles), outfit (unlocked, then the
+    /// whole character reverted to Glamourer automation), title, leash, playing animation, toy, and every
+    /// moodle. Each category only if the Sub's own permission for it is on, same as each individual command.
+    /// Never touches the collar (its slot lock, piece and moodle all stay) or any pairing - unlike panic,
+    /// which is the Sub's own safeword and does clear the collar. Each step is isolated, so one failing (an
+    /// IPC plugin not loaded) never stops the rest.
+    private LocalTestResult HandleForceRevert(string rest)
+    {
+        if (!rest.Equals("all", StringComparison.OrdinalIgnoreCase))
+            return LocalTestResult.Fail($"Unrecognized \"revert\" override \"{rest}\" - expected \"all\".");
+
+        var permissions = config.Permissions;
+        var done = new List<string>();
+        var failed = new List<string>();
+        void Step(string name, bool allowed, Action action)
+        {
+            if (!allowed) return;
+            try
+            {
+                action();
+                done.Add(name);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Warning(ex, $"revert all: {name} step failed - continuing.");
+                failed.Add(name);
+            }
+        }
+
+        // Restraints first: releasing their slot locks can hand a slot back to the outfit underneath, which
+        // the outfit revert right after then clears too.
+        Step("restraints", permissions.Restraints, () => restraints.ForceUnlock());
+        Step("outfit", permissions.Outfit, () => outfit.RevertToBase());
+        Step("title", permissions.Title, title.ForceClear);
+        Step("leash", permissions.Follow, follow.Release);
+        Step("animation", permissions.Gesture, gesture.ResetActiveTemporary);
+        Step("toy", permissions.ToyControl, () => toyControl.ForceStop());
+        // Last, so the releases above have already dropped their own holds; the collar's is re-applied.
+        Step("moodles", permissions.Moodles, () => moodles.Ledger.ClearAllExceptCollar());
+
+        if (done.Count == 0 && failed.Count == 0)
+            return LocalTestResult.Fail("Revert all did nothing - every category it covers has its permission turned off.");
+        var summary = $"Reverted {string.Join(", ", done)} (collar and pairing untouched).";
+        return failed.Count == 0 ? LocalTestResult.Ok(summary) : LocalTestResult.Fail($"{summary} Failed: {string.Join(", ", failed)}.");
     }
 
     private LocalTestResult HandleForceTitle(string rest)

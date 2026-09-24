@@ -8,6 +8,11 @@ export function r2KeyForRequest(requestIdHash: string): string {
   return `catalog/${requestIdHash}`;
 }
 
+/** One object per pushed snapshot (not per mailbox) so a consume can never read a newer upload's bytes under an older envelope. */
+export function r2KeyForMailboxSnapshot(pairIdHash: string, pairEpoch: number, snapshotId: number): string {
+  return `mailbox/${pairIdHash}/${pairEpoch}/${snapshotId}`;
+}
+
 /** Content type and max size are both server-controlled; nothing from the caller reaches R2 metadata unchecked. */
 export async function putCiphertext(env: Env, key: string, bytes: Uint8Array): Promise<void> {
   if (bytes.byteLength > CATALOG_CIPHERTEXT_MAX_BYTES) {

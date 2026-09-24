@@ -1,10 +1,9 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { capabilityHash } from "../src/lib/capability";
-import { CATALOG_COOLDOWN_SECONDS } from "../src/lib/constants";
 import { b64url, deviceKeyId, genSigningKeyPair, type Jwk, type KeyPair, pairDevices, randomCapabilityId, signEnvelope, signedFetch } from "./helpers";
 
-describe("catalog request cooldown/active-slot claim", () => {
+describe("catalog request active-slot claim (no post-success cooldown)", () => {
   let owner: KeyPair;
   let sub: KeyPair;
   let ownerId: string;
@@ -82,7 +81,7 @@ describe("catalog request cooldown/active-slot claim", () => {
     expect(r.json.code).toBe("cooldown_active");
   });
 
-  it("reports a wait bounded by the active request's own remaining validity, not the full cooldown", async () => {
+  it("reports a wait bounded by the active request's own remaining validity", async () => {
     await seedActiveRequest(120);
 
     const r = await requestRefresh();
@@ -90,23 +89,19 @@ describe("catalog request cooldown/active-slot claim", () => {
     expect(r.status).toBe(429);
     expect(r.json.retryAfterSeconds).toBeGreaterThan(0);
     expect(r.json.retryAfterSeconds).toBeLessThanOrEqual(120);
-    expect(r.json.retryAfterSeconds).toBeLessThan(CATALOG_COOLDOWN_SECONDS);
   });
 
-  it("still enforces the genuine post-success cooldown when no active request is blocking", async () => {
+  it("accepts a new request immediately after a successful sync when no request is active", async () => {
     await env.RELAY_DB.prepare(
       `INSERT INTO pair_cooldowns (pair_id_hash, pair_epoch, last_accepted_sync_at, last_snapshot_id, active_request_id_hash)
        VALUES (?1, 0, ?2, 1, NULL)
        ON CONFLICT (pair_id_hash, pair_epoch) DO UPDATE SET last_accepted_sync_at = ?2, active_request_id_hash = NULL`,
     )
-      .bind(pairIdHash, Math.floor(Date.now() / 1000) - 60)
+      .bind(pairIdHash, Math.floor(Date.now() / 1000) - 1)
       .run();
 
     const r = await requestRefresh();
 
-    expect(r.status).toBe(429);
-    expect(r.json.code).toBe("cooldown_active");
-    expect(r.json.retryAfterSeconds).toBeGreaterThan(CATALOG_COOLDOWN_SECONDS - 120);
-    expect(r.json.retryAfterSeconds).toBeLessThanOrEqual(CATALOG_COOLDOWN_SECONDS - 60);
+    expect(r.status).toBe(200);
   });
 });

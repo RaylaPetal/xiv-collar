@@ -20,6 +20,9 @@ export const QUOTA_LIMITS = {
   deviceInvitationCreate: { windowSeconds: 3600, maxCount: 10 },
   deviceCatalogRequestCreate: { windowSeconds: 3600, maxCount: 5 },
   pairMutation: { windowSeconds: 3600, maxCount: 60 },
+  // Catalog mailbox key publish/fetch, status and consume (not upload, which catalogUploadBytes bounds).
+  // Hourly Owner checks and debounced Sub publishes need a handful per hour; this only stops runaway loops.
+  deviceMailboxOps: { windowSeconds: 3600, maxCount: 120 },
   originRequests: { windowSeconds: 60, maxCount: 120 },
   endpointGlobal: { windowSeconds: 60, maxCount: 6000 },
   catalogUploadBytes: { windowSeconds: 3600, maxCount: 20, maxBytes: 8 * 1024 * 1024 },

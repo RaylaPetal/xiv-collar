@@ -77,27 +77,15 @@ public sealed class CatalogSyncRelayService
         RequestInFlightChanged?.Invoke();
     }
 
-    public TimeSpan? CooldownRemaining(PairingState pairing)
-    {
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - pairing.LastAcceptedCatalogSyncUnixSeconds;
-        var remaining = RelayProtocolConstants.CatalogCooldownSeconds - elapsed;
-        return remaining > 0 ? TimeSpan.FromSeconds(remaining) : null;
-    }
-
     /// Owner-side, explicit UI action: creates a signed one-use catalog request and sends its reference in
     /// one lifecycle tell (task 6.2), addressed to the given pairing (the active pairing, in practice - see
-    /// CollarWindow). Client-side cooldown/active-request checks are advisory only - the Worker's own atomic
-    /// check is authoritative and is what actually prevents a bypass via clock changes.
+    /// CollarWindow). The manual fallback to the automatic mailbox sync - no cooldown (collar/catalog-sync
+    /// "blocked only by an active request"); the Worker's one-active-request slot is the only gate.
     public async Task<bool> RequestRefreshAsync(PairingState pairing, CancellationToken ct)
     {
         if (!pairing.IsPaired)
         {
             SetError("Not paired.");
-            return false;
-        }
-        if (CooldownRemaining(pairing) is { } remaining)
-        {
-            SetError($"Still cooling down - try again in {FormatRemaining(remaining)}.");
             return false;
         }
         if (RequestInFlight)
@@ -482,13 +470,11 @@ public sealed class CatalogSyncRelayService
         SetInFlight(false);
     }
 
-    private static string FormatRemaining(TimeSpan span) => span.TotalHours >= 1 ? $"{span.Hours}h {span.Minutes}m" : $"{span.Minutes}m {span.Seconds}s";
-
     private static string DescribeError(RelayException ex) => ex.Code switch
     {
         "not_configured" => "No relay endpoint is configured.",
         "network" => "Could not reach the relay - check your connection and try again.",
-        "cooldown_active" => "Still cooling down - try again shortly.",
+        "cooldown_active" => "A refresh request is already waiting on your Sub - try again once it finishes or expires.",
         "rate_limited" => "Too many attempts - try again shortly.",
         "expired" => "That request is no longer valid.",
         "unauthorized" => "The relay rejected this request.",

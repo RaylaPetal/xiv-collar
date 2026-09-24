@@ -35,6 +35,9 @@ public sealed class OutfitCommand
     /// How many designs the last wardrobe scan found in total, before the allowlist filter.
     public int? LastScanTotalDesigns { get; private set; }
 
+    /// Why the last wardrobe scan couldn't run (Glamourer not loaded / IPC failed), or null if it succeeded.
+    public string? LastScanError { get; private set; }
+
     public OutfitCommand(PluginConfig config, GlamourerIpc glamourer, SlotLockManager slotLocks, SubRuntimeState runtimeState, MoodlesCommand moodles)
     {
         this.config = config;
@@ -94,6 +97,19 @@ public sealed class OutfitCommand
 
     /// The only thing that can release a force-applied outfit besides panic. Like Unlock, also clears the
     /// current outfit's attached moodle whether or not a slot was locked.
+    /// The Owner's `revert all`: releases the outfit (locks and attached moodle), then reverts the whole
+    /// character back to Glamourer automation - like panic, but the collar's own slot lock is never released,
+    /// so lock enforcement puts the collar piece straight back on (and VerifySoon re-checks in case the
+    /// revert's state-change event raced it). Anything else still locked at that point is reasserted the same
+    /// way; the caller releases restraints first so nothing but the collar is left to reassert.
+    public bool RevertToBase()
+    {
+        ForceUnlock();
+        var reverted = glamourer.RevertToAutomationFull() == GlamourerApiEc.Success;
+        slotLocks.VerifySoon();
+        return reverted;
+    }
+
     public bool ForceUnlock()
     {
         var hadLock = slotLocks.HasLock(Owner);
@@ -169,7 +185,21 @@ public sealed class OutfitCommand
     /// an alias after in the Wardrobe tab.
     public void Rescan()
     {
-        var allDesigns = glamourer.GetDesigns();
+        // collar/catalog-sync "a category whose rescan fails keeps its previously scanned catalog": an
+        // unavailable Glamourer throws from the IPC call, before anything below is touched - caught here
+        // so the scheduled rescan (and the button) report it instead of letting it escape.
+        IReadOnlyList<GlamourerDesign> allDesigns;
+        try
+        {
+            allDesigns = glamourer.GetDesigns();
+        }
+        catch (Exception ex)
+        {
+            LastScanError = "Glamourer is not available - kept the previously scanned designs.";
+            Plugin.Log.Warning(ex, "Wardrobe rescan skipped: Glamourer IPC unavailable.");
+            return;
+        }
+        LastScanError = null;
         LastScanTotalDesigns = allDesigns.Count;
 
         var allowlist = config.WardrobeFolderAllowlist;

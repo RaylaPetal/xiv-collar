@@ -51,6 +51,59 @@ internal sealed class CatalogConsumeResponseBody
     [JsonPropertyName("ciphertextBase64Url")] public string CiphertextBase64Url { get; set; } = "";
 }
 
+internal sealed class MailboxPairRefBody
+{
+    [JsonPropertyName("pairIdHash")] public string PairIdHash { get; set; } = "";
+    [JsonPropertyName("pairEpoch")] public int PairEpoch { get; set; }
+}
+
+internal sealed class MailboxPublishKeyBody
+{
+    [JsonPropertyName("pairIdHash")] public string PairIdHash { get; set; } = "";
+    [JsonPropertyName("pairEpoch")] public int PairEpoch { get; set; }
+    [JsonPropertyName("key")] public CatalogMailboxKeyEnvelope Key { get; set; } = new();
+}
+
+internal sealed class MailboxUploadBody
+{
+    [JsonPropertyName("envelope")] public CatalogPushEnvelope Envelope { get; set; } = new();
+    [JsonPropertyName("ciphertextBase64Url")] public string CiphertextBase64Url { get; set; } = "";
+}
+
+internal sealed class MailboxConsumeBody
+{
+    [JsonPropertyName("pairIdHash")] public string PairIdHash { get; set; } = "";
+    [JsonPropertyName("pairEpoch")] public int PairEpoch { get; set; }
+    [JsonPropertyName("snapshotId")] public int SnapshotId { get; set; }
+    [JsonPropertyName("nextKey")] public CatalogMailboxKeyEnvelope NextKey { get; set; } = new();
+}
+
+internal sealed class MailboxConsumeResponseBody
+{
+    [JsonPropertyName("envelope")] public CatalogPushEnvelope Envelope { get; set; } = new();
+    [JsonPropertyName("ciphertextBase64Url")] public string CiphertextBase64Url { get; set; } = "";
+}
+
+/// Sub-side: the Owner's current receive key plus the delivery receipt - which push is waiting, which was last
+/// consumed - see worker/src/routes/mailbox.ts `fetchMailboxKey`.
+public sealed class CatalogMailboxKeyInfo
+{
+    [JsonPropertyName("key")] public CatalogMailboxKeyEnvelope Key { get; set; } = new();
+    [JsonPropertyName("waitingSnapshotId")] public int? WaitingSnapshotId { get; set; }
+    [JsonPropertyName("lastConsumedSnapshotId")] public int? LastConsumedSnapshotId { get; set; }
+}
+
+/// What the Owner learns from one cheap mailbox check - see worker/src/routes/mailbox.ts `mailboxStatus`.
+public sealed class CatalogMailboxStatus
+{
+    [JsonPropertyName("hasKey")] public bool HasKey { get; set; }
+    [JsonPropertyName("receiveKeyId")] public string? ReceiveKeyId { get; set; }
+    [JsonPropertyName("hasSnapshot")] public bool HasSnapshot { get; set; }
+    [JsonPropertyName("snapshotId")] public int? SnapshotId { get; set; }
+    [JsonPropertyName("snapshotCreatedAt")] public long? SnapshotCreatedAt { get; set; }
+    [JsonPropertyName("lastUploadAt")] public long? LastUploadAt { get; set; }
+}
+
 /// The plugin's one HTTP boundary to the Cloudflare relay (collar/relay-service). Every mutating call signs
 /// a request-signing envelope (protocol/constants.json `requestSigning`) with the device identity's own
 /// signing key; read-only fetches are capability-only, matching the Worker's auth model exactly (see
@@ -137,6 +190,34 @@ public sealed class RelayClient : IDisposable
     public async Task<(CatalogResponseEnvelope Envelope, byte[] Ciphertext)> ConsumeCatalogResponseAsync(string requestId, CancellationToken ct)
     {
         var body = await SendSignedAsync<CatalogConsumeResponseBody>(HttpMethod.Post, $"/v1/catalog/requests/{requestId}/consume", null, ct).ConfigureAwait(false);
+        return (body.Envelope, RelayCrypto.Base64UrlDecode(body.CiphertextBase64Url));
+    }
+
+    // ---- Catalog mailbox (automatic sync) ----
+    // All signed POSTs. `not_found` means different things per route: from Fetch/Upload it is "the Owner has
+    // never published a receive key"; from Status (which otherwise always answers) it can only mean a relay
+    // that predates the mailbox - callers treat that as "automatic sync unsupported", not an error.
+
+    public Task<CatalogMailboxKeyEnvelope> PublishMailboxKeyAsync(CatalogMailboxKeyEnvelope key, CancellationToken ct) =>
+        SendSignedAsync<CatalogMailboxKeyEnvelope>(HttpMethod.Post, "/v1/catalog/mailbox/key",
+            new MailboxPublishKeyBody { PairIdHash = key.PairIdHash, PairEpoch = key.PairEpoch, Key = key }, ct);
+
+    public Task<CatalogMailboxKeyInfo> FetchMailboxKeyAsync(string pairIdHash, int pairEpoch, CancellationToken ct) =>
+        SendSignedAsync<CatalogMailboxKeyInfo>(HttpMethod.Post, "/v1/catalog/mailbox/key/fetch",
+            new MailboxPairRefBody { PairIdHash = pairIdHash, PairEpoch = pairEpoch }, ct);
+
+    public Task<CatalogPushEnvelope> UploadMailboxSnapshotAsync(CatalogPushEnvelope envelope, byte[] ciphertext, CancellationToken ct) =>
+        SendSignedAsync<CatalogPushEnvelope>(HttpMethod.Post, "/v1/catalog/mailbox/upload",
+            new MailboxUploadBody { Envelope = envelope, CiphertextBase64Url = RelayCrypto.Base64UrlEncode(ciphertext) }, ct);
+
+    public Task<CatalogMailboxStatus> FetchMailboxStatusAsync(string pairIdHash, int pairEpoch, CancellationToken ct) =>
+        SendSignedAsync<CatalogMailboxStatus>(HttpMethod.Post, "/v1/catalog/mailbox/status",
+            new MailboxPairRefBody { PairIdHash = pairIdHash, PairEpoch = pairEpoch }, ct);
+
+    public async Task<(CatalogPushEnvelope Envelope, byte[] Ciphertext)> ConsumeMailboxSnapshotAsync(string pairIdHash, int pairEpoch, int snapshotId, CatalogMailboxKeyEnvelope nextKey, CancellationToken ct)
+    {
+        var body = await SendSignedAsync<MailboxConsumeResponseBody>(HttpMethod.Post, "/v1/catalog/mailbox/consume",
+            new MailboxConsumeBody { PairIdHash = pairIdHash, PairEpoch = pairEpoch, SnapshotId = snapshotId, NextKey = nextKey }, ct).ConfigureAwait(false);
         return (body.Envelope, RelayCrypto.Base64UrlDecode(body.CiphertextBase64Url));
     }
 

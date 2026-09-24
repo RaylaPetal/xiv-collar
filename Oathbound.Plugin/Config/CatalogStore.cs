@@ -55,6 +55,7 @@ public sealed class CatalogStore
             File.Replace(tempPath, FilePath, null);
         else
             File.Move(tempPath, FilePath);
+        config.NotifyChanged();
     }
 
     private void LoadInto(PluginConfig config)

@@ -110,6 +110,77 @@ public sealed class CatalogResponseEnvelope
     [JsonPropertyName("signature")] public string? Signature { get; set; }
 }
 
+/// collar/catalog-sync automatic sync: the Owner's current receive key for one pair/epoch's relay mailbox
+/// (protocol/schemas/catalog-mailbox-key.schema.json), signed with the Owner's device key so the Sub verifies
+/// it against the paired Owner before encrypting anything to it.
+public sealed class CatalogMailboxKeyEnvelope
+{
+    [JsonPropertyName("type")] public string Type { get; set; } = "catalog-mailbox-key";
+    [JsonPropertyName("schemaVersion")] public int SchemaVersion { get; set; } = 1;
+    [JsonPropertyName("pairIdHash")] public string PairIdHash { get; set; } = "";
+    [JsonPropertyName("pairEpoch")] public int PairEpoch { get; set; }
+    [JsonPropertyName("receiveKeyId")] public string ReceiveKeyId { get; set; } = "";
+    [JsonPropertyName("ownerDeviceKeyId")] public string OwnerDeviceKeyId { get; set; } = "";
+    [JsonPropertyName("receivePublicKey")] public EcPublicKeyJwk ReceivePublicKey { get; set; } = new();
+    [JsonPropertyName("createdAt")] public long CreatedAt { get; set; }
+    [JsonPropertyName("signature")] public string? Signature { get; set; }
+}
+
+/// collar/catalog-sync automatic sync: a Sub-initiated snapshot left in the pair's mailbox
+/// (protocol/schemas/catalog-push.schema.json) - catalog-response's shape with the receive key it was
+/// encrypted to in place of a request id.
+public sealed class CatalogPushEnvelope
+{
+    [JsonPropertyName("type")] public string Type { get; set; } = "catalog-push";
+    [JsonPropertyName("schemaVersion")] public int SchemaVersion { get; set; } = 1;
+    [JsonPropertyName("pairIdHash")] public string PairIdHash { get; set; } = "";
+    [JsonPropertyName("pairEpoch")] public int PairEpoch { get; set; }
+    [JsonPropertyName("receiveKeyId")] public string ReceiveKeyId { get; set; } = "";
+    [JsonPropertyName("snapshotId")] public int SnapshotId { get; set; }
+    [JsonPropertyName("senderDeviceKeyId")] public string SenderDeviceKeyId { get; set; } = "";
+    [JsonPropertyName("recipientDeviceKeyId")] public string RecipientDeviceKeyId { get; set; } = "";
+    [JsonPropertyName("createdAt")] public long CreatedAt { get; set; }
+    [JsonPropertyName("expiresAt")] public long ExpiresAt { get; set; }
+    [JsonPropertyName("algorithm")] public string Algorithm { get; set; } = "ECDH-P256+HKDF-SHA256+AES-256-GCM";
+    [JsonPropertyName("ciphertextDigest")] public string CiphertextDigest { get; set; } = "";
+    [JsonPropertyName("ciphertextSizeBytes")] public int CiphertextSizeBytes { get; set; }
+    [JsonPropertyName("nonce")] public string Nonce { get; set; } = "";
+    [JsonPropertyName("senderEphemeralPublicKey")] public EcPublicKeyJwk SenderEphemeralPublicKey { get; set; } = new();
+    [JsonPropertyName("signature")] public string? Signature { get; set; }
+}
+
+/// AES-GCM AAD for a catalog-push, built exactly like CatalogResponseAad (digest/nonce/signature removed,
+/// ciphertextSizeBytes forced to 0) - protocol/vectors/crypto-vectors.json `ecdhHkdfAesGcmCatalogPush`.
+public static class CatalogPushAad
+{
+    public static byte[] Build(CatalogPushEnvelope envelope)
+    {
+        var dict = new Dictionary<string, object?>
+        {
+            ["type"] = envelope.Type,
+            ["schemaVersion"] = envelope.SchemaVersion,
+            ["pairIdHash"] = envelope.PairIdHash,
+            ["pairEpoch"] = envelope.PairEpoch,
+            ["receiveKeyId"] = envelope.ReceiveKeyId,
+            ["snapshotId"] = envelope.SnapshotId,
+            ["senderDeviceKeyId"] = envelope.SenderDeviceKeyId,
+            ["recipientDeviceKeyId"] = envelope.RecipientDeviceKeyId,
+            ["createdAt"] = envelope.CreatedAt,
+            ["expiresAt"] = envelope.ExpiresAt,
+            ["algorithm"] = envelope.Algorithm,
+            ["ciphertextSizeBytes"] = 0,
+            ["senderEphemeralPublicKey"] = new Dictionary<string, object?>
+            {
+                ["kty"] = envelope.SenderEphemeralPublicKey.Kty,
+                ["crv"] = envelope.SenderEphemeralPublicKey.Crv,
+                ["x"] = envelope.SenderEphemeralPublicKey.X,
+                ["y"] = envelope.SenderEphemeralPublicKey.Y,
+            },
+        };
+        return System.Text.Encoding.UTF8.GetBytes(CanonicalJson.Serialize(dict));
+    }
+}
+
 /// Builds the AES-GCM additional authenticated data for a catalog-response envelope: everything except
 /// ciphertextDigest, nonce, and signature (none of which are knowable before encryption happens), with
 /// ciphertextSizeBytes forced to 0 as the same placeholder the Worker's own reference vectors use

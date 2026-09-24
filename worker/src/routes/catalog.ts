@@ -2,7 +2,7 @@ import type { Env } from "../env";
 import { resolverFromStoredDeviceKeys, verifySignedRequest } from "../lib/auth";
 import { base64UrlToBytes, bytesToBase64Url } from "../lib/base64";
 import { capabilityHash, isValidCapabilityShape } from "../lib/capability";
-import { CATALOG_COOLDOWN_SECONDS, CATALOG_OBJECT_EXPIRY_SECONDS, CATALOG_REQUEST_EXPIRY_SECONDS, nowSeconds } from "../lib/constants";
+import { CATALOG_OBJECT_EXPIRY_SECONDS, CATALOG_REQUEST_EXPIRY_SECONDS, nowSeconds } from "../lib/constants";
 import { verifyEcdsaSignature, type EcPublicKeyJwk } from "../lib/crypto";
 import { RelayError } from "../lib/errors";
 import { sha256Hex, toCanonicalJson } from "../lib/json";
@@ -70,7 +70,7 @@ async function verifyEnvelope<T extends { signature: string }>(envelope: T, publ
   return verifyEcdsaSignature(publicKeyJwk, signature, toCanonicalJson(unsigned));
 }
 
-/** Owner-only: explicit refresh request. Cooldown and one-active-request-per-pair are enforced by a single atomic UPDATE. */
+/** Owner-only: explicit refresh request. One-active-request-per-pair is enforced by a single atomic UPDATE. */
 export async function createCatalogRequest(request: Request, env: Env): Promise<Response> {
   await assertCircuitBreakerClosed(env);
   const { deviceKeyId, bodyJson } = await verifySignedRequest(request, env, resolverFromStoredDeviceKeys(env));
@@ -109,8 +109,10 @@ export async function createCatalogRequest(request: Request, env: Env): Promise<
   const requestIdHash = await capabilityHash(envelope.requestId);
 
   // Scoped by (pairIdHash, pairEpoch), not pairIdHash alone: a mutual pair's two directions share one
-  // pairIdHash but must never share one cooldown/active-request slot, or a sync in one direction blocks
-  // or corrupts the other's.
+  // pairIdHash but must never share one active-request slot, or a sync in one direction blocks or
+  // corrupts the other's. (The table keeps its historical name; there is no post-success cooldown any
+  // more - collar/catalog-sync "blocked only by an active request" - catalogs sync automatically through
+  // the mailbox, so a manual request is only ever gated by another still-valid request.)
   await env.RELAY_DB.prepare(
     `INSERT INTO pair_cooldowns (pair_id_hash, pair_epoch, last_accepted_sync_at, last_snapshot_id, active_request_id_hash)
      VALUES (?1, ?2, 0, 0, NULL) ON CONFLICT (pair_id_hash, pair_epoch) DO NOTHING`,
@@ -123,30 +125,25 @@ export async function createCatalogRequest(request: Request, env: Env): Promise<
   // the scheduled cleanup (worker/src/scheduled.ts) to get around to clearing it.
   const claim = await env.RELAY_DB.prepare(
     `UPDATE pair_cooldowns SET active_request_id_hash = ?1
-     WHERE pair_id_hash = ?2 AND pair_epoch = ?3 AND (?4 - last_accepted_sync_at) >= ?5
+     WHERE pair_id_hash = ?2 AND pair_epoch = ?3
        AND NOT EXISTS (
          SELECT 1 FROM catalog_requests
          WHERE request_id_hash = pair_cooldowns.active_request_id_hash AND expires_at > ?4
        )`,
   )
-    .bind(requestIdHash, envelope.pairIdHash, envelope.pairEpoch, now, CATALOG_COOLDOWN_SECONDS)
+    .bind(requestIdHash, envelope.pairIdHash, envelope.pairEpoch, now)
     .run();
 
   if ((claim.meta.changes ?? 0) === 0) {
-    const cooldownRow = await env.RELAY_DB.prepare(
-      `SELECT last_accepted_sync_at, active_request_id_hash FROM pair_cooldowns WHERE pair_id_hash = ?1 AND pair_epoch = ?2`,
+    // Only an unanswered, still-valid request can block the claim: report the wait until its own expiry.
+    // `cooldown_active` is kept as the code because shipped plugins already map it to a message.
+    const activeRequest = await env.RELAY_DB.prepare(
+      `SELECT r.expires_at FROM pair_cooldowns c JOIN catalog_requests r ON r.request_id_hash = c.active_request_id_hash
+       WHERE c.pair_id_hash = ?1 AND c.pair_epoch = ?2`,
     )
       .bind(envelope.pairIdHash, envelope.pairEpoch)
-      .first<{ last_accepted_sync_at: number; active_request_id_hash: string | null }>();
-    let remaining = cooldownRow ? CATALOG_COOLDOWN_SECONDS - (now - cooldownRow.last_accepted_sync_at) : CATALOG_COOLDOWN_SECONDS;
-    // Genuinely blocked by an unanswered pending request, not the post-success cooldown: report the wait
-    // until that request's own expiry instead, since it's what actually gates the next successful claim.
-    if (cooldownRow?.active_request_id_hash) {
-      const activeRequest = await env.RELAY_DB.prepare(`SELECT expires_at FROM catalog_requests WHERE request_id_hash = ?1`)
-        .bind(cooldownRow.active_request_id_hash)
-        .first<{ expires_at: number }>();
-      if (activeRequest) remaining = activeRequest.expires_at - now;
-    }
+      .first<{ expires_at: number }>();
+    const remaining = activeRequest ? activeRequest.expires_at - now : CATALOG_REQUEST_EXPIRY_SECONDS;
     throw new RelayError("cooldown_active", Math.max(remaining, 1));
   }
 

@@ -69,4 +69,54 @@ describe("scheduled cleanup", () => {
     const r2Object = await env.RELAY_CATALOG_BUCKET.get(orphanKey);
     expect(r2Object).toBeNull();
   });
+
+  it("drops expired mailbox snapshots, removes revoked pairs' mailboxes, and sweeps orphaned mailbox objects", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const past = now - 3600;
+    const insertPair = (hash: string, revokedAt: number | null) =>
+      env.RELAY_DB.prepare(
+        `INSERT INTO pairs (pair_id_hash, pair_epoch, owner_device_key_id, sub_device_key_id, created_at, revoked_at) VALUES (?1, 0, 'o', 's', ?2, ?3)`,
+      )
+        .bind(hash, past, revokedAt)
+        .run();
+    const insertMailbox = (hash: string, r2Key: string, expiresAt: number) =>
+      env.RELAY_DB.prepare(
+        `INSERT INTO catalog_mailboxes (pair_id_hash, pair_epoch, receive_key_id, receive_key_envelope, key_published_at, last_upload_at,
+           snapshot_id, snapshot_r2_key, snapshot_envelope, snapshot_created_at, snapshot_expires_at)
+         VALUES (?1, 0, 'key-id', '{}', ?2, ?2, 1, ?3, '{}', ?2, ?4)`,
+      )
+        .bind(hash, past, r2Key, expiresAt)
+        .run();
+
+    await insertPair("mbx-expired", null);
+    await insertMailbox("mbx-expired", "mailbox/mbx-expired/0/1", past);
+    await env.RELAY_CATALOG_BUCKET.put("mailbox/mbx-expired/0/1", new Uint8Array([1]));
+
+    await insertPair("mbx-live", null);
+    await insertMailbox("mbx-live", "mailbox/mbx-live/0/1", now + 3600);
+    await env.RELAY_CATALOG_BUCKET.put("mailbox/mbx-live/0/1", new Uint8Array([1]));
+
+    await insertPair("mbx-revoked", past);
+    await insertMailbox("mbx-revoked", "mailbox/mbx-revoked/0/1", now + 3600);
+    await env.RELAY_CATALOG_BUCKET.put("mailbox/mbx-revoked/0/1", new Uint8Array([1]));
+
+    await env.RELAY_CATALOG_BUCKET.put("mailbox/mbx-live/0/0", new Uint8Array([1])); // replaced but never deleted
+
+    await runScheduledCleanup(env);
+
+    const expired = await env.RELAY_DB.prepare(`SELECT receive_key_id, snapshot_id FROM catalog_mailboxes WHERE pair_id_hash = 'mbx-expired'`).first<{
+      receive_key_id: string;
+      snapshot_id: number | null;
+    }>();
+    expect(expired).toEqual({ receive_key_id: "key-id", snapshot_id: null });
+    expect(await env.RELAY_CATALOG_BUCKET.head("mailbox/mbx-expired/0/1")).toBeNull();
+
+    const live = await env.RELAY_DB.prepare(`SELECT snapshot_id FROM catalog_mailboxes WHERE pair_id_hash = 'mbx-live'`).first<{ snapshot_id: number }>();
+    expect(live?.snapshot_id).toBe(1);
+    expect(await env.RELAY_CATALOG_BUCKET.head("mailbox/mbx-live/0/1")).not.toBeNull();
+    expect(await env.RELAY_CATALOG_BUCKET.head("mailbox/mbx-live/0/0")).toBeNull();
+
+    expect(await env.RELAY_DB.prepare(`SELECT 1 FROM catalog_mailboxes WHERE pair_id_hash = 'mbx-revoked'`).first()).toBeNull();
+    expect(await env.RELAY_CATALOG_BUCKET.head("mailbox/mbx-revoked/0/1")).toBeNull();
+  });
 });
