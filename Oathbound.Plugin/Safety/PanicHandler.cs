@@ -29,11 +29,13 @@ public sealed class PanicHandler
     private readonly CollarCommand collar;
     private readonly HotbarBlockVisuals hotbarVisuals;
     private readonly AttachedMoodleLedger moodleLedger;
+    private readonly GestureCommand gesture;
 
-    public PanicHandler(PairingService pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, ToyControlCommand toyControl, SubRuntimeState runtimeState, CollarCommand collar, HotbarBlockVisuals hotbarVisuals, AttachedMoodleLedger moodleLedger)
+    public PanicHandler(PairingService pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, ToyControlCommand toyControl, SubRuntimeState runtimeState, CollarCommand collar, HotbarBlockVisuals hotbarVisuals, AttachedMoodleLedger moodleLedger, GestureCommand gesture)
     {
         this.hotbarVisuals = hotbarVisuals;
         this.moodleLedger = moodleLedger;
+        this.gesture = gesture;
         this.pairing = pairing;
         this.glamourer = glamourer;
         this.slotLocks = slotLocks;
@@ -87,6 +89,8 @@ public sealed class PanicHandler
         // step can never leave the Sub's hotbars greyed out after panic.
         RunStep("restore hotbars", hotbarVisuals.Hide);
         RunStep("release restraint bound animations", restraints.ReleaseAllBoundAnimationsForPanic);
+        // Oathbound locks the mods it holds, so the Sub can't turn them off from Penumbra - panic must.
+        RunStep("release gesture animation", gesture.ResetActiveTemporary);
         RunStep("stop toy control", toyControl.ReleaseAllForPanic);
         RunStep("suspend toy triggers", () => runtimeState.ToyTriggersSuspended = true);
 

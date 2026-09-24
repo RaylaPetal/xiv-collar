@@ -69,8 +69,19 @@ public sealed class GestureCommand
         }
 
         if (activeTemporary is { } active && now >= active.IdleUntilTicks)
-            ResetActiveTemporary();
+        {
+            // Never pull the mod out from under an animation that's still playing: a looping emote or a
+            // sit/doze pose would drop straight back to vanilla. Keep holding it until the character is back
+            // to standing normally, then release.
+            if (IsStanding())
+                ResetActiveTemporary();
+            else
+                activeTemporary = active with { IdleUntilTicks = now + StillPlayingRecheckMs };
+        }
     }
+
+    /// While the gesture is still playing past its idle timeout, how often to check whether it has ended.
+    private const long StillPlayingRecheckMs = 2_000;
 
     /// Reverts the active temporary gesture activation on demand - used by the manual Reset control and
     /// internally whenever a different mod's temporary activation needs to replace this one.

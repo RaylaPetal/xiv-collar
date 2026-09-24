@@ -94,6 +94,7 @@ public sealed class Plugin : IDalamudPlugin
     public SlotLockManager SlotLockManager { get; }
     public HonorificIpc HonorificIpc { get; }
     public PenumbraIpc PenumbraIpc { get; }
+    private readonly TemporaryModSettingsCoordinator temporaryModSettings;
     public MoodlesIpc MoodlesIpc { get; }
     public CustomizePlusIpc CustomizePlusIpc { get; }
     public IntifaceIpc IntifaceIpc { get; }
@@ -179,7 +180,7 @@ public sealed class Plugin : IDalamudPlugin
         // (collar/attached-moodles).
         MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc, CatalogStore, new AttachedMoodleLedger(Configuration, MoodlesIpc));
         OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState, MoodlesCommand);
-        var temporaryModSettings = new TemporaryModSettingsCoordinator(PenumbraIpc);
+        temporaryModSettings = new TemporaryModSettingsCoordinator(PenumbraIpc);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc, temporaryModSettings, CatalogStore);
         FollowCommand = new FollowCommand(Configuration, MovementLockService, RuntimeState, MoodlesCommand);
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
@@ -197,7 +198,7 @@ public sealed class Plugin : IDalamudPlugin
         CatalogSyncRelayService = new CatalogSyncRelayService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CatalogSyncService);
         ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, ToyControlCommand, CustomTriggerCommand, TeleportCommand);
 
-        PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, ToyControlCommand, RuntimeState, CollarCommand, ActionBlockService.Visuals, MoodlesCommand.Ledger);
+        PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, ToyControlCommand, RuntimeState, CollarCommand, ActionBlockService.Visuals, MoodlesCommand.Ledger, GestureCommand);
 
         ModuleWindow = new ModuleWindow(this);
         CollarWindow = new CollarWindow(this, ModuleWindow);
@@ -348,6 +349,10 @@ public sealed class Plugin : IDalamudPlugin
         ToyTriggerEvaluator.Dispose();
         SlotLockManager.Dispose();
         GlamourerIpc.Dispose();
+        // After every feature above has released what it could: drops any claim still held, since a locked
+        // temporary setting can only be removed with Oathbound's own key.
+        temporaryModSettings.Dispose();
+        PenumbraIpc.Dispose();
 
         ECommons.ECommonsMain.Dispose();
     }
