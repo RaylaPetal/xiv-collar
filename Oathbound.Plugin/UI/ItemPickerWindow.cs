@@ -131,6 +131,10 @@ public sealed class ItemPickerWindow : Window, IDisposable
         };
     }
 
+    /// Shared purple window chrome (Theme.PushWindowStyle) - pushed before Begin, popped after End.
+    public override void PreDraw() => Theme.PushWindowStyle();
+    public override void PostDraw() => Theme.PopWindowStyle();
+
     public override void Draw()
     {
         IconGlyph.Text(FontAwesomeIcon.Tshirt, modLabel is not null ? $"Changed items - {modLabel}" : slot == default ? "Item Library" : $"Item Library - {slot}");

@@ -314,7 +314,7 @@ public sealed class CatalogSyncService
         AppendSection(sb, MoodlesHeader, moodles.ExportNames());
         AppendSection(sb, MoodlesAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Moodle, config.Aliases.Moodles.Select(a => new AliasExportEntry(a.Alias, DescribeMoodleAlias(a), MoodlesTextFormat.StripMarkup(a.StatusName)))).Select(EncodeAliasEntry));
         AppendSection(sb, RestraintsHeader, restraints.ExportEntries());
-        AppendSection(sb, RestraintsAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Restraint, config.Aliases.Restraints.Select(a => new AliasExportEntry(a.Alias, DescribeRestraintAlias(a)))).Select(EncodeAliasEntry));
+        AppendSection(sb, RestraintsAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Restraint, RestraintWordEntries()).Select(EncodeAliasEntry));
         AppendSection(sb, BundlesHeader, ExportBundleEntries().Select(EncodeAliasEntry));
         return sb.ToString();
     }
@@ -389,7 +389,16 @@ public sealed class CatalogSyncService
     private static string DescribeTitleAlias(TitleAliasDefinition a) => $"Title: \"{a.Text}\" ({(a.IsPrefix ? "prefix" : "suffix")})";
     private static string DescribeOutfitAlias(OutfitAliasDefinition a) => $"Outfit: {a.DesignName}{(a.Locked ? " (locks its slots)" : "")}";
     private static string DescribeGestureAlias(GestureAliasDefinition a) => $"Gesture: {(a.AnimationName.Length > 0 ? a.AnimationName : a.EmoteName)}";
-    private static string DescribeRestraintAlias(RestraintAliasDefinition a) => $"Restraint: {a.DeviceName} (toggles)";
+    /// A restraint's own word - each captured device's name and each configured mod restraint's alias -
+    /// exported as the toggle word the Owner sends bare (RestraintCommand.ToggleByWord). There is no
+    /// separate restraint-alias list any more.
+    private IEnumerable<AliasExportEntry> RestraintWordEntries() =>
+        config.RestraintMapping.Devices.Values
+            .Where(d => d.Name.Trim().Length > 0)
+            .Select(d => new AliasExportEntry(d.Name.Trim(), $"Restraint: {d.Name.Trim()} (toggles)"))
+            .Concat(config.RestraintMapping.ConfiguredMods
+                .Where(m => m.Alias.Trim().Length > 0)
+                .Select(m => new AliasExportEntry(m.Alias.Trim(), $"Restraint: {m.Name} (toggles)")));
     private static string DescribeMoodleAlias(MoodlesAliasDefinition a) => $"Moodle: {MoodlesTextFormat.StripMarkup(a.StatusName)}";
     private static string DescribeCustomTrigger(CustomTriggerDefinition a) => $"Custom Trigger: {string.Join(", ", a.Actions.Select(CustomTriggerCommand.Summarize))}";
 

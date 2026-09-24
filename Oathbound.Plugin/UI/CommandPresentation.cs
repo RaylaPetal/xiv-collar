@@ -30,21 +30,25 @@ public static class CommandPresentation
         _ => "Unknown rule",
     };
 
-    public static string Pose(int id) => id switch { 1 => "Ground Sit", 2 => "Sit", 3 => "Doze", _ => "Unknown Pose" };
+    /// Option names that say nothing on their own - Penumbra mods commonly name a group after the animation
+    /// and give it plain "Enable"/"Disabled" options, so the group is the real name in that case.
+    private static readonly string[] GenericOptionNames = ["enable", "enabled", "disable", "disabled", "on", "off", "yes", "no", "none", "default"];
 
-    public static string CompactAnimation(string name)
+    /// The name a person recognizes an animation option by: its group when the option itself is generic
+    /// ("313. [Mittens] - Deep Plaps" rather than "Enable"), otherwise "Group · Option" (or just the option
+    /// when the group is empty or the same text).
+    public static string AnimationDisplayName(string groupName, string animationName)
     {
-        if (name.StartsWith('(')) return name;
-        var triggerHint = name.IndexOf(" (", StringComparison.Ordinal);
-        var compact = triggerHint > 0 ? name[..triggerHint] : name;
-        while (true)
-        {
-            var open = compact.IndexOf('[');
-            var close = open >= 0 ? compact.IndexOf(']', open + 1) : -1;
-            if (open < 0 || close < 0) break;
-            compact = $"{compact[..open]}{compact[(close + 1)..]}";
-        }
-        compact = string.Join(' ', compact.Split(' ', StringSplitOptions.RemoveEmptyEntries));
-        return compact.Length <= 28 ? compact : $"{compact[..25]}...";
+        var group = groupName.Trim();
+        var option = animationName.Trim();
+        if (group.Length == 0)
+            return option;
+        if (option.Length == 0 || Array.Exists(GenericOptionNames, n => string.Equals(n, option, StringComparison.OrdinalIgnoreCase)))
+            return group;
+        if (string.Equals(group, option, StringComparison.OrdinalIgnoreCase))
+            return option;
+        return $"{group} · {option}";
     }
+
+    public static string Pose(int id) => id switch { 1 => "Ground Sit", 2 => "Sit", 3 => "Doze", _ => "Unknown Pose" };
 }

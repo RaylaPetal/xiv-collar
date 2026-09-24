@@ -33,16 +33,9 @@ public class OutfitAliasDefinition
     /// Display only, so the Sub can recognize the entry in Settings - not used for matching.
     public string DesignName { get; set; } = "";
     public bool Locked { get; set; }
-}
 
-[Serializable]
-public class RestraintAliasDefinition
-{
-    public string Alias { get; set; } = "";
-    public string DeviceId { get; set; } = "";
-
-    /// Display only, so the Sub can recognize the entry in Settings - not used for matching.
-    public string DeviceName { get; set; } = "";
+    /// collar/attached-moodles: the Sub's default moodle while this outfit is current, if any.
+    public AttachedMoodleRef? AttachedMoodle { get; set; }
 }
 
 [Serializable]
@@ -66,13 +59,32 @@ public class MoodlesAliasDefinition
     public string StatusName { get; set; } = "";
 }
 
-/// Follow has no Sub-defined content (only engage/release exist) - just the two trigger words themselves,
-/// which the Sub can still rename for their own comfort.
+/// Follow's Sub-side settings. The engage/release words used to be renamable here; collar/control-
+/// vocabulary fixed them to `leash`/`unleash` (ControlWords), so the two alias properties are no longer read
+/// and only remain so older saved configs still deserialize.
 [Serializable]
 public class FollowAliasWords
 {
+    [Obsolete("collar/control-vocabulary: the leash word is fixed - use ControlWords.Leash.")]
     public string EngageAlias { get; set; } = "leash";
+    [Obsolete("collar/control-vocabulary: the unleash word is fixed - use ControlWords.Unleash.")]
     public string ReleaseAlias { get; set; } = "unleash";
+
+    /// collar/attached-moodles: the Sub's default moodle while leashed, if any.
+    public AttachedMoodleRef? AttachedMoodle { get; set; }
+}
+
+/// collar/control-vocabulary: the fixed control words every Oathbound client understands. Not renamable, so
+/// an Owner and Sub never have to agree on custom words for releasing or engaging state.
+public static class ControlWords
+{
+    public const string Unlock = "unlock";
+    public const string ClearTitle = "clear-title";
+    public const string Leash = "leash";
+    public const string Unleash = "unleash";
+    public const string ClearMoodle = "clear-moodle";
+
+    public static readonly string[] All = [Unlock, ClearTitle, Leash, Unleash, ClearMoodle];
 }
 
 /// collar/custom-triggers: the fixed set of action kinds a Custom Trigger's bundle may carry.
@@ -138,6 +150,7 @@ public class CustomTriggerDefinition
 public class AliasBook
 {
     public List<TitleAliasDefinition> Titles { get; set; } = new();
+    [Obsolete("collar/control-vocabulary: the clear-title word is fixed - use ControlWords.ClearTitle.")]
     public string ClearTitleAlias { get; set; } = "clear-title";
 
     public List<OutfitAliasDefinition> Outfits { get; set; } = new();
@@ -149,12 +162,12 @@ public class AliasBook
 
     /// Removes the Sub's currently active Moodle - the same "one dedicated clear word" shape
     /// ClearTitleAlias and the fixed wardrobe `unlock` action already use.
+    [Obsolete("collar/control-vocabulary: the clear-moodle word is fixed - use ControlWords.ClearMoodle.")]
     public string ClearMoodleAlias { get; set; } = "clear-moodle";
 
-    /// Unlike Outfit's single "one design locked at a time" + fixed unlock action, multiple restraint
-    /// devices can be active at once (collar/restraints), so each device's alias toggles that one device:
-    /// applies it if not currently active, releases it (and only its own rules) if it is.
-    public List<RestraintAliasDefinition> Restraints { get; set; } = new();
+    // No restraint alias list: a restraint's own name (captured device) or alias (configured mod restraint)
+    // is its word - see RestraintCommand.ToggleByWord. A saved "Restraints" list from older configs is
+    // simply ignored on load.
 
     public List<CustomTriggerDefinition> CustomTriggers { get; set; } = new();
 }

@@ -25,16 +25,18 @@ public sealed class OutfitCommand
     private readonly GlamourerIpc glamourer;
     private readonly SlotLockManager slotLocks;
     private readonly SubRuntimeState runtimeState;
+    private readonly MoodlesCommand moodles;
 
     /// How many designs the last wardrobe scan found in total, before the allowlist filter.
     public int? LastScanTotalDesigns { get; private set; }
 
-    public OutfitCommand(PluginConfig config, GlamourerIpc glamourer, SlotLockManager slotLocks, SubRuntimeState runtimeState)
+    public OutfitCommand(PluginConfig config, GlamourerIpc glamourer, SlotLockManager slotLocks, SubRuntimeState runtimeState, MoodlesCommand moodles)
     {
         this.config = config;
         this.glamourer = glamourer;
         this.slotLocks = slotLocks;
         this.runtimeState = runtimeState;
+        this.moodles = moodles;
     }
 
     public (bool Success, string? Reason) Apply(OutfitAliasDefinition alias)
@@ -42,33 +44,40 @@ public sealed class OutfitCommand
         if (runtimeState.OutfitForceLocked)
             return (false, "the outfit is currently force-locked by your Owner.");
 
-        return ApplyDesign(alias.DesignId, alias.DesignName, alias.Locked);
+        return ApplyDesign(alias.DesignId, alias.DesignName, alias.Locked, alias.AttachedMoodle, moodleOverride: null);
     }
 
-    /// Releases whichever slots the currently-locked design claimed. The receiver exposes this through
-    /// the fixed `unlock` vocabulary rather than a mutable alias.
+    /// Releases whichever slots the currently-locked design claimed, plus the current outfit's attached
+    /// moodle - even when nothing was locked, since an unlocked outfit has no other way to be cleared
+    /// (collar/attached-moodles "Unlock clears an unlocked outfit's moodle"). Never changes the Sub's look.
+    /// The receiver exposes this through the fixed `unlock` vocabulary rather than a mutable alias.
     public bool Unlock()
     {
         if (runtimeState.OutfitForceLocked)
             return false;
-        if (!slotLocks.HasLock(Owner))
-            return false;
 
-        slotLocks.Release(Owner);
-        return true;
+        var hadLock = slotLocks.HasLock(Owner);
+        if (hadLock)
+            slotLocks.Release(Owner);
+        var hadMoodle = moodles.Ledger.Release(AttachedMoodleLedger.OutfitSource);
+        return hadLock || hadMoodle;
     }
 
     /// The Owner's direct override: matches `designName` against the Sub's own scanned+allowlisted
     /// catalog (case-insensitive) - the Owner never sees design IDs, only whatever name the Sub told them
-    /// out of band. Always locks.
-    public (bool Success, string? Reason) ForceApply(string designName)
+    /// out of band. Always locks. `moodleOverride` is the Owner's optional `moodle:"..."` pick
+    /// (collar/attached-moodles), used instead of the Sub's default when allowed. A design name carries no
+    /// moodle of its own - the Sub attaches moodles to outfit aliases - so the default here is the moodle of
+    /// the first alias the Sub made for this same design that has one, if any.
+    public (bool Success, string? Reason) ForceApply(string designName, string? moodleOverride = null)
     {
         var design = config.WardrobeMapping.LocalDesigns.Values
             .FirstOrDefault(d => string.Equals(d.Name, designName, StringComparison.OrdinalIgnoreCase));
         if (design is null)
             return (false, $"no wardrobe design named \"{designName}\" in your Sub's scanned catalog.");
 
-        var (success, reason) = ApplyDesign(design.DesignId, designName, locked: true);
+        var aliasMoodle = config.Aliases.Outfits.FirstOrDefault(a => a.DesignId == design.DesignId && a.AttachedMoodle is not null)?.AttachedMoodle;
+        var (success, reason) = ApplyDesign(design.DesignId, designName, locked: true, aliasMoodle, moodleOverride);
         if (!success)
             return (false, reason);
 
@@ -76,15 +85,16 @@ public sealed class OutfitCommand
         return (true, null);
     }
 
-    /// The only thing that can release a force-applied outfit besides panic.
+    /// The only thing that can release a force-applied outfit besides panic. Like Unlock, also clears the
+    /// current outfit's attached moodle whether or not a slot was locked.
     public bool ForceUnlock()
     {
-        if (!slotLocks.HasLock(Owner))
-            return false;
-
-        slotLocks.Release(Owner);
+        var hadLock = slotLocks.HasLock(Owner);
+        if (hadLock)
+            slotLocks.Release(Owner);
         runtimeState.OutfitForceLocked = false;
-        return true;
+        var hadMoodle = moodles.Ledger.Release(AttachedMoodleLedger.OutfitSource);
+        return hadLock || hadMoodle;
     }
 
     /// Applies a design's full look via Glamourer, then - if requested - locks exactly the equipment
@@ -94,7 +104,7 @@ public sealed class OutfitCommand
     /// its already-locked value right after Glamourer applies the design, so that slot never visibly
     /// changes and stays under its existing owner's lock, while every other slot the design changes still
     /// applies and locks normally. The design apply itself never locks through Glamourer's own state.
-    private (bool Success, string? Reason) ApplyDesign(Guid designId, string designName, bool locked)
+    private (bool Success, string? Reason) ApplyDesign(Guid designId, string designName, bool locked, AttachedMoodleRef? defaultMoodle, string? moodleOverride)
     {
         var slots = locked ? glamourer.GetDesignEquipSlots(designId) : new HashSet<ApiEquipSlot>();
         var conflicts = locked ? slotLocks.ConflictingLocks(slots, Owner) : [];
@@ -106,6 +116,10 @@ public sealed class OutfitCommand
             Plugin.Log.Warning($"Outfit apply failed for \"{designName}\": {reason}");
             return (false, reason);
         }
+
+        // collar/attached-moodles: the look changed, so this is now the current outfit - its moodle replaces
+        // the previous outfit's (or clears it, if this one carries none).
+        moodles.HoldAttached(AttachedMoodleLedger.OutfitSource, defaultMoodle, moodleOverride);
 
         foreach (var (slot, _) in conflicts)
         {

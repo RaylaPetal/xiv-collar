@@ -24,6 +24,7 @@ public sealed class FollowCommand
     private readonly MovementLockService movementLock;
     private readonly SubRuntimeState runtimeState;
     private readonly PluginConfig config;
+    private readonly MoodlesCommand moodles;
     private ulong followedObjectId;
 
     /// Whether this client believes the Sub is currently following the leashed Owner - set whenever we
@@ -34,11 +35,12 @@ public sealed class FollowCommand
     private DateTime lastDesyncCheck;
     private float lastDesyncDistance;
 
-    public FollowCommand(PluginConfig config, MovementLockService movementLock, SubRuntimeState runtimeState)
+    public FollowCommand(PluginConfig config, MovementLockService movementLock, SubRuntimeState runtimeState, MoodlesCommand moodles)
     {
         this.config = config;
         this.movementLock = movementLock;
         this.runtimeState = runtimeState;
+        this.moodles = moodles;
         GestureCommand.EmotePlayed += OnEmotePlayed;
     }
 
@@ -56,7 +58,8 @@ public sealed class FollowCommand
 
     /// `peerName` is the specific Owner-side pairing whose incoming command triggered this (collar/
     /// multi-pairing: resolved from the tell's own verified sender, not any single configured peer).
-    public bool Engage(string? peerName)
+    /// `moodleOverride` is the Owner's optional `leash moodle:"..."` pick (collar/attached-moodles).
+    public bool Engage(string? peerName, string? moodleOverride = null)
     {
         if (!movementLock.IsAvailable || peerName is null)
             return false;
@@ -77,11 +80,13 @@ public sealed class FollowCommand
         movementLock.EngagePreserveFollow(Owner);
         followedObjectId = owner.GameObjectId;
         runtimeState.MovementLockActive = true;
+        moodles.HoldAttached(AttachedMoodleLedger.FollowSource, config.Aliases.Follow.AttachedMoodle, moodleOverride);
         return true;
     }
 
     public void Release()
     {
+        moodles.Ledger.Release(AttachedMoodleLedger.FollowSource);
         movementLock.ReleasePreserveFollow(Owner);
         if (followActive)
             Chat.SendMessage("/follow");

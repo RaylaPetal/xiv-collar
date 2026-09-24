@@ -21,11 +21,13 @@ public sealed class MoodlesIpc
     private readonly ICallGateSubscriber<List<(Guid ID, uint IconID, string FullPath, string Title)>> getRegisteredMoodles;
     private readonly ICallGateSubscriber<Guid, IPlayerCharacter, object> addOrUpdateMoodleByPlayer;
     private readonly ICallGateSubscriber<IPlayerCharacter, object> clearStatusManagerByPlayer;
+    private readonly ICallGateSubscriber<Guid, IPlayerCharacter, object> removeMoodleByPlayer;
 
     public MoodlesIpc()
     {
         getRegisteredMoodles = Plugin.PluginInterface.GetIpcSubscriber<List<(Guid, uint, string, string)>>("Moodles.GetRegisteredMoodlesV2");
         addOrUpdateMoodleByPlayer = Plugin.PluginInterface.GetIpcSubscriber<Guid, IPlayerCharacter, object>("Moodles.AddOrUpdateMoodleByPlayerV2");
+        removeMoodleByPlayer = Plugin.PluginInterface.GetIpcSubscriber<Guid, IPlayerCharacter, object>("Moodles.RemoveMoodleByPlayerV2");
         clearStatusManagerByPlayer = Plugin.PluginInterface.GetIpcSubscriber<IPlayerCharacter, object>("Moodles.ClearStatusManagerByPlayerV2");
     }
 
@@ -54,6 +56,16 @@ public sealed class MoodlesIpc
         if (player is null) return false;
         try { addOrUpdateMoodleByPlayer.InvokeAction(statusId, player); return true; }
         catch (Exception ex) { Plugin.Log.Error(ex, "Failed to apply a Moodles status."); return false; }
+    }
+
+    /// collar/attached-moodles: removes exactly one status, leaving every other moodle on the Sub alone -
+    /// never falls back to ClearStatus, since wiping everything is precisely what this exists to avoid.
+    public bool RemoveStatus(Guid statusId)
+    {
+        var player = Player.Object;
+        if (player is null) return false;
+        try { removeMoodleByPlayer.InvokeAction(statusId, player); return true; }
+        catch (Exception ex) { Plugin.Log.Error(ex, "Failed to remove a single Moodles status (Moodles may be too old to expose RemoveMoodleByPlayerV2)."); return false; }
     }
 
     public bool ClearStatus()

@@ -57,10 +57,14 @@ public sealed class CollarCommand
         ApplyAssignedMoodle();
     }
 
+    /// Held through the attached-moodle ledger's `collar` source (collar/attached-moodles "Collar moodle is
+    /// removed without clearing other moodles") - re-holding every interval re-applies it, and releasing
+    /// removes only this one status, never every moodle on the Sub.
     private void ApplyAssignedMoodle()
     {
-        moodles.Apply(new MoodlesAliasDefinition { StatusId = config.Collar.MoodleStatusId!, StatusName = config.Collar.MoodleStatusName! });
         nextMoodleReassertTicks = Environment.TickCount64 + MoodleReassertIntervalMs;
+        if (Guid.TryParse(config.Collar.MoodleStatusId, out var statusId))
+            moodles.Ledger.Hold(AttachedMoodleLedger.CollarSource, statusId);
     }
 
     /// Saves an item picked from the Neck-locked `ItemPickerWindow` as the Sub's configured collar -
@@ -157,7 +161,7 @@ public sealed class CollarCommand
         config.Save();
 
         if (config.Collar.HasMoodleAssigned)
-            moodles.Clear();
+            moodles.Ledger.Release(AttachedMoodleLedger.CollarSource);
     }
 
     /// Panic's own release path (called from PanicHandler, not from `slotLocks.ReleaseAllForPanic` which
@@ -172,6 +176,6 @@ public sealed class CollarCommand
         config.Save();
 
         if (config.Collar.HasMoodleAssigned)
-            moodles.Clear();
+            moodles.Ledger.Release(AttachedMoodleLedger.CollarSource);
     }
 }

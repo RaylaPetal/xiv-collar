@@ -98,6 +98,30 @@ has one override, `collar unlock` - the collar itself never applies through a co
 at pairing acceptance (see Consent model below). `moodle apply <status name>` / `moodle clear` apply or
 remove a status effect from the Sub's own registered Moodles statuses (individual buffs/debuffs), immediately,
 with no confirmation queue - a Moodle is a visual status icon, not a real emote/animation the way Gesture is.
+`moodle clear` leaves alone any moodle still attached to an active outfit, restraint, leash or collar (see
+below); panic still clears every moodle.
+
+**Attached moodles.** An outfit alias, a restraint device (captured or configured mod) and the leash can
+each carry a moodle that goes on with it and comes off when it's cleared - only that one moodle, never the
+Sub's others, and never while something else active still holds the same moodle. The Sub picks a default
+per outfit alias (a "Moodle" dropdown when adding it) / device / leash. The Owner can override it per command by appending
+`moodle:"<status name>"` - e.g. `outfit lock "Maid Dress" moodle:"Dressed Up"`,
+`restraint lock "Cuffs" rules:walkonly moodle:"Bound"`, `leash moodle:"Leashed"` - picked from a "Moodle"
+dropdown in the Outfit/Restraints/Leash sections, Sub Control and Favorites. The override only applies if the
+Sub's Moodles permission is on (otherwise the Sub's default is used). An older Sub plugin doesn't understand
+the option and ignores the whole command, so update both sides together. Outfit moodles come off on `unlock` /
+`outfit unlock` (even when nothing was locked - the look itself never changes), when another outfit
+replaces it, or on panic; restraint moodles when that device is released or on `restraint unlock` / panic;
+the leash moodle on `unleash` / panic.
+
+**Fixed control words.** `unlock`, `clear-title`, `leash`, `unleash` and `clear-moodle` are fixed and can't
+be renamed, so Owner and Sub never have to agree on custom words. *Breaking:* a Sub who had renamed any of
+these before will now only answer to the fixed word.
+
+**Restraint words.** A restraint's word is the alias it's set up with - a captured slot/item device's alias,
+or a configured mod restraint's optional alias. Sent on its own it toggles that restraint on/off; after
+`restraint lock` it force-applies it. There is no separate restraint-alias list any more. *Breaking:* words
+from the old list stop working unless they match a device's alias.
 
 > **Breaking change:** Moodles scanning switched from reading the Sub's saved *presets* to reading their
 > individual registered *statuses* (buffs/debuffs) directly. Existing Owner Moodles Quick Commands built
@@ -174,8 +198,8 @@ actually does.
 > tell what an entry actually does, unlike the live wire tell during real commanding, which still only ever
 > carries the bare alias word. Importing adds each entry to the Owner's Alias/one-off list, labeled with
 > that summary, while what's actually sent when clicking Send/Copy is still just the bare alias word.
-> Follow's leash/unleash words and the Clear-title/Unlock-outfit/Clear-moodle aliases aren't included - they
-> already have dedicated fixed Quick Command rows.
+> The fixed control words (leash/unleash, clear-title, unlock, clear-moodle) aren't included - they're the
+> same for every Sub and already have dedicated fixed Quick Command rows.
 >
 > **Title Quick Commands can carry a prefix and color**, matching the Sub's own Title alias form exactly -
 > pick them when adding a Title Quick Command and it sends via a new `title style ...` command instead of
@@ -215,10 +239,8 @@ actually does.
   re-applies it roughly every 10 seconds for as long as the collar stays locked - so removing it through
   Moodles' own UI doesn't make it stick, it simply returns within that window. It clears only when the
   collar's own lock releases: `/oathboundpanic`, or the Owner's `collar unlock` - the exact same lifecycle the
-  Neck-slot item already has, with no separate release path of its own. Because Moodles' own IPC has no
-  per-status removal, clearing it (on unlock or panic) clears the Sub's entire active Moodles status
-  manager, not just the one assigned status - the same blunt behavior the plain `moodle clear` command
-  already has.
+  Neck-slot item already has, with no separate release path of its own. Clearing it removes only the
+  collar's own status (Moodles' `RemoveMoodleByPlayerV2`), never the Sub's other moodles.
 - **Panic is a typed safeword, not a button.** The main character header always exposes the safeword
   setting, whether paired or not, but there's no panic button anywhere in the UI on purpose -
   `/oathboundpanic` (and an optional configurable hotkey) immediately disables pairing, reverts any Glamourer
@@ -448,8 +470,8 @@ build task, or building via the `.slnx` all land in the same place.
    for anyone with existing macros/keybinds on the old names.) The header shows your live character name, home world, optional Free
    Company tag, and an explicit Not paired/Owns/Owned by/pending relationship state.
    Title/Wardrobe/Gesture/Moodles/Restraints/Custom Triggers/Permissions are where a Sub sets up what
-   they'll accept. The **Collar** tab also
-   owns the Sub's leash trigger words, defaulting to `leash` and `unleash`. The visually separated,
+   they'll accept. The **Follow / Leash** tab shows the fixed `leash` / `unleash` words and the leash's
+   optional attached moodle. The visually separated,
    far-right **Owner** tab groups each command category into an independent collapsible section where you
    build one-click Quick Commands or compose
    a one-off - each has a Send button (fires immediately) and a Copy button (paste it yourself instead).

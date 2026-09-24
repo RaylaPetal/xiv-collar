@@ -31,6 +31,10 @@ public sealed class WelcomeWindow : Window, IDisposable
 
     public override void OnOpen() => triggerPhraseInput = plugin.Configuration.TriggerPhrase;
 
+    /// Shared purple window chrome (Theme.PushWindowStyle) - pushed before Begin, popped after End.
+    public override void PreDraw() => Theme.PushWindowStyle();
+    public override void PostDraw() => Theme.PopWindowStyle();
+
     public override void Draw()
     {
         var config = plugin.Configuration;

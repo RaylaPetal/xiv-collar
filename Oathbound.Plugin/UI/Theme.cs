@@ -1,4 +1,5 @@
 using System.Numerics;
+using Dalamud.Bindings.ImGui;
 
 namespace Oathbound.Plugin.UI;
 
@@ -21,4 +22,36 @@ public static class Theme
 
     public const float CardRounding = 8f;
     public const float TileRounding = 6f;
+
+    /// Tint for a Section block - a step lighter than CardBg so sections read as raised inside a card.
+    public static readonly Vector4 SectionBg = new(0.16f, 0.15f, 0.20f, 1f);
+
+    /// Purple chrome shared by every Oathbound window: window/child/card borders, table borders, separators
+    /// and the title bar, so every border in the plugin reads as the same accent instead of Dalamud's default
+    /// grey/red. Pushed in each window's PreDraw and popped in PostDraw - windows opened while it's pushed
+    /// (combos, popups) inherit it too.
+    private static readonly (ImGuiCol Col, Vector4 Color)[] WindowColors =
+    [
+        (ImGuiCol.Border, Accent with { W = 0.55f }),
+        (ImGuiCol.Separator, Accent with { W = 0.35f }),
+        (ImGuiCol.TableBorderStrong, Accent with { W = 0.55f }),
+        (ImGuiCol.TableBorderLight, Accent with { W = 0.25f }),
+        (ImGuiCol.TitleBg, new Vector4(0.17f, 0.11f, 0.24f, 1f)),
+        (ImGuiCol.TitleBgActive, new Vector4(0.30f, 0.17f, 0.43f, 1f)),
+        (ImGuiCol.TitleBgCollapsed, new Vector4(0.17f, 0.11f, 0.24f, 1f)),
+    ];
+
+    public static void PushWindowStyle()
+    {
+        foreach (var (col, color) in WindowColors)
+            ImGui.PushStyleColor(col, color);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 1f);
+    }
+
+    public static void PopWindowStyle()
+    {
+        ImGui.PopStyleVar(2);
+        ImGui.PopStyleColor(WindowColors.Length);
+    }
 }

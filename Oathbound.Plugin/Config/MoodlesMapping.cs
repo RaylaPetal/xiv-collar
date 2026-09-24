@@ -17,6 +17,16 @@ public class MoodlesStatusEntry
     public string Name { get; set; } = "";
 }
 
+/// collar/attached-moodles: one of the Sub's own Moodles statuses chosen as the default moodle for an
+/// outfit design, restraint device or the leash. `StatusId` is what gets applied; `StatusName` is only for
+/// display, so the pick still reads sensibly if the status is later renamed or deleted in Moodles.
+[Serializable]
+public class AttachedMoodleRef
+{
+    public Guid StatusId { get; set; }
+    public string StatusName { get; set; } = "";
+}
+
 [Serializable]
 public class MoodlesMapping
 {

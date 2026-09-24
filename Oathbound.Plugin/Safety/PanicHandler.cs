@@ -27,9 +27,13 @@ public sealed class PanicHandler
     private readonly ToyControlCommand toyControl;
     private readonly SubRuntimeState runtimeState;
     private readonly CollarCommand collar;
+    private readonly HotbarBlockVisuals hotbarVisuals;
+    private readonly AttachedMoodleLedger moodleLedger;
 
-    public PanicHandler(PairingService pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, ToyControlCommand toyControl, SubRuntimeState runtimeState, CollarCommand collar)
+    public PanicHandler(PairingService pairing, GlamourerIpc glamourer, SlotLockManager slotLocks, HonorificIpc honorific, MovementLockService movementLock, RestrictionRuleManager restrictionRules, RestraintCommand restraints, ToyControlCommand toyControl, SubRuntimeState runtimeState, CollarCommand collar, HotbarBlockVisuals hotbarVisuals, AttachedMoodleLedger moodleLedger)
     {
+        this.hotbarVisuals = hotbarVisuals;
+        this.moodleLedger = moodleLedger;
         this.pairing = pairing;
         this.glamourer = glamourer;
         this.slotLocks = slotLocks;
@@ -68,6 +72,8 @@ public sealed class PanicHandler
         RunStep("revert outfit/collar", () => glamourer.RevertToAutomationFull());
         RunStep("release slot locks", slotLocks.ReleaseAllForPanic);
         RunStep("clear collar moodle", collar.PanicRelease);
+        // collar/attached-moodles "Panic clears everything": every moodle goes, attached or not.
+        RunStep("clear all moodles", moodleLedger.ClearAllForPanic);
 
         RunStep("clear title", () =>
         {
@@ -77,6 +83,9 @@ public sealed class PanicHandler
 
         RunStep("release movement lock", movementLock.ReleaseAll);
         RunStep("release restriction rules", restrictionRules.ReleaseAllForPanic);
+        // Releasing the Action Block rule above already hides these - repeated directly so a failure in that
+        // step can never leave the Sub's hotbars greyed out after panic.
+        RunStep("restore hotbars", hotbarVisuals.Hide);
         RunStep("release restraint bound animations", restraints.ReleaseAllBoundAnimationsForPanic);
         RunStep("stop toy control", toyControl.ReleaseAllForPanic);
         RunStep("suspend toy triggers", () => runtimeState.ToyTriggersSuspended = true);

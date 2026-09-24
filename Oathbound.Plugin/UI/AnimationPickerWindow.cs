@@ -61,6 +61,10 @@ public sealed class AnimationPickerWindow : Window, IDisposable
 
     public void Dispose() { }
 
+    /// Shared purple window chrome (Theme.PushWindowStyle) - pushed before Begin, popped after End.
+    public override void PreDraw() => Theme.PushWindowStyle();
+    public override void PostDraw() => Theme.PopWindowStyle();
+
     public override void Draw()
     {
         IconGlyph.Text(FontAwesomeIcon.TheaterMasks, "Animation Library");

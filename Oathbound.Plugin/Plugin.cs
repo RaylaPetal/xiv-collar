@@ -38,6 +38,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
     [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
+    [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
 
     private const string CommandName = "/oathbound";
     private const string PanicCommandName = "/oathboundpanic";
@@ -173,13 +174,15 @@ public sealed class Plugin : IDalamudPlugin
         RevocationService = new RevocationService(Configuration, RelayClient, DeviceIdentityService);
 
         TitleCommand = new TitleCommand(HonorificIpc, RuntimeState);
-        OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState);
+        // Built before Outfit/Follow/Restraint/Collar: each of them holds its attached moodle through it
+        // (collar/attached-moodles).
+        MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc, CatalogStore, new AttachedMoodleLedger(Configuration, MoodlesIpc));
+        OutfitCommand = new OutfitCommand(Configuration, GlamourerIpc, SlotLockManager, RuntimeState, MoodlesCommand);
         var temporaryModSettings = new TemporaryModSettingsCoordinator(PenumbraIpc);
         GestureCommand = new GestureCommand(Configuration, PenumbraIpc, temporaryModSettings, CatalogStore);
-        FollowCommand = new FollowCommand(Configuration, MovementLockService, RuntimeState);
-        MoodlesCommand = new MoodlesCommand(Configuration, MoodlesIpc, CatalogStore);
+        FollowCommand = new FollowCommand(Configuration, MovementLockService, RuntimeState, MoodlesCommand);
         CollarCommand = new CollarCommand(Configuration, SlotLockManager, RuntimeState, MoodlesCommand);
-        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings, ChatGagService, CatalogStore);
+        RestraintCommand = new RestraintCommand(Configuration, GlamourerIpc, PenumbraIpc, SlotLockManager, RestrictionRuleManager, RuntimeState, temporaryModSettings, ChatGagService, CatalogStore, MoodlesCommand);
         ToyControlCommand = new ToyControlCommand(IntifaceIpc, RuntimeState, Configuration);
         ToyTriggerEvaluator = new ToyTriggerEvaluator(Configuration, ToyControlCommand, RuntimeState, RestrictionRuleManager);
         CustomTriggerCommand = new CustomTriggerCommand(Configuration, TitleCommand, OutfitCommand, GestureCommand, MoodlesCommand, RestraintCommand);
@@ -193,7 +196,7 @@ public sealed class Plugin : IDalamudPlugin
         CatalogSyncRelayService = new CatalogSyncRelayService(Configuration, RelayClient, DeviceIdentityService, ChatComposer, ChatSender, CatalogSyncService);
         ChatCommandListener = new ChatCommandListener(Configuration, PairingService, CatalogSyncRelayService, TitleCommand, OutfitCommand, GestureCommand, FollowCommand, CollarCommand, MoodlesCommand, RestraintCommand, ToyControlCommand, CustomTriggerCommand, TeleportCommand);
 
-        PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, ToyControlCommand, RuntimeState, CollarCommand);
+        PanicHandler = new PanicHandler(PairingService, GlamourerIpc, SlotLockManager, HonorificIpc, MovementLockService, RestrictionRuleManager, RestraintCommand, ToyControlCommand, RuntimeState, CollarCommand, ActionBlockService.Visuals, MoodlesCommand.Ledger);
 
         ModuleWindow = new ModuleWindow(this);
         CollarWindow = new CollarWindow(this, ModuleWindow);
@@ -397,6 +400,8 @@ public sealed class Plugin : IDalamudPlugin
         MovementLockService.OnFrameworkUpdate();
         FollowCommand.OnFrameworkUpdate();
         WalkOnlyService.OnFrameworkUpdate();
+        ActionBlockService.OnFrameworkUpdate();
+        MoodlesCommand.Ledger.OnFrameworkUpdate();
         CollarCommand.OnFrameworkUpdate();
         TeleportCommand.OnFrameworkUpdate();
         TitleCommand.OnFrameworkUpdate();
@@ -420,7 +425,6 @@ public sealed class Plugin : IDalamudPlugin
 
     private void MigrateConfiguration()
     {
-        var follow = Configuration.Aliases.Follow;
         var changed = false;
         if (Configuration.Version < 2)
         {
@@ -473,13 +477,6 @@ public sealed class Plugin : IDalamudPlugin
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (Configuration.PendingRelayOperations.RemoveAll(o => o.ExpiresAt <= now) > 0)
             changed = true;
-        if (string.Equals(follow.EngageAlias, "leash-on", StringComparison.Ordinal) &&
-            string.Equals(follow.ReleaseAlias, "leash-off", StringComparison.Ordinal))
-        {
-            follow.EngageAlias = "leash";
-            follow.ReleaseAlias = "unleash";
-            changed = true;
-        }
 
         foreach (var cmd in Configuration.QuickCommands.Gestures)
         {

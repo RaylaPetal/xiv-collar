@@ -357,7 +357,7 @@ public sealed class ChatCommandListener : IDisposable
             case "title":
                 return permissions.Title ? HandleForceTitle(rest) : LocalTestResult.Fail("Title permission is not enabled.");
             case "outfit":
-                return permissions.Outfit ? HandleForceOutfit(rest) : LocalTestResult.Fail("Outfit permission is not enabled.");
+                return permissions.Outfit ? HandleForceOutfit(MoodleOption.Strip(rest, out var outfitMoodle), outfitMoodle) : LocalTestResult.Fail("Outfit permission is not enabled.");
             case "gesture":
                 return permissions.Gesture && config.TosAcknowledged ? HandleForceGesture(rest) : LocalTestResult.Fail("Gesture permission or the automation-risk acknowledgement is not enabled.");
             case "collar":
@@ -365,7 +365,7 @@ public sealed class ChatCommandListener : IDisposable
             case "moodle":
                 return permissions.Moodles ? HandleForceMoodle(rest) : LocalTestResult.Fail("Moodles permission is not enabled.");
             case "restraint":
-                return permissions.Restraints && config.TosAcknowledged ? HandleForceRestraint(rest) : LocalTestResult.Fail("Restraints permission or the automation-risk acknowledgement is not enabled.");
+                return permissions.Restraints && config.TosAcknowledged ? HandleForceRestraint(MoodleOption.Strip(rest, out var restraintMoodle), restraintMoodle) : LocalTestResult.Fail("Restraints permission or the automation-risk acknowledgement is not enabled.");
             case "toy":
                 return permissions.ToyControl && config.ToyControlAcknowledged ? HandleForceToy(rest) : LocalTestResult.Fail("Toy control permission or its dedicated acknowledgement is not enabled.");
             case "customtrigger":
@@ -420,13 +420,13 @@ public sealed class ChatCommandListener : IDisposable
         return LocalTestResult.Fail($"Unrecognized \"title\" override \"{rest}\" - expected \"create <text>\", \"style \\\"<text>\\\" prefix:<0|1> color:<r>,<g>,<b>\", or \"clear\".");
     }
 
-    private LocalTestResult HandleForceOutfit(string rest)
+    private LocalTestResult HandleForceOutfit(string rest, string? moodleOverride)
     {
         if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
         {
             return outfit.ForceUnlock()
-                ? LocalTestResult.Ok("Outfit unlocked.")
-                : LocalTestResult.Fail("Outfit unlock failed - nothing was locked.");
+                ? LocalTestResult.Ok("Outfit released (locks and attached moodle).")
+                : LocalTestResult.Fail("Outfit unlock did nothing - no lock or attached moodle was held.");
         }
 
         const string lockPrefix = "lock ";
@@ -435,7 +435,7 @@ public sealed class ChatCommandListener : IDisposable
             var name = StripQuotes(rest[lockPrefix.Length..].Trim());
             if (name.Length > 0)
             {
-                var (success, reason) = outfit.ForceApply(name);
+                var (success, reason) = outfit.ForceApply(name, moodleOverride);
                 return success
                     ? LocalTestResult.Ok($"Outfit \"{name}\" applied and locked." + (reason is null ? "" : $" {reason}"))
                     : LocalTestResult.Fail($"Outfit \"{name}\" not applied: {reason}");
@@ -518,7 +518,7 @@ public sealed class ChatCommandListener : IDisposable
         return LocalTestResult.Fail($"Unrecognized \"moodle\" override \"{rest}\" - expected \"apply <status name>\" or \"clear\".");
     }
 
-    private LocalTestResult HandleForceRestraint(string rest)
+    private LocalTestResult HandleForceRestraint(string rest, string? moodleOverride)
     {
         if (rest.Equals("unlock", StringComparison.OrdinalIgnoreCase))
         {
@@ -533,7 +533,7 @@ public sealed class ChatCommandListener : IDisposable
             var remainder = rest[lockPrefix.Length..];
             if (RestraintCommand.TryParseLockCommand(remainder, out var name, out var rules) && name.Length > 0)
             {
-                var applied = rules is { Count: > 0 } ? restraints.ForceApply(name, rules) : restraints.ForceApply(name);
+                var applied = rules is { Count: > 0 } ? restraints.ForceApply(name, rules, moodleOverride) : restraints.ForceApply(name, moodleOverride);
                 return applied
                     ? LocalTestResult.Ok($"Restraint device \"{name}\" applied.")
                     : LocalTestResult.Fail($"No restraint device named \"{name}\" (or the apply failed).");
@@ -546,7 +546,7 @@ public sealed class ChatCommandListener : IDisposable
         {
             if (!RestraintCommand.TryParseCatalogCommand(rest[catalogPrefix.Length..], out var id, out var itemId, out var rules))
                 return LocalTestResult.Fail("The catalog restraint command was malformed.");
-            return restraints.ForceApplyCatalog(id, itemId, rules)
+            return restraints.ForceApplyCatalog(id, itemId, rules, moodleOverride)
                 ? LocalTestResult.Ok("Shared restraint applied.")
                 : LocalTestResult.Fail(restraints.LastFailureReason ?? "The shared restraint could not be applied.");
         }
@@ -557,7 +557,7 @@ public sealed class ChatCommandListener : IDisposable
             var remainder = rest[wearPrefix.Length..];
             if (RestraintCommand.TryParseWearCommand(remainder, out var slot, out var itemId, out var label, out var rules))
             {
-                return restraints.ForceApplyAdHoc(slot, itemId, label, rules)
+                return restraints.ForceApplyAdHoc(slot, itemId, label, rules, moodleOverride)
                     ? LocalTestResult.Ok($"Ad-hoc restraint device \"{label}\" applied.")
                     : LocalTestResult.Fail($"Ad-hoc restraint device \"{label}\" failed to apply.");
             }
@@ -664,39 +664,52 @@ public sealed class ChatCommandListener : IDisposable
         var aliases = config.Aliases;
         var permissions = config.Permissions;
 
-        if (Matches(alias, aliases.ClearTitleAlias))
+        // collar/control-vocabulary "Control words are fixed": clear-title, unlock, leash, unleash and
+        // clear-moodle are literals every client understands, never Sub-renamable, so an Owner never has to
+        // discover a mutable command. Checked before the Sub's own aliases so no alias can shadow them.
+        if (Matches(alias, ControlWords.ClearTitle))
         {
             if (!permissions.Title)
                 return LocalTestResult.Fail("Title permission is not enabled.");
             title.Clear();
-            return LocalTestResult.Ok($"Alias \"{alias}\" matched clear-title.");
+            return LocalTestResult.Ok($"\"{alias}\" matched clear-title.");
         }
 
-        // Fixed release vocabulary: unlike user-authored apply aliases, wardrobe release is always
-        // "unlock" so an Owner never has to discover a mutable safety command.
-        if (Matches(alias, "unlock"))
+        if (Matches(alias, ControlWords.Unlock))
         {
             if (!permissions.Outfit)
                 return LocalTestResult.Fail("Outfit permission is not enabled.");
             outfit.Unlock();
-            return LocalTestResult.Ok($"Alias \"{alias}\" matched unlock-outfit.");
+            return LocalTestResult.Ok($"\"{alias}\" matched unlock-outfit.");
         }
 
-        if (Matches(alias, aliases.Follow.EngageAlias))
+        // collar/control-vocabulary "Leash accepts options": `leash` is matched as the first word, so it can
+        // carry a trailing `moodle:"..."`. Anything else after it isn't a leash command.
+        var leashRest = MoodleOption.Strip(alias, out var leashMoodle);
+        if (Matches(leashRest, ControlWords.Leash))
         {
             if (!permissions.Follow)
                 return LocalTestResult.Fail("Follow permission is not enabled.");
-            return follow.Engage(sourcePairing?.PeerName)
-                ? LocalTestResult.Ok($"Alias \"{alias}\" matched leash-engage.")
+            return follow.Engage(sourcePairing?.PeerName, leashMoodle)
+                ? LocalTestResult.Ok($"\"{alias}\" matched leash-engage.")
                 : LocalTestResult.Fail("Leash engage failed - movement lock is unavailable, or no Owner to follow.");
         }
 
-        if (Matches(alias, aliases.Follow.ReleaseAlias))
+        if (Matches(alias, ControlWords.Unleash))
         {
             if (!permissions.Follow)
                 return LocalTestResult.Fail("Follow permission is not enabled.");
             follow.Release();
-            return LocalTestResult.Ok($"Alias \"{alias}\" matched leash-release.");
+            return LocalTestResult.Ok($"\"{alias}\" matched leash-release.");
+        }
+
+        if (Matches(alias, ControlWords.ClearMoodle))
+        {
+            if (!permissions.Moodles)
+                return LocalTestResult.Fail("Moodles permission is not enabled.");
+            return moodles.Clear()
+                ? LocalTestResult.Ok($"\"{alias}\" matched clear-moodle.")
+                : LocalTestResult.Fail($"\"{alias}\" matched clear-moodle, but Moodles may be unavailable.");
         }
 
         var titleAlias = aliases.Titles.FirstOrDefault(a => Matches(alias, a.Alias));
@@ -729,23 +742,14 @@ public sealed class ChatCommandListener : IDisposable
                 : LocalTestResult.Fail($"Alias \"{alias}\" matched a gesture, but it failed to play.");
         }
 
-        var restraintAlias = aliases.Restraints.FirstOrDefault(a => Matches(alias, a.Alias));
-        if (restraintAlias is not null)
+        // A restraint's own word - a captured device's name or a configured mod restraint's alias - toggles it.
+        if (restraints.MatchesWord(alias))
         {
             if (!(permissions.Restraints && config.TosAcknowledged))
                 return LocalTestResult.Fail("Restraints permission or the automation-risk acknowledgement is not enabled.");
-            return restraints.Toggle(restraintAlias)
-                ? LocalTestResult.Ok($"Alias \"{alias}\" matched a restraint device (toggled).")
-                : LocalTestResult.Fail($"Alias \"{alias}\" matched a restraint device, but it is currently force-locked.");
-        }
-
-        if (Matches(alias, aliases.ClearMoodleAlias))
-        {
-            if (!permissions.Moodles)
-                return LocalTestResult.Fail("Moodles permission is not enabled.");
-            return moodles.Clear()
-                ? LocalTestResult.Ok($"Alias \"{alias}\" matched clear-moodle.")
-                : LocalTestResult.Fail($"Alias \"{alias}\" matched clear-moodle, but Moodles may be unavailable.");
+            return restraints.ToggleByWord(alias)
+                ? LocalTestResult.Ok($"\"{alias}\" matched a restraint (toggled).")
+                : LocalTestResult.Fail($"\"{alias}\" matched a restraint, but it wasn't toggled: {restraints.LastFailureReason ?? "the apply failed"}.");
         }
 
         var moodleAlias = aliases.Moodles.FirstOrDefault(a => Matches(alias, a.Alias));

@@ -468,6 +468,9 @@ public class RestraintDeviceDefinition
     public byte Stain2 { get; set; }
     public string Name { get; set; } = "";
     public List<RestraintRuleAssignment> Rules { get; set; } = new();
+
+    /// collar/attached-moodles: the Sub's default moodle while this device is engaged, if any.
+    public AttachedMoodleRef? AttachedMoodle { get; set; }
 }
 
 public enum RestraintSourceKind { Item, PenumbraCatalog }
@@ -586,8 +589,16 @@ public class ConfiguredModRestraint
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string CatalogId { get; set; } = "";
     public string Name { get; set; } = "";
+
+    /// Optional short word the Owner sends for this restraint - bare it toggles it, after `restraint lock`
+    /// it force-applies it (RestraintCommand.ToggleByWord/ForceApply). Empty = no word of its own.
+    public string Alias { get; set; } = "";
+
     public ulong? ItemId { get; set; }
     public List<RestraintRuleAssignment> Rules { get; set; } = new();
+
+    /// collar/attached-moodles: the Sub's default moodle while this configured mod restraint is engaged.
+    public AttachedMoodleRef? AttachedMoodle { get; set; }
 }
 
 [Serializable]
@@ -702,6 +713,11 @@ public class PluginConfig : IPluginConfiguration
     public bool CollarForceLocked { get; set; }
     public bool RestraintsForceLocked { get; set; }
     public bool ToyControlForceLocked { get; set; }
+
+    /// collar/attached-moodles: which Oathbound source currently holds which Moodles status on this Sub
+    /// (see AttachedMoodleLedger for the source keys). Persisted so moodles whose source didn't survive a
+    /// reload can still be found and removed afterwards.
+    public Dictionary<string, Guid> AttachedMoodleHolds { get; set; } = new();
 
     /// Owner-side only in practice (a Sub has no use for their own names here) - see OwnerQuickCommands.
     public OwnerQuickCommands QuickCommands { get; set; } = new();

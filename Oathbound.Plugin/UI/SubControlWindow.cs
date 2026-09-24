@@ -26,6 +26,7 @@ public sealed class SubControlWindow : Window, IDisposable
 
     private string animationSearch = "";
     private string restraintsSearch = "";
+    private string? moodleOverride;
 
     public SubControlWindow(Plugin plugin, CollarWindow collarWindow) : base("Sub Control###CollarSubControlWindow")
     {
@@ -45,8 +46,11 @@ public sealed class SubControlWindow : Window, IDisposable
     /// check happens once per window per frame, ahead of `PreDraw`, so setting `IsOpen = false` here takes
     /// effect starting next frame rather than retroactively skipping this one; an accepted, imperceptible
     /// one-frame trade-off (see design.md's Risks) for not needing a separately-registered close hook.
+    public override void PostDraw() => Theme.PopWindowStyle();
+
     public override void PreDraw()
     {
+        Theme.PushWindowStyle();
         if (!collarWindow.IsOpen)
         {
             IsOpen = false;
@@ -68,6 +72,9 @@ public sealed class SubControlWindow : Window, IDisposable
         var canSend = plugin.Configuration.ActivePairing is { Direction: PairingDirection.OwnerSide };
         if (!canSend)
             IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - every Send below is disabled until an Owner-side pairing is active.");
+
+        // collar/attached-moodles: one pick for every outfit lock / restraint / leash sent from this window.
+        OwnerMoodleOverride.Draw("subControl", plugin.Configuration, ref moodleOverride);
 
         var categorized = QuickAccessMenu.CategorizedAll(plugin.Configuration.QuickCommands);
         foreach (var (label, commands) in categorized)
@@ -208,7 +215,7 @@ public sealed class SubControlWindow : Window, IDisposable
 
     private void DrawSendRow(string label, string command, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(command);
+        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(command, moodleOverride));
         var fits = CommandSelector.Fits(composed);
         using (ImRaii.Disabled(!canSend || !fits))
         {

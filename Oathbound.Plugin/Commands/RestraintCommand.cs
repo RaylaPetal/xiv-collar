@@ -36,11 +36,12 @@ public sealed class RestraintCommand
     private readonly TemporaryModSettingsCoordinator temporarySettings;
     private readonly ChatGagService chatGagService;
     private readonly CatalogStore catalogStore;
+    private readonly MoodlesCommand moodles;
     public int? LastScanTotalMods { get; private set; }
     public int LastScanMatchedMods { get; private set; }
     public string? LastScanError { get; private set; }
 
-    public RestraintCommand(PluginConfig config, GlamourerIpc glamourer, PenumbraIpc penumbra, SlotLockManager slotLocks, RestrictionRuleManager restrictionRules, SubRuntimeState runtimeState, TemporaryModSettingsCoordinator temporarySettings, ChatGagService chatGagService, CatalogStore catalogStore)
+    public RestraintCommand(PluginConfig config, GlamourerIpc glamourer, PenumbraIpc penumbra, SlotLockManager slotLocks, RestrictionRuleManager restrictionRules, SubRuntimeState runtimeState, TemporaryModSettingsCoordinator temporarySettings, ChatGagService chatGagService, CatalogStore catalogStore, MoodlesCommand moodles)
     {
         this.config = config;
         this.glamourer = glamourer;
@@ -51,6 +52,7 @@ public sealed class RestraintCommand
         this.temporarySettings = temporarySettings;
         this.chatGagService = chatGagService;
         this.catalogStore = catalogStore;
+        this.moodles = moodles;
         catalogScanner = new GestureCatalogScanner(penumbra, config);
     }
 
@@ -123,23 +125,50 @@ public sealed class RestraintCommand
 
     public bool IsActive(string deviceId) => activeDeviceIds.Contains(deviceId);
 
-    /// Sub self-service: applying an already-active device's alias releases it instead (toggle) - see
-    /// AliasBook.Restraints. Refused outright while an Owner force-lock is in effect, same as
+    /// A restraint's own word: a captured device's name, or a configured mod restraint's optional alias.
+    /// There is no separate restraint-alias list - the word you give a restraint when setting it up is the
+    /// word the Owner sends, both bare (toggle) and after `restraint lock` (force).
+    private RestraintDeviceDefinition? FindDeviceByWord(string word) =>
+        config.RestraintMapping.Devices.Values.FirstOrDefault(d => string.Equals(d.Name.Trim(), word.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private ConfiguredModRestraint? FindConfiguredModByWord(string word) =>
+        config.RestraintMapping.ConfiguredMods.FirstOrDefault(m => m.Alias.Trim().Length > 0
+            && string.Equals(m.Alias.Trim(), word.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    public bool MatchesWord(string word) => FindDeviceByWord(word) is not null || FindConfiguredModByWord(word) is not null;
+
+    private static string CatalogRuntimeId(string catalogId) => $"catalog:{catalogId}";
+
+    /// Sub self-service toggle by a restraint's own word (see FindDeviceByWord): applies it if inactive,
+    /// releases it if active. Refused outright while an Owner force-lock is in effect, same as
     /// OutfitCommand.Apply/Unlock's OutfitForceLocked check.
-    public bool Toggle(RestraintAliasDefinition alias)
+    public bool ToggleByWord(string word)
     {
+        LastFailureReason = null;
         if (runtimeState.RestraintsForceLocked)
+        {
+            LastFailureReason = "restraints are currently force-locked by your Owner";
             return false;
+        }
 
-        return activeDeviceIds.Contains(alias.DeviceId) ? Release(alias.DeviceId) : Apply(alias.DeviceId);
-    }
+        if (FindDeviceByWord(word) is { } device)
+            return activeDeviceIds.Contains(device.Id) ? Release(device.Id) : ApplyDevice(device.Id, device);
 
-    private bool Apply(string deviceId)
-    {
-        if (!config.RestraintMapping.Devices.TryGetValue(deviceId, out var device))
-            return false;
+        if (FindConfiguredModByWord(word) is { } mod)
+        {
+            var runtimeId = CatalogRuntimeId(mod.CatalogId);
+            if (activeDeviceIds.Contains(runtimeId))
+                return Release(runtimeId);
+            if (mod.ItemId is not { } itemId || mod.Rules.Count == 0)
+            {
+                LastFailureReason = "that configured restraint has no item or rules yet";
+                return false;
+            }
+            return ApplyCatalog(mod.CatalogId, itemId, mod.Rules, moodleOverride: null);
+        }
 
-        return ApplyDevice(deviceId, device);
+        LastFailureReason = $"no restraint named \"{word}\"";
+        return false;
     }
 
     private bool Release(string deviceId)
@@ -153,19 +182,22 @@ public sealed class RestraintCommand
 
     /// The Owner's direct override: matches `deviceName` against the Sub's own captured device catalog
     /// (case-insensitive) - same lookup shape as OutfitCommand.ForceApply. Applies the device using its own
-    /// stored rules. Always force-locks.
-    public bool ForceApply(string deviceName)
+    /// stored rules. Always force-locks. `moodleOverride` (here and on every Force* below) is the Owner's
+    /// optional `moodle:"..."` pick (collar/attached-moodles), used instead of the device's default moodle.
+    public bool ForceApply(string deviceName, string? moodleOverride = null)
     {
         LastFailureReason = null;
-        var entry = config.RestraintMapping.Devices.Values
-            .FirstOrDefault(d => string.Equals(d.Name, deviceName, StringComparison.OrdinalIgnoreCase));
+        var entry = FindDeviceByWord(deviceName);
         if (entry is null)
         {
+            // A configured mod restraint's alias works here too, using the Sub's own rules for it.
+            if (FindConfiguredModByWord(deviceName) is { ItemId: { } itemId } mod && mod.Rules.Count > 0)
+                return ForceApplyCatalog(mod.CatalogId, itemId, mod.Rules, moodleOverride);
             LastFailureReason = $"device \"{deviceName}\" was not found";
             return false;
         }
 
-        if (!ApplyDevice(entry.Id, entry))
+        if (!ApplyDevice(entry.Id, entry, moodleOverride))
             return false;
 
         runtimeState.RestraintsForceLocked = true;
@@ -204,7 +236,7 @@ public sealed class RestraintCommand
     /// override"): matches `deviceName` against every captured device, and activates exactly the rules the
     /// Owner assigned to their quick command, ignoring whatever rules the Sub may have separately assigned
     /// to that same device.
-    public bool ForceApply(string deviceName, List<RestraintRuleAssignment> rules)
+    public bool ForceApply(string deviceName, List<RestraintRuleAssignment> rules, string? moodleOverride = null)
     {
         var captured = config.RestraintMapping.Devices.Values
             .FirstOrDefault(d => string.Equals(d.Name, deviceName, StringComparison.OrdinalIgnoreCase));
@@ -220,9 +252,10 @@ public sealed class RestraintCommand
             Stain2 = captured.Stain2,
             Name = captured.Name,
             Rules = rules,
+            AttachedMoodle = captured.AttachedMoodle,
         };
 
-        if (!ApplyDevice(device.Id, device))
+        if (!ApplyDevice(device.Id, device, moodleOverride))
             return false;
 
         runtimeState.RestraintsForceLocked = true;
@@ -234,7 +267,7 @@ public sealed class RestraintCommand
     /// device id is derived deterministically from slot+item (design.md's "Ad-hoc device identity") rather
     /// than a stored `RestraintDeviceDefinition.Id`, so conflict tracking and release work exactly like a
     /// name-referenced device without needing one to exist in the Sub's own catalog.
-    public bool ForceApplyAdHoc(ApiEquipSlot? slot, ulong? itemId, string label, List<RestraintRuleAssignment> rules)
+    public bool ForceApplyAdHoc(ApiEquipSlot? slot, ulong? itemId, string label, List<RestraintRuleAssignment> rules, string? moodleOverride = null)
     {
         var device = new RestraintDeviceDefinition
         {
@@ -247,14 +280,27 @@ public sealed class RestraintCommand
             Rules = rules,
         };
 
-        if (!ApplyDevice(device.Id, device))
+        // No Sub-side device behind an ad-hoc apply, so no default moodle - only an Owner override applies.
+        if (!ApplyDevice(device.Id, device, moodleOverride))
             return false;
 
         runtimeState.RestraintsForceLocked = true;
         return true;
     }
 
-    public unsafe bool ForceApplyCatalog(string catalogId, ulong itemId, List<RestraintRuleAssignment> rules)
+    public bool ForceApplyCatalog(string catalogId, ulong itemId, List<RestraintRuleAssignment> rules, string? moodleOverride = null)
+    {
+        if (activeCatalogOverrides.ContainsKey(CatalogRuntimeId(catalogId)))
+            return true;
+        if (!ApplyCatalog(catalogId, itemId, rules, moodleOverride))
+            return false;
+        runtimeState.RestraintsForceLocked = true;
+        return true;
+    }
+
+    /// Applies a shared Penumbra restraint mod without touching the force-lock - ForceApplyCatalog adds that
+    /// for Owner commands; the Sub's own toggle (ToggleByWord) uses this directly.
+    private unsafe bool ApplyCatalog(string catalogId, ulong itemId, List<RestraintRuleAssignment> rules, string? moodleOverride)
     {
         LastFailureReason = null;
         if (!config.RestraintMapping.LocalCatalog.TryGetValue(catalogId, out var entry))
@@ -262,7 +308,7 @@ public sealed class RestraintCommand
             LastFailureReason = "that shared restraint is stale or no longer allowed";
             return false;
         }
-        var runtimeId = $"catalog:{catalogId}";
+        var runtimeId = CatalogRuntimeId(catalogId);
         if (activeCatalogOverrides.ContainsKey(runtimeId))
             return true;
         var slot = itemId == 0 ? null : GlamourerIpc.GetItemSlot((uint)itemId);
@@ -338,7 +384,10 @@ public sealed class RestraintCommand
         foreach (var rule in rules.Where(r => r.Kind == RestraintRuleKind.Gagged))
             chatGagService.ApplyCustomizePreset(runtimeId, rule.CustomizePresetId);
         activeDeviceIds.Add(runtimeId);
-        runtimeState.RestraintsForceLocked = true;
+
+        // The Sub's default comes from the configured mod restraint this catalog entry+item corresponds to.
+        var configured = config.RestraintMapping.ConfiguredMods.FirstOrDefault(m => m.CatalogId == catalogId && m.ItemId == itemId);
+        moodles.HoldAttached(AttachedMoodleLedger.RestraintSource(runtimeId), configured?.AttachedMoodle, moodleOverride);
         return true;
     }
 
@@ -355,6 +404,7 @@ public sealed class RestraintCommand
         ReleaseAllCatalogOverrides();
         var gearReleased = slotLocks.Release(Owner);
         runtimeState.RestraintsForceLocked = false;
+        moodles.Ledger.ReleaseAllWithPrefix(AttachedMoodleLedger.RestraintPrefix);
         return gearReleased || hadRestraints;
     }
 
@@ -377,7 +427,7 @@ public sealed class RestraintCommand
     /// (via RestrictionRuleManager - refused if a rule conflicts with an already-active one). Both checks
     /// run before anything is applied, and both must pass, so a refused apply never leaves a partial visual
     /// or rule change behind - same "refuse the whole action" guarantee OutfitCommand.ApplyDesign gives.
-    private unsafe bool ApplyDevice(string deviceId, RestraintDeviceDefinition device)
+    private unsafe bool ApplyDevice(string deviceId, RestraintDeviceDefinition device, string? moodleOverride = null)
     {
         var hasGear = device.Slot is not null && device.ItemId is not null;
         if (hasGear && slotLocks.WouldOverlap([device.Slot!.Value], Owner))
@@ -454,6 +504,7 @@ public sealed class RestraintCommand
             chatGagService.ApplyCustomizePreset(deviceId, rule.CustomizePresetId);
 
         activeDeviceIds.Add(deviceId);
+        moodles.HoldAttached(AttachedMoodleLedger.RestraintSource(deviceId), device.AttachedMoodle, moodleOverride);
         return true;
     }
 
@@ -558,6 +609,7 @@ public sealed class RestraintCommand
         boundAnimations.Clear();
         pendingBoundPlays.Clear();
         activeDeviceIds.Clear();
+        moodles.Ledger.ReleaseAllWithPrefix(AttachedMoodleLedger.RestraintPrefix);
         chatGagService.RevertAllCustomizePresetsForPanic();
         ReleaseAllCatalogOverrides();
         if (removedAny && !penumbra.TryRedrawLocalPlayer())
@@ -581,6 +633,12 @@ public sealed class RestraintCommand
         activeDeviceIds.Remove(deviceId);
         ReleaseBoundAnimations(deviceId);
         chatGagService.RevertCustomizePreset(deviceId);
+        moodles.Ledger.Release(AttachedMoodleLedger.RestraintSource(deviceId));
+
+        // A shared Penumbra restraint (toggled off by its alias) also holds a temporary mod setting.
+        if (activeCatalogOverrides.Remove(deviceId, out var catalogOverride)
+            && temporarySettings.Release(deviceId, catalogOverride.Collection, catalogOverride.ModDirectory))
+            penumbra.TryRedrawLocalPlayer();
 
         // Only release the shared "Restraints" slot lock once no other active device still needs it -
         // SlotLockManager.Release tears down every slot the owner holds, so this must wait until the last

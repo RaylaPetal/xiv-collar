@@ -31,6 +31,10 @@ public sealed class FavoritesWindow : Window, IDisposable
 
     public void Dispose() { }
 
+    /// Shared purple window chrome (Theme.PushWindowStyle) - pushed before Begin, popped after End.
+    public override void PreDraw() => Theme.PushWindowStyle();
+    public override void PostDraw() => Theme.PopWindowStyle();
+
     public override void Draw()
     {
         var isOwnerMode = plugin.Configuration.ResolveActiveDirection() == PairingDirection.OwnerSide;
@@ -53,6 +57,9 @@ public sealed class FavoritesWindow : Window, IDisposable
         if (!canSend)
             IconGlyph.WrappedColored(Theme.Warning, "No /tell target yet - Send is disabled until an Owner-side pairing is active.");
 
+        // collar/attached-moodles: also used by the quick-access favorites menu.
+        OwnerMoodleOverride.Draw("favorites", plugin.Configuration, ref OwnerMoodleOverride.FavoritesPick);
+
         foreach (var (label, favorites) in favoritesByCategory)
         {
             if (!ImGui.CollapsingHeader($"{label} ({favorites.Count})###favCategory_{label}", ImGuiTreeNodeFlags.DefaultOpen))
@@ -70,7 +77,7 @@ public sealed class FavoritesWindow : Window, IDisposable
 
     private void DrawFavoriteRow(QuickCommand cmd, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(cmd.Command);
+        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(cmd.Command, OwnerMoodleOverride.FavoritesPick));
         var fits = CommandSelector.Fits(composed);
         using (ImRaii.Disabled(!canSend || !fits))
         {

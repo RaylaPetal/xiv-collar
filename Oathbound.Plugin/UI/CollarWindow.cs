@@ -104,22 +104,27 @@ public class CollarWindow : Window, IDisposable
     /// captured by measuring cursor position, but still part of the *outer* window size `SizeConstraints`/
     /// `SetNextWindowSize` expect.
     ///
-    /// `SizeConstraints` alone only clamps an *interactive* resize (or the window's very first appearance) -
-    /// it does not retroactively grow a window whose size was already persisted (Dear ImGui's imgui.ini)
-    /// smaller than a minimum that has since grown (Role switch, the Sub Control toggle row, a pending-
-    /// request banner). So: whenever last frame's actual size (`LastSize`, below) is under this frame's
-    /// computed minimum, force it back up once via `SetNextWindowSize`; once it's no longer under, this stops
-    /// firing and the user's own resize (to anything >= the minimum) is never fought.
+    /// Height is pinned to exactly the content's height, in both directions - this window only holds the
+    /// header and nav grid, so a user-chosen height has nothing to offer. An earlier grow-only version (force
+    /// the size up whenever it fell under the minimum, never back down) turned one bad measurement into a
+    /// permanently huge window: on the first frame of a session the header's wrapped text can measure one
+    /// word per line before the window/table width is settled, and that inflated height then stuck. Now a
+    /// bad frame is corrected on the next one. `SizeConstraints` alone doesn't retroactively resize a
+    /// window whose size was persisted in imgui.ini, so the size is set explicitly whenever it's off;
+    /// width stays freely user-resizable (>= MinWidth), since this only fires when the height is wrong.
     public override void PreDraw()
     {
+        Theme.PushWindowStyle();
         var titleBarHeight = ImGui.GetFrameHeight();
         var bottomPadding = ImGui.GetStyle().WindowPadding.Y;
-        var minHeight = titleBarHeight + lastContentHeight + bottomPadding;
-        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(MinWidth, minHeight), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
+        var height = titleBarHeight + lastContentHeight + bottomPadding;
+        SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(MinWidth, height), MaximumSize = new Vector2(float.MaxValue, height) };
 
-        if (LastSize.Y > 0 && (LastSize.Y < minHeight || LastSize.X < MinWidth))
-            ImGui.SetNextWindowSize(new Vector2(Math.Max(LastSize.X, MinWidth), Math.Max(LastSize.Y, minHeight)), ImGuiCond.Always);
+        if (LastSize.Y > 0 && (Math.Abs(LastSize.Y - height) > 0.5f || LastSize.X < MinWidth))
+            ImGui.SetNextWindowSize(new Vector2(Math.Max(LastSize.X, MinWidth), height), ImGuiCond.Always);
     }
+
+    public override void PostDraw() => Theme.PopWindowStyle();
 
     /// collar/ui-organization "Sub Control window stays docked to the main window": this frame's actual
     /// on-screen position/size, read right after Dear ImGui's own `Begin()` (called by Dalamud's
@@ -157,7 +162,10 @@ public class CollarWindow : Window, IDisposable
                 moduleWindow.Show(clicked);
         }
 
-        lastContentHeight = ImGui.GetCursorPosY();
+        // Not on the frame the window appears: its width (and the header table's column width) isn't
+        // settled yet, so wrapped text can measure far taller than it really is - see PreDraw.
+        if (!ImGui.IsWindowAppearing())
+            lastContentHeight = ImGui.GetCursorPosY();
     }
 
     /// Both roles can receive a Pending handshake now (collarpair's role token - see

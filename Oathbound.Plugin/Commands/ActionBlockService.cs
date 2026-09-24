@@ -38,13 +38,25 @@ public sealed class ActionBlockService : IRestrictionEnforcer, IDisposable
     /// this never claims to be enforcing anything.
     public bool IsAvailable { get; }
 
+    /// collar/restraint-restrictions "Action Block is visible on the Sub's hotbars" - shown only while the
+    /// block is really enforcing, so a greyed-out hotbar never claims a block the hook isn't applying.
+    public HotbarBlockVisuals Visuals { get; } = new();
+
     public void Engage()
     {
-        if (IsAvailable)
-            active = true;
+        if (!IsAvailable)
+            return;
+        active = true;
+        Visuals.Show();
     }
 
-    public void Release() => active = false;
+    public void Release()
+    {
+        active = false;
+        Visuals.Hide();
+    }
+
+    public void OnFrameworkUpdate() => Visuals.OnFrameworkUpdate();
 
     private unsafe bool UseActionDetour(ActionManager* am, ActionType actionType, uint actionId, ulong targetId, uint extraParam, ActionManager.UseActionMode mode, uint comboRouteId, bool* outOptAreaTargeted)
     {
@@ -57,6 +69,7 @@ public sealed class ActionBlockService : IRestrictionEnforcer, IDisposable
     public void Dispose()
     {
         active = false;
+        Visuals.Hide();
         useActionHook?.Dispose();
     }
 }

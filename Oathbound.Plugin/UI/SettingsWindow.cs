@@ -67,12 +67,15 @@ public class SettingsWindow : Window, IDisposable
         triggerPhraseInput = config.TriggerPhrase;
     }
 
+    /// Shared purple window chrome (Theme.PushWindowStyle) - pushed before Begin, popped after End.
+    public override void PreDraw() => Theme.PushWindowStyle();
+    public override void PostDraw() => Theme.PopWindowStyle();
+
     /// Split into tabs (previously one long vertically-stacked flow) once this window's growth made it too
     /// tall to comfortably navigate in one scroll region - each tab now scrolls independently within the
     /// window's remaining space. Grouped by what they're for, not just by prior visual order: Identity &
-    /// Pairing is setup you do once; ToS bundles every risk acknowledgement together with the one local
-    /// testing tool, since testing a command is usually the next thing you do right after enabling a
-    /// permission those acknowledgements gate. Scanning itself moved to the main window's Sync tab
+    /// Pairing is setup you do once; ToS bundles every risk acknowledgement; Test holds the one local
+    /// testing tool on its own, so it's reachable without scrolling past every acknowledgement. Scanning itself moved to the main window's Sync tab
     /// (collar/ui-organization) - it's catalog upkeep, grouped with the rest of catalog sync now rather
     /// than living here.
     public override void Draw()
@@ -82,27 +85,34 @@ public class SettingsWindow : Window, IDisposable
         if (!ImGui.BeginTabBar("settingsTabs"))
             return;
 
+        // Each card draws its own icon heading; Section just boxes it, matching the module tabs.
         if (ImGui.BeginTabItem("Identity & Pairing"))
         {
             DrawIdentityCard(config);
-            ImGui.Spacing();
-            DrawFavoritesButtonCard(config);
-            ImGui.Spacing();
-            DrawTutorialCard(config);
+            using (Section.Begin("favoritesButtonCard"))
+                DrawFavoritesButtonCard(config);
+            using (Section.Begin("tutorialCard"))
+                DrawTutorialCard(config);
             ImGui.EndTabItem();
         }
 
         if (ImGui.BeginTabItem("ToS"))
         {
-            DrawTosCard(config);
-            ImGui.Spacing();
-            DrawCustomChatCard(config);
-            ImGui.Spacing();
-            DrawToyControlCard(config);
-            ImGui.Spacing();
-            DrawToyTriggersCard(config);
-            ImGui.Spacing();
-            DrawTestCommandCard(config);
+            using (Section.Begin("tosCard"))
+                DrawTosCard(config);
+            using (Section.Begin("customChatCard"))
+                DrawCustomChatCard(config);
+            using (Section.Begin("toyControlCard"))
+                DrawToyControlCard(config);
+            using (Section.Begin("toyTriggersCard"))
+                DrawToyTriggersCard(config);
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("Test"))
+        {
+            using (Section.Begin("testCommandCard"))
+                DrawTestCommandCard(config);
             ImGui.EndTabItem();
         }
 
@@ -124,11 +134,11 @@ public class SettingsWindow : Window, IDisposable
         var aliases = config.Aliases;
         var savedTriggers = new List<(string Label, string Command)>
         {
-            ($"Title · Clear", aliases.ClearTitleAlias),
-            ("Outfit · Unlock", "unlock"),
-            ($"Follow · Engage", aliases.Follow.EngageAlias),
-            ($"Follow · Release", aliases.Follow.ReleaseAlias),
-            ($"Moodle · Clear", aliases.ClearMoodleAlias),
+            ("Title · Clear", ControlWords.ClearTitle),
+            ("Outfit · Unlock", ControlWords.Unlock),
+            ("Follow · Engage", ControlWords.Leash),
+            ("Follow · Release", ControlWords.Unleash),
+            ("Moodle · Clear", ControlWords.ClearMoodle),
             ("Collar · Lock", "collar lock"),
             ("Collar · Unlock", "collar unlock"),
             ("Restraints · Unlock all", "restraint unlock"),
@@ -137,7 +147,8 @@ public class SettingsWindow : Window, IDisposable
         savedTriggers.AddRange(aliases.Outfits.Select(a => ($"Outfit · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.Gestures.Select(a => ($"Animation · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(aliases.Moodles.Select(a => ($"Moodle · {a.Alias}", a.Alias)));
-        savedTriggers.AddRange(aliases.Restraints.Select(a => ($"Restraint · {a.Alias}", a.Alias)));
+        savedTriggers.AddRange(config.RestraintMapping.Devices.Values.Where(d => d.Name.Trim().Length > 0).Select(d => ($"Restraint · {d.Name} (toggle)", d.Name.Trim())));
+        savedTriggers.AddRange(config.RestraintMapping.ConfiguredMods.Where(m => m.Alias.Trim().Length > 0).Select(m => ($"Restraint · {m.Alias} (toggle)", m.Alias.Trim())));
         savedTriggers.AddRange(aliases.CustomTriggers.Select(a => ($"Custom Trigger · {a.Alias}", a.Alias)));
         savedTriggers.AddRange(config.RestraintMapping.ConfiguredMods
             .Where(x => x.ItemId > 0 && GlamourerIpc.GetItemSlot((uint)x.ItemId.Value) is not null && x.Rules.Count > 0 &&
@@ -196,11 +207,10 @@ public class SettingsWindow : Window, IDisposable
         IconGlyph.Text(FontAwesomeIcon.UserShield, "Identity & Pairing");
         ImGui.Separator();
 
-        DrawDeviceIdentitySection();
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
+        using (Section.Begin("deviceIdentity"))
+            DrawDeviceIdentitySection();
 
+        using var pairingBox = Section.Begin("rolePairing", "Role & pairing");
         ImGui.TextWrapped("Role determines which side(s) of a pairing you can hold - every shared category tab in the main window shows its Sub or Owner view based on the active pairing (or Role, with nothing active), so nothing here is hidden by Role. Switch can hold pairings of both directions at once.");
         using (ImRaii.Disabled(subLocked))
         {
@@ -318,16 +328,30 @@ public class SettingsWindow : Window, IDisposable
                 ImGui.PushID(p.Id.GetHashCode());
                 var directionLabel = p.Direction == PairingDirection.OwnerSide ? "Own" : "Owned by";
                 IconGlyph.WrappedColored(Theme.Success, $"{directionLabel}: {p.PeerName}@{p.PeerWorld}.");
-                if (p.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
+                if (p.Direction == PairingDirection.SubSide)
+                {
+                    // This device is Sub in this specific pairing - ChatCommandListener always matches
+                    // incoming tells against this device's own TriggerPhrase (never the peer's), so that's
+                    // unconditionally what's "in effect" here, regardless of what the peer's own phrase is.
+                    // Previously showed PeerTriggerPhrase for every pairing regardless of direction - correct
+                    // for an Own(er) pairing (ChatComposer.Wrap addresses the peer using *their* phrase since
+                    // they're Sub there), but backwards for an Owned-by pairing like this one.
+                    IconGlyph.WrappedDisabled($"Trigger phrase in effect for this pairing: \"{config.TriggerPhrase}\" (your own).");
+                }
+                else if (p.PeerTriggerPhrase is { Length: > 0 } peerPhrase)
+                {
                     IconGlyph.WrappedDisabled($"Trigger phrase in effect for this pairing: \"{peerPhrase}\" (from your paired peer).");
+                }
                 else
+                {
                     IconGlyph.WrappedDisabled($"Trigger phrase in effect for this pairing: \"{config.TriggerPhrase}\" (your own - peer hasn't sent theirs).");
+                }
                 ImGui.Spacing();
                 ImGui.PopID();
             }
 
-            ImGui.Separator();
-            DrawUnpairSection(activePairings);
+            using (Section.Begin("unpair"))
+                DrawUnpairSection(activePairings);
         }
         else if (pending is { } request)
         {

@@ -131,6 +131,11 @@ public static class QuickAccessMenu
             }
             else
             {
+                // collar/attached-moodles: the pick is made in the Favorites window; shown here so a send
+                // from this menu never carries a moodle the Owner can't see.
+                if (OwnerMoodleOverride.FavoritesPick is { } moodlePick)
+                    ImGui.TextDisabled($"Moodle: {moodlePick} (change in Favorites window)");
+
                 foreach (var (label, favorites) in favoritesByCategory)
                 {
                     if (!ImGui.BeginMenu($"{label} ({favorites.Count})"))
@@ -172,8 +177,8 @@ public static class QuickAccessMenu
         (FixedActionIds.RestraintUnlock, "Restraint unlock", "Restraints", "restraint unlock"),
         (FixedActionIds.ClearTitle, "Clear title", "Title", "title clear"),
         (FixedActionIds.UnlockOutfit, "Unlock outfit", "Outfit", "outfit unlock"),
-        (FixedActionIds.LeashDefault, "Leash (default)", "Follow", "leash"),
-        (FixedActionIds.UnleashDefault, "Unleash (default)", "Follow", "unleash"),
+        (FixedActionIds.LeashDefault, "Leash", "Follow", ControlWords.Leash),
+        (FixedActionIds.UnleashDefault, "Unleash", "Follow", ControlWords.Unleash),
     ];
 
     internal static List<(string Label, List<QuickCommand> Favorites)> CategorizedFavorites(OwnerQuickCommands quick)
@@ -237,7 +242,7 @@ public static class QuickAccessMenu
 
     private static void DrawFavoriteMenuItem(Plugin plugin, QuickCommand cmd, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(cmd.Command);
+        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.Apply(cmd.Command, OwnerMoodleOverride.FavoritesPick));
         var fits = CommandSelector.Fits(composed);
         using (ImRaii.Disabled(!canSend || !fits))
         {
