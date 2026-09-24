@@ -77,16 +77,22 @@ public static class CommandSelector
             if (byPrefix.Count > 1) return new GestureResolution(ResolutionStatus.Ambiguous, null);
         }
 
-        var matches = all.Where(e => string.Equals(e.AnimationName, selector, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(e.Label, selector, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(GestureLabel(e.ModName, e.GroupName, e.AnimationName, e.Trigger), selector, StringComparison.OrdinalIgnoreCase))
-            .Take(2).ToList();
-        return matches.Count switch
+        // Most specific name first: the full label (with its trigger), then the entry's own label, then the bare
+        // animation name. The same animation often exists as several entries (one per trigger, or none), so a
+        // selector that names one exactly must not be called ambiguous just because a looser name matches more.
+        Func<GestureCatalogEntry, string>[] tiers =
+        [
+            e => GestureLabel(e.ModName, e.GroupName, e.AnimationName, e.Trigger),
+            e => e.Label,
+            e => e.AnimationName,
+        ];
+        foreach (var name in tiers)
         {
-            1 => new GestureResolution(ResolutionStatus.Success, matches[0]),
-            > 1 => new GestureResolution(ResolutionStatus.Ambiguous, null),
-            _ => new GestureResolution(ResolutionStatus.Missing, null),
-        };
+            var matches = all.Where(e => string.Equals(name(e), selector, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+            if (matches.Count == 1) return new GestureResolution(ResolutionStatus.Success, matches[0]);
+            if (matches.Count > 1) return new GestureResolution(ResolutionStatus.Ambiguous, null);
+        }
+        return new GestureResolution(ResolutionStatus.Missing, null);
     }
 
     public static string MoodleSelector(string rawName, IEnumerable<string> rawNames)

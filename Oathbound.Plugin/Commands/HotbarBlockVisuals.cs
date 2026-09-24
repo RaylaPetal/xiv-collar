@@ -1,5 +1,5 @@
 using System;
-using ECommons.Automation;
+using Dalamud.Game.Config;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -26,7 +26,7 @@ public sealed unsafe class HotbarBlockVisuals
     /// greyed out with the red slash on every job.
     private const uint PlaceholderActionId = 68;
 
-    /// `_ActionBar`'s lock toggle component node and its lock callback, as used by GagSpeak's AddonHotbar
+    /// `_ActionBar`'s lock toggle component node (hidden while shown), as used by GagSpeak's AddonHotbar
     /// (itself from SimpleTweaks).
     private const uint LockToggleNodeId = 21;
 
@@ -35,11 +35,17 @@ public sealed unsafe class HotbarBlockVisuals
 
     public bool IsShown => shown;
 
+    /// The lock is changed on the next framework tick, never inline: Show/Hide run from inside the chat
+    /// message hook (an Owner's restraint tell), and changing hotbar UI state from there crashed the game.
     public void Show()
     {
         shown = true;
         SwapBlockableSlots();
-        LockAndHideToggle();
+        Plugin.Framework.RunOnTick(() =>
+        {
+            if (shown)
+                LockAndHideToggle();
+        });
     }
 
     public void Hide()
@@ -48,7 +54,11 @@ public sealed unsafe class HotbarBlockVisuals
             return;
         shown = false;
         RestoreSavedHotbars();
-        RestoreLock();
+        Plugin.Framework.RunOnTick(() =>
+        {
+            if (!shown)
+                RestoreLock();
+        });
     }
 
     /// collar/restraint-restrictions "Job change while blocked": job, gearset and PvP changes make the game
@@ -144,9 +154,10 @@ public sealed unsafe class HotbarBlockVisuals
                 return;
             }
 
-            lockedBefore ??= bar->IsLocked;
-            if (!bar->IsLocked)
-                SetLocked(bar, true);
+            var locked = IsLocked();
+            lockedBefore ??= locked;
+            if (!locked)
+                SetLocked(true);
             SetToggleVisible(bar, false);
         }
         catch (Exception ex)
@@ -161,13 +172,11 @@ public sealed unsafe class HotbarBlockVisuals
         {
             var wasLocked = lockedBefore;
             lockedBefore = null;
+            if (wasLocked == false && IsLocked())
+                SetLocked(false);
             var bar = ActionBar();
-            if (bar == null)
-                return;
-
-            if (wasLocked == false && bar->IsLocked)
-                SetLocked(bar, false);
-            SetToggleVisible(bar, true);
+            if (bar != null)
+                SetToggleVisible(bar, true);
         }
         catch (Exception ex)
         {
@@ -175,8 +184,12 @@ public sealed unsafe class HotbarBlockVisuals
         }
     }
 
-    private static void SetLocked(AddonActionBarBase* bar, bool locked) =>
-        Callback.Fire((AtkUnitBase*)bar, true, 9, 3, 51u, 0u, locked);
+    /// Through the game's own "Lock hotbar" UI option rather than firing the `_ActionBar` lock toggle's
+    /// callback: that fake click went through AgentHUD.ReceiveEvent (and every other plugin's callback
+    /// hook) and could crash the game with a native access violation no try/catch can stop.
+    private static bool IsLocked() => Plugin.GameConfig.TryGet(UiConfigOption.HotbarLock, out bool locked) && locked;
+
+    private static void SetLocked(bool locked) => Plugin.GameConfig.Set(UiConfigOption.HotbarLock, locked);
 
     private static void SetToggleVisible(AddonActionBarBase* bar, bool visible)
     {

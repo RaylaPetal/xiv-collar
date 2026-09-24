@@ -220,7 +220,19 @@ public sealed class SlotLockManager : IDisposable
         Persist();
     }
 
-    private void OnLocalPlayerStateChanged()
+    private void OnLocalPlayerStateChanged() => Enforce(logReapplied: false);
+
+    /// How long after an apply to re-check the locked slots - long enough for a Penumbra redraw requested
+    /// just before the lock to have finished.
+    private static readonly TimeSpan VerifyDelay = TimeSpan.FromSeconds(1);
+
+    /// Re-checks every locked slot shortly after an apply and puts back any that don't show their locked
+    /// piece. An apply that requests a Penumbra redraw right before locking (a restraint mod) races that
+    /// redraw: Glamourer re-applying the actor's state afterwards can put the previous piece - a locked
+    /// outfit's - back, without the state-change event enforcement normally reacts to.
+    public void VerifySoon() => Plugin.Framework.RunOnTick(() => Enforce(logReapplied: true), VerifyDelay);
+
+    private void Enforce(bool logReapplied)
     {
         if (isEnforcing || locks.Count == 0)
             return;
@@ -234,7 +246,9 @@ public sealed class SlotLockManager : IDisposable
                 if (current is { } value && value.ItemId == entry.Value.ItemId && value.Stain == entry.Value.Stain && value.Stain2 == entry.Value.Stain2)
                     continue;
 
-                glamourer.SetItemOnce(slot, entry.Value.ItemId, new List<byte> { entry.Value.Stain, entry.Value.Stain2 });
+                var ec = glamourer.SetItemOnce(slot, entry.Value.ItemId, new List<byte> { entry.Value.Stain, entry.Value.Stain2 });
+                if (logReapplied)
+                    Plugin.Log.Information($"SlotLockManager: {slot} showed {current?.ItemId.ToString() ?? "nothing"} instead of {entry.Owner}'s locked item {entry.Value.ItemId} - re-applied ({ec}).");
             }
         }
         finally

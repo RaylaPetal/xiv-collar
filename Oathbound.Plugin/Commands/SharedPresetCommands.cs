@@ -97,21 +97,6 @@ public static class SharedPresetCommands
         return !BundleFits(CustomTriggerCommand.BuildCastCommand(trigger.Alias, actions!));
     }
 
-    /// The rules with animation labels dropped, so they encode by animation id instead: a readable label
-    /// ("<mod> — <group> — <animation>") can alone run well past a chat message, while the id is 16 hex
-    /// characters. The copy only ever runs on the Sub's own client, whose gesture catalog the id comes from
-    /// (a stable hash, so it survives rescans) and which resolves ids before labels (ResolveAnimation).
-    private static List<RestraintRuleAssignment> CompactRules(List<RestraintRuleAssignment> rules) =>
-        rules.Select(r => new RestraintRuleAssignment
-        {
-            Kind = r.Kind,
-            PoseModeId = r.PoseModeId,
-            AnimationId = r.AnimationId,
-            AnimationLabel = string.IsNullOrWhiteSpace(r.AnimationId) ? r.AnimationLabel : null,
-            CustomizePresetId = r.CustomizePresetId,
-            CustomizePresetLabel = r.CustomizePresetLabel,
-        }).ToList();
-
     private static CustomTriggerAction? SelfContained(CustomTriggerAction action, PluginConfig config)
     {
         if (action.Kind != CustomTriggerActionKind.Restraint)
@@ -129,7 +114,7 @@ public static class SharedPresetCommands
                 RestraintCatalogId = action.RestraintCatalogId,
                 RestraintItemId = action.RestraintItemId,
                 RestraintDeviceName = action.RestraintDeviceName,
-                RestraintRules = CompactRules(configured.Rules),
+                RestraintRules = configured.Rules,
             };
         }
 
@@ -139,7 +124,7 @@ public static class SharedPresetCommands
         {
             Kind = CustomTriggerActionKind.Restraint,
             RestraintDeviceName = device.Name,
-            RestraintRules = CompactRules(device.Rules),
+            RestraintRules = device.Rules,
             RestraintRulesOnly = true,
             RestraintSlot = device.Slot,
             RestraintItemId = device.ItemId ?? 0,

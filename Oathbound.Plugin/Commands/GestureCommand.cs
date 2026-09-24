@@ -6,6 +6,7 @@ using System.Text.Json;
 using Oathbound.Plugin.Config;
 using Oathbound.Plugin.Ipc;
 using ECommons.Automation;
+using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 
@@ -209,9 +210,40 @@ public sealed class GestureCommand
             _ => throw new ArgumentOutOfRangeException(),
         };
         playerState->SelectedPoses[(int)poseType] = trigger.CPoseState;
-        Chat.SendMessage(trigger.EmoteModeId switch { 1 => "/groundsit", 2 => "/sit", 3 => "/doze", _ => "" });
+        SendPoseCommand((int)trigger.EmoteModeId);
         EmotePlayed?.Invoke();
         return true;
+    }
+
+    /// How long to wait before checking whether a pose command only stood the character up.
+    private static readonly TimeSpan PoseRetryDelay = TimeSpan.FromMilliseconds(1500);
+
+    /// Sends /groundsit, /sit or /doze for `emoteModeId` (1-3). Those commands toggle: sent while already
+    /// sitting, they stand the character up instead of switching to the newly selected pose. So when the
+    /// character isn't in its normal standing state, check again once the transition has played out and,
+    /// if it's standing now, send the command a second time to sit in the new pose.
+    internal static unsafe void SendPoseCommand(int emoteModeId)
+    {
+        var command = emoteModeId switch { 1 => "/groundsit", 2 => "/sit", 3 => "/doze", _ => "" };
+        if (command.Length == 0)
+            return;
+
+        var wasStanding = IsStanding();
+        Chat.SendMessage(command);
+        if (wasStanding)
+            return;
+
+        Plugin.Framework.RunOnTick(() =>
+        {
+            if (IsStanding())
+                Chat.SendMessage(command);
+        }, PoseRetryDelay);
+    }
+
+    private static unsafe bool IsStanding()
+    {
+        var player = Control.GetLocalPlayer();
+        return player == null || player->Mode == CharacterModes.Normal;
     }
 
     private void MigrateAliases()

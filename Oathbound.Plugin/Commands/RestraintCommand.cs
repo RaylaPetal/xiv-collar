@@ -226,6 +226,7 @@ public sealed class RestraintCommand
         // acquire its already-held restriction claims again.
         if (activeDeviceIds.Contains(deviceId))
         {
+            Replay(deviceId, device.Rules);
             runtimeState.RestraintsForceLocked = true;
             return true;
         }
@@ -296,7 +297,10 @@ public sealed class RestraintCommand
     public bool ForceApplyCatalog(string catalogId, ulong itemId, List<RestraintRuleAssignment> rules, string? moodleOverride = null)
     {
         if (activeCatalogOverrides.ContainsKey(CatalogRuntimeId(catalogId)))
+        {
+            Replay(CatalogRuntimeId(catalogId), rules);
             return true;
+        }
         if (!ApplyCatalog(catalogId, itemId, rules, moodleOverride))
             return false;
         runtimeState.RestraintsForceLocked = true;
@@ -393,6 +397,7 @@ public sealed class RestraintCommand
         // The Sub's default comes from the configured mod restraint this catalog entry+item corresponds to.
         var configured = config.RestraintMapping.ConfiguredMods.FirstOrDefault(m => m.CatalogId == catalogId && m.ItemId == itemId);
         moodles.HoldAttached(AttachedMoodleLedger.RestraintSource(runtimeId), configured?.AttachedMoodle, moodleOverride);
+        slotLocks.VerifySoon();
         return true;
     }
 
@@ -510,6 +515,8 @@ public sealed class RestraintCommand
 
         activeDeviceIds.Add(deviceId);
         moodles.HoldAttached(AttachedMoodleLedger.RestraintSource(deviceId), device.AttachedMoodle, moodleOverride);
+        if (hasGear)
+            slotLocks.VerifySoon();
         return true;
     }
 
@@ -530,7 +537,26 @@ public sealed class RestraintCommand
             _ => throw new ArgumentOutOfRangeException(nameof(poseModeId)),
         };
         playerState->SelectedPoses[(int)poseType] = 0;
-        Chat.SendMessage(poseModeId switch { 1 => "/groundsit", 2 => "/sit", 3 => "/doze", _ => "" });
+        GestureCommand.SendPoseCommand(poseModeId);
+    }
+
+    /// An Owner re-sending a restraint that's already on: nothing is re-acquired, but its pose and bound
+    /// animations play again - so a Sub who stood up, sat down or changed pose in the meantime is put back
+    /// in the restraint's position instead of the re-send silently doing nothing.
+    private void Replay(string deviceId, IEnumerable<RestraintRuleAssignment> rules)
+    {
+        var ruleList = rules.ToList();
+        if (ruleList.FirstOrDefault(r => r.Kind == RestraintRuleKind.ForcedPose && r.PoseModeId != 0) is { } pose)
+            ApplyPose(pose.PoseModeId);
+
+        var now = Environment.TickCount64;
+        foreach (var rule in ruleList)
+        {
+            if (!boundAnimations.ContainsKey((deviceId, rule.Kind)))
+                continue;
+            if (ResolveAnimation(rule.AnimationId)?.Trigger is { } trigger)
+                pendingBoundPlays[(deviceId, rule.Kind)] = (trigger, now);
+        }
     }
 
     /// collar/restraints "Arms Cuffed and Legs Cuffed rules lock the Sub into a chosen bound animation":
@@ -904,8 +930,12 @@ public sealed class RestraintCommand
         return rules;
     }
 
+    /// The animation as it travels on the wire: its catalog id when known, the readable label only as a
+    /// fallback. The id is a stable hash of the Sub's own scan and is resolved first on the Sub's side; a
+    /// label built from the Owner's imported copy of the catalog stops matching once that copy is stale, and
+    /// can match several entries of the same animation - both refused as "missing, stale, or ambiguous".
     private static string ReadableAnimation(RestraintRuleAssignment rule) =>
-        (string.IsNullOrWhiteSpace(rule.AnimationLabel) ? rule.AnimationId : rule.AnimationLabel)!.Replace(',', '·');
+        (string.IsNullOrWhiteSpace(rule.AnimationId) ? rule.AnimationLabel : rule.AnimationId)!.Replace(',', '·');
 
     private static string ReadableCustomizePreset(RestraintRuleAssignment rule) =>
         (string.IsNullOrWhiteSpace(rule.CustomizePresetLabel) ? rule.CustomizePresetId : rule.CustomizePresetLabel)!.Replace(',', '·');
