@@ -181,6 +181,10 @@ public sealed class ModuleWindow : Window, IDisposable
     private string editingQuickOriginalTarget = "";
     private bool editingQuickTitleIsPrefix;
     private bool editingQuickOriginalTitleIsPrefix;
+    /// Saved-outfit editor: lock the outfit (`outfit lock`) or just apply it (`outfit wear`).
+    private bool editingQuickOutfitLocked = true;
+    private bool editingQuickOriginalOutfitLocked = true;
+    private static readonly string[] OutfitLockModeNames = ["Locked", "Not locked"];
     private Vector3 editingQuickTitleColor = new(1, 1, 1);
     private Vector3 editingQuickOriginalTitleColor = new(1, 1, 1);
     private bool editingQuickTitleHasGlow;
@@ -258,9 +262,11 @@ public sealed class ModuleWindow : Window, IDisposable
                     var canSend = DrawOwnerCanSendBanner();
                     IconGlyph.Text(FontAwesomeIcon.BoltLightning, "Custom Triggers");
                     ImGui.Separator();
+                    using (Section.Begin("ctqSaved", "Saved"))
+                        DrawSavedAliasCommands(canSend);
                     using (Section.Begin("ctqBuilder", "Build a bundle"))
                         DrawCustomTriggerQuickSection(canSend);
-                    using (Section.Begin("freeformComposer", "Saved bundles & one-off commands"))
+                    using (Section.Begin("freeformComposer", "One-off command"))
                         DrawFreeformComposer(canSend);
                 }
                 else
@@ -281,7 +287,6 @@ public sealed class ModuleWindow : Window, IDisposable
                 DrawSyncTab(isOwner);
                 break;
         }
-        DrawQuickCommandEditor();
     }
 
     /// collar/onboarding: renders the current guided-tutorial step's explanation and Next/Exit controls
@@ -412,6 +417,16 @@ public sealed class ModuleWindow : Window, IDisposable
             DrawRestraintScanBody(config);
         using (Section.Begin("scanMoodles"))
             DrawMoodlesScanBody(config);
+
+        // collar/catalog-sync "shared presets are copies": a custom trigger is shared as one self-contained
+        // command, sent one message per action if it doesn't fit in one - a trigger with an action too long
+        // for a single message is left out, and said so here.
+        var tooLong = config.Aliases.CustomTriggers.Where(t => SharedPresetCommands.IsTooLongToShare(t, config)).Select(t => t.Alias).ToList();
+        if (tooLong.Count > 0)
+        {
+            using (Section.Begin("subShareLimits", "Not shared"))
+                IconGlyph.WrappedColored(Theme.Warning, $"{tooLong.Count} custom trigger(s) too long to share: {string.Join(", ", tooLong)}. Each action has to fit in one chat message - shorten the long ones (e.g. shorter restraint, animation or preset names, or chat text) to share them with your Owner.");
+        }
 
         using var exportBox = Section.Begin("subExport", "Offline / manual export");
         IconGlyph.WrappedDisabled("Only needed if relay sync is unavailable. Export one file here to send your Owner manually.");
@@ -2039,6 +2054,14 @@ public sealed class ModuleWindow : Window, IDisposable
                 try
                 {
                     var text = System.IO.File.ReadAllText(path);
+                    // Paired as this Sub's Owner: importing their file again replaces what they shared
+                    // before (like a relay refresh). Otherwise, the old add-only import.
+                    if (plugin.CatalogSyncService.TryApplyFileAsPairSnapshot(text, plugin.Configuration.ActivePairing) is { } shared)
+                    {
+                        importResult = shared.Error ?? $"Updated from your Sub's file: {shared.Added} added, {shared.Updated} updated, {shared.Removed} removed. Your own commands were left as they were.";
+                        resetImportsResult = null;
+                        return;
+                    }
                     var result = plugin.CatalogSyncService.ParseImport(text);
                     var duplicateNote = result.Duplicates > 0 ? $" {result.Duplicates} duplicate(s) skipped." : "";
                     importResult = result.Error ?? (result.TotalAdded == 0
@@ -2216,10 +2239,8 @@ public sealed class ModuleWindow : Window, IDisposable
             return;
         }
 
-        // Fills the rest of the tab instead of a fixed 120px box - this used to share a window with seven
-        // other collapsible sections (collar/ui-organization's old Owner accordion), where a small fixed
-        // height made sense; now Moodles has the whole tab to itself, so there's usually plenty of room.
-        using var _ = ImRaii.Child("moodlesQuickList", new Vector2(0, Math.Max(120, ImGui.GetContentRegionAvail().Y)), true);
+        // Sized to its rows, up to the room left in the tab - not a fixed box, and not stretched when short.
+        using var _ = Section.List("moodlesQuickList");
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend, MoodlesTextFormat.StripMarkup);
     }
@@ -2294,8 +2315,20 @@ public sealed class ModuleWindow : Window, IDisposable
             }
             else
             {
-                using var _ = ImRaii.Child("restraintsQuickList", new Vector2(0, 260), true);
+                using var _ = Section.List("restraintsQuickList", 260);
                 foreach (var cmd in configuredMods) DrawRestraintQuickRow(cmd, quick, canSend);
+            }
+        }
+
+        // collar/catalog-sync "shared presets are copies": the Sub's rules-only restraints arrive as
+        // self-contained `restraint wear` commands - they keep working after the Sub deletes them.
+        var sharedRulesOnly = quick.Where(x => x.RestraintCatalogId is null).ToArray();
+        if (sharedRulesOnly.Length > 0)
+        {
+            using (Section.Begin("restraintQuickShared", "Shared rules-only restraints"))
+            {
+                foreach (var cmd in sharedRulesOnly)
+                    DrawSavedQuickRow(cmd, quick, canSend);
             }
         }
 
@@ -2507,7 +2540,7 @@ public sealed class ModuleWindow : Window, IDisposable
             var duplicate = aliases.Any(q => !ReferenceEquals(q, editingOwnerBundle) &&
                 (string.Equals(q.Label, ctqLabel.Trim(), StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(q.Command, command, StringComparison.OrdinalIgnoreCase)));
-            var safe = CommandSelector.Fits(plugin.ChatComposer.Compose(command));
+            var safe = ChatComposer.AllFit(plugin.ChatComposer.ComposeAll(command));
             using (ImRaii.Disabled(stale || duplicate || !safe))
             {
                 if (ImGui.SmallButton($"{(editingOwnerBundle is null ? "Save bundle" : "Save changes")}##ctqSave"))
@@ -2826,8 +2859,8 @@ public sealed class ModuleWindow : Window, IDisposable
             return;
         }
 
-        // Same reasoning as Moodles' list above: fills the rest of the tab instead of a fixed 120px box.
-        using var _ = ImRaii.Child("outfitQuickList", new Vector2(0, Math.Max(120, ImGui.GetContentRegionAvail().Y)), true);
+        // Same as Moodles' list above: sized to its rows, up to the room left in the tab.
+        using var _ = Section.List("outfitQuickList");
         foreach (var cmd in quick.ToArray())
             DrawSavedQuickRow(cmd, quick, canSend);
     }
@@ -2865,7 +2898,7 @@ public sealed class ModuleWindow : Window, IDisposable
         IconGlyph.WrappedDisabled($"{visible.Count} shown / {quick.Count} imported");
         searchBox.Dispose();
 
-        using var _ = ImRaii.Child("gestureQuickList", new Vector2(0, 260), true);
+        using var _ = Section.List("gestureQuickList");
         if (visible.Count == 0)
         {
             IconGlyph.WrappedDisabled("No animations match this search.");
@@ -3486,7 +3519,7 @@ public sealed class ModuleWindow : Window, IDisposable
 
     private void DrawFreeformComposer(bool canSend)
     {
-        IconGlyph.WrappedDisabled("Multi-action Custom Trigger bundles your Sub created land here on import - a single-action alias imports straight into its own category above instead. Type a bundle alias your Sub told you about, or any one-off override. Add Command saves it as a one-click button below for reuse.");
+        IconGlyph.WrappedDisabled("Multi-action Custom Trigger bundles your Sub shares land in Saved at the top - a single-action alias imports straight into its own category instead. Type a bundle alias your Sub told you about, or any one-off override. Add Command saves it as a one-click button in Saved at the top.");
 
         ImGui.InputText("Command", ref commandInput, 96);
         IconGlyph.HelpMarker("Either a short alias name your Sub defined, or a direct override: \"title create <text>\" / \"title clear\", \"outfit lock <name>\" / \"outfit unlock\", \"gesture <name>\".");
@@ -3519,13 +3552,21 @@ public sealed class ModuleWindow : Window, IDisposable
                 commandInput = "";
             }
         }
-        IconGlyph.HelpMarker("Send fires this one /tell immediately - the same one-click, one-message shape as pressing an FFXIV macro, and the only thing in this plugin that ever sends chat for you. Copy never sends anything. Add Command saves the text above as a one-click button below.");
+        IconGlyph.HelpMarker("Send fires this one /tell immediately - the same one-click, one-message shape as pressing an FFXIV macro, and the only thing in this plugin that ever sends chat for you. Copy never sends anything. Add Command saves the text above as a one-click button in Saved at the top.");
+    }
 
+    /// Saved bundles and commands (imported from the Sub, or saved by the builder/one-off composer) - drawn
+    /// first in the Custom Triggers tab, since they're what the Owner reaches for most.
+    private void DrawSavedAliasCommands(bool canSend)
+    {
+        var aliasQuick = plugin.Configuration.QuickCommands.Aliases;
         if (aliasQuick.Count == 0)
+        {
+            IconGlyph.WrappedDisabled("Nothing saved yet - bundles your Sub shares, and ones you save below, show up here.");
             return;
+        }
 
-        Section.SubHeading("Saved");
-        using var _ = ImRaii.Child("aliasQuickList", new Vector2(0, 100), true);
+        using var _ = Section.List("aliasQuickList", 300);
         foreach (var cmd in aliasQuick.ToArray())
             DrawSavedQuickRow(cmd, aliasQuick, canSend);
     }
@@ -3549,6 +3590,8 @@ public sealed class ModuleWindow : Window, IDisposable
     private void DrawSavedQuickRow(QuickCommand cmd, List<QuickCommand> list, bool canSend, Func<string, string>? displayLabel = null)
     {
         var shownLabel = displayLabel?.Invoke(cmd.Label) ?? cmd.Label;
+        if (cmd.Command.StartsWith("outfit wear ", StringComparison.OrdinalIgnoreCase))
+            shownLabel += "  · not locked";
         // collar/attached-moodles: a command's own moodle pick shows right on its row.
         if (cmd.MoodleOverride is { } rowMoodle && OwnerMoodleOverride.Accepts(cmd.Command))
             shownLabel += $"  · moodle: {rowMoodle}";
@@ -3558,10 +3601,16 @@ public sealed class ModuleWindow : Window, IDisposable
         DrawFavoriteToggle(cmd, $"{cmd.Label}_{cmd.Command}");
         ContinueRowOrWrap(ButtonWidth("Send"));
         DrawSendCopyButtons(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd), canSend, $"{cmd.Label}_{cmd.Command}");
-        ContinueRowOrWrap(ButtonWidth("Edit"));
-        if (ImGui.SmallButton($"Edit##{cmd.Label}_{cmd.Command}"))
+        // Edit expands this row's own editor right beneath it (and collapses it again) - a bundle is the
+        // one exception, loaded into the bundle builder instead.
+        var expanded = ReferenceEquals(editingQuickCommand, cmd);
+        var editLabel = expanded ? "Close" : "Edit";
+        ContinueRowOrWrap(ButtonWidth(editLabel));
+        if (ImGui.SmallButton($"{editLabel}##{cmd.Label}_{cmd.Command}"))
         {
-            if (ReferenceEquals(list, plugin.Configuration.QuickCommands.Aliases) &&
+            if (expanded)
+                CancelQuickCommandEdit();
+            else if (ReferenceEquals(list, plugin.Configuration.QuickCommands.Aliases) &&
                 cmd.Command.StartsWith("customtrigger cast ", StringComparison.OrdinalIgnoreCase))
                 BeginOwnerBundleEdit(cmd);
             else
@@ -3571,7 +3620,17 @@ public sealed class ModuleWindow : Window, IDisposable
         if (ImGui.SmallButton($"Remove##{cmd.Label}_{cmd.Command}"))
         {
             list.Remove(cmd);
+            if (ReferenceEquals(editingQuickCommand, cmd))
+                CancelQuickCommandEdit();
             plugin.Configuration.Save();
+            return;
+        }
+
+        if (ReferenceEquals(editingQuickCommand, cmd))
+        {
+            ImGui.Indent();
+            DrawQuickCommandEditor();
+            ImGui.Unindent();
         }
     }
 
@@ -3602,6 +3661,8 @@ public sealed class ModuleWindow : Window, IDisposable
         }
         editingQuickOriginalTarget = editingQuickTarget;
         editingQuickOriginalTitleIsPrefix = editingQuickTitleIsPrefix;
+        editingQuickOutfitLocked = !command.Command.StartsWith("outfit wear ", StringComparison.OrdinalIgnoreCase);
+        editingQuickOriginalOutfitLocked = editingQuickOutfitLocked;
         editingQuickOriginalTitleColor = editingQuickTitleColor;
         editingQuickOriginalTitleHasGlow = editingQuickTitleHasGlow;
         editingQuickOriginalTitleGlow = editingQuickTitleGlow;
@@ -3622,7 +3683,7 @@ public sealed class ModuleWindow : Window, IDisposable
     {
         var prefixes = category switch
         {
-            QuickEditCategory.Outfit => new[] { "outfit lock " },
+            QuickEditCategory.Outfit => new[] { "outfit lock ", "outfit wear " },
             QuickEditCategory.Gesture => new[] { "gesture " },
             QuickEditCategory.Moodle => new[] { "moodle apply " },
             _ => Array.Empty<string>(),
@@ -3633,7 +3694,8 @@ public sealed class ModuleWindow : Window, IDisposable
         return category == QuickEditCategory.Follow ? command.Command : command.Label;
     }
 
-    /// A shared focused draft editor for Owner entries. Nothing touches the stored object until Save;
+    /// A shared focused draft editor for Owner entries, drawn inline under the row being edited
+    /// (DrawSavedQuickRow). Nothing touches the stored object until Save;
     /// Cancel and validation failures therefore remain lossless, and reference identity detects a row
     /// removed while the editor was open.
     private void DrawQuickCommandEditor()
@@ -3641,9 +3703,9 @@ public sealed class ModuleWindow : Window, IDisposable
         if (editingQuickCommand is not { } source || editingQuickList is not { } list)
             return;
 
-        using var editorBox = Section.Begin("quickCommandEditor", "Edit saved command");
+        using var editorBox = Section.Begin("quickCommandEditor");
         ImGui.SetNextItemWidth(-1);
-        ImGui.InputText("Label##quickEdit", ref editingQuickLabel, 80);
+        ImGui.InputTextWithHint("##quickEditLabel", "Label", ref editingQuickLabel, 80);
 
         switch (editingQuickCategory)
         {
@@ -3657,6 +3719,10 @@ public sealed class ModuleWindow : Window, IDisposable
             case QuickEditCategory.Outfit:
                 ImGui.SetNextItemWidth(-1);
                 ImGui.InputText("Outfit name##quickEdit", ref editingQuickTarget, 96);
+                var lockMode = editingQuickOutfitLocked ? 0 : 1;
+                if (ImGui.Combo("Lock##quickEdit", ref lockMode, OutfitLockModeNames, OutfitLockModeNames.Length))
+                    editingQuickOutfitLocked = lockMode == 0;
+                IconGlyph.HelpMarker("Locked: your Sub can't change the outfit's pieces until you unlock it (restraints can still go over it). Not locked: the outfit is applied and your Sub is free to change it.");
                 OwnerMoodleOverride.Draw("quickEditOutfit", plugin.Configuration, ref editingQuickMoodle);
                 break;
             case QuickEditCategory.Gesture:
@@ -3685,7 +3751,7 @@ public sealed class ModuleWindow : Window, IDisposable
         var aliasList = ReferenceEquals(list, plugin.Configuration.QuickCommands.Aliases) ||
             ReferenceEquals(list, plugin.Configuration.QuickCommands.Follow);
         var reserved = aliasList && IsReserved(draftCommand);
-        var safe = CommandSelector.Fits(plugin.ChatComposer.Compose(draftCommand));
+        var safe = ChatComposer.AllFit(plugin.ChatComposer.ComposeAll(draftCommand));
         var validTarget = draftCommand.Length > 0 && (editingQuickCategory != QuickEditCategory.Gesture || draftTarget is not null);
         if (stale) IconGlyph.WrappedColored(Theme.Warning, "This entry was removed while it was being edited.");
         else if (duplicate) IconGlyph.WrappedColored(Theme.Warning, "Another saved entry already uses this label or command.");
@@ -3749,14 +3815,15 @@ public sealed class ModuleWindow : Window, IDisposable
         var targetChanged = !string.Equals(target, editingQuickOriginalTarget.Trim(), StringComparison.Ordinal) ||
             (editingQuickCategory == QuickEditCategory.Title &&
              (editingQuickTitleIsPrefix != editingQuickOriginalTitleIsPrefix || editingQuickTitleColor != editingQuickOriginalTitleColor ||
-              editingQuickTitleHasGlow != editingQuickOriginalTitleHasGlow || editingQuickTitleGlow != editingQuickOriginalTitleGlow));
+              editingQuickTitleHasGlow != editingQuickOriginalTitleHasGlow || editingQuickTitleGlow != editingQuickOriginalTitleGlow)) ||
+            (editingQuickCategory == QuickEditCategory.Outfit && editingQuickOutfitLocked != editingQuickOriginalOutfitLocked);
         if (!targetChanged && editingQuickCategory != QuickEditCategory.Raw)
             return (source.Command, source.Target);
         return editingQuickCategory switch
         {
             QuickEditCategory.Title when target.Length > 0 =>
                 (TitleCommand.BuildStyleCommand(target, editingQuickTitleIsPrefix, editingQuickTitleColor, editingQuickTitleHasGlow ? editingQuickTitleGlow : null), null),
-            QuickEditCategory.Outfit when target.Length > 0 => ($"outfit lock {target}", target),
+            QuickEditCategory.Outfit when target.Length > 0 => ($"outfit {(editingQuickOutfitLocked ? "lock" : "wear")} {target}", target),
             QuickEditCategory.Gesture when plugin.Configuration.GestureMapping.ImportedPeerCatalog.TryGetValue(target, out var entry) =>
                 ($"gesture {CommandSelector.Quote(CommandSelector.GestureSelector(entry, plugin.Configuration.GestureMapping.ImportedPeerCatalog.Values))}", entry.Id),
             QuickEditCategory.Follow when target.Length > 0 => (target, null),
@@ -3834,34 +3901,37 @@ public sealed class ModuleWindow : Window, IDisposable
 
     private void DrawSendCopyButtons(string command, bool canSend, string idSuffix, string sendLabel = "Send")
     {
-        var composed = plugin.ChatComposer.Compose(command);
-        var fits = CommandSelector.Fits(composed);
+        var messages = plugin.ChatComposer.ComposeAll(command);
+        var fits = ChatComposer.AllFit(messages);
 
         using (ImRaii.Disabled(!canSend || !fits))
         {
             if (ImGui.SmallButton($"{sendLabel}##{idSuffix}"))
-                plugin.ChatSender.Send(composed);
+                plugin.ChatSender.SendAll(messages);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? string.Join("\n", messages) : "No /tell target yet - pairing hasn't captured your Sub's name.");
 
         ContinueRowOrWrap(ButtonWidth("Copy"));
-        using (ImRaii.Disabled(!fits))
+        // A command that goes out as several messages can't be pasted as one - only Send spaces them out.
+        using (ImRaii.Disabled(!fits || messages.Count > 1))
         if (ImGui.SmallButton($"Copy##{idSuffix}"))
-            ImGui.SetClipboardText(composed);
+            ImGui.SetClipboardText(messages[0]);
+        if (messages.Count > 1 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip($"Too long for one message - Send delivers it as {messages.Count} messages, one per action.");
     }
 
     private void DrawSendOnly(string command, bool canSend, string idSuffix, string label)
     {
-        var composed = plugin.ChatComposer.Compose(command);
-        var fits = CommandSelector.Fits(composed);
+        var messages = plugin.ChatComposer.ComposeAll(command);
+        var fits = ChatComposer.AllFit(messages);
         using (ImRaii.Disabled(!canSend || !fits))
         {
             if (ImGui.SmallButton($"{label}##{idSuffix}"))
-                plugin.ChatSender.Send(composed);
+                plugin.ChatSender.SendAll(messages);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? string.Join("\n", messages) : "No /tell target yet - pairing hasn't captured your Sub's name.");
     }
 
     /// collar/ui-organization "configured-item lists use a compact selector once they can grow past a

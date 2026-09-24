@@ -211,16 +211,16 @@ public sealed class SubControlWindow : Window, IDisposable
 
     private void DrawSendRow(string label, string command, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(command);
-        var fits = CommandSelector.Fits(composed);
+        var messages = plugin.ChatComposer.ComposeAll(command);
+        var fits = ChatComposer.AllFit(messages);
         using (ImRaii.Disabled(!canSend || !fits))
         {
             if (ImGui.SmallButton($"Send##subControl_{label}_{command}"))
-                plugin.ChatSender.Send(composed);
+                plugin.ChatSender.SendAll(messages);
         }
         ImGui.SameLine();
         ImGui.TextUnformatted(label);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? string.Join("\n", messages) : "No /tell target yet - pairing hasn't captured your Sub's name.");
     }
 }

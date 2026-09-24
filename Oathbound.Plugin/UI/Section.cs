@@ -63,9 +63,52 @@ public sealed class SectionScope : IDisposable
     }
 }
 
+/// A bordered, scrolling list sized to its own content (measured the previous frame, same approach as
+/// SectionScope), capped at `maxHeight` (required inside a Section) or else at whatever room is left in the
+/// window - so a short list isn't
+/// stretched into a mostly-empty box, and a long one never pushes the tab past the window's bottom edge.
+public sealed class ListScope : IDisposable
+{
+    private const float MinHeight = 60f;
+    private static readonly Dictionary<uint, float> MeasuredHeights = new();
+
+    private readonly uint key;
+    private readonly bool contentsDrawn;
+    private bool disposed;
+
+    internal ListScope(string id, float? maxHeight)
+    {
+        var childId = $"##list_{id}";
+        key = ImGui.GetID(childId);
+        // An explicit maxHeight is used as-is: inside a Section (itself sized from last frame's content) the
+        // "room left" would just be the list's own previous height, and the two would shrink each other.
+        // Otherwise leave room for the spacing ImGui adds after the child, or the parent gains a scrollbar.
+        var cap = Math.Max(MinHeight, maxHeight ?? ImGui.GetContentRegionAvail().Y - ImGui.GetStyle().ItemSpacing.Y);
+        var height = MeasuredHeights.TryGetValue(key, out var measured) ? Math.Min(measured, cap) : cap;
+        contentsDrawn = ImGui.BeginChild(childId, new Vector2(0, Math.Max(MinHeight, height)), true);
+    }
+
+    public void Dispose()
+    {
+        if (disposed)
+            return;
+        disposed = true;
+
+        // GetCursorPosY is in content space (scroll-independent), so this is the full list height.
+        if (contentsDrawn)
+        {
+            var style = ImGui.GetStyle();
+            MeasuredHeights[key] = ImGui.GetCursorPosY() - style.ItemSpacing.Y + style.WindowPadding.Y;
+        }
+        ImGui.EndChild();
+    }
+}
+
 public static class Section
 {
     public static SectionScope Begin(string id, string? heading = null) => new(id, heading);
+
+    public static ListScope List(string id, float? maxHeight = null) => new(id, maxHeight);
 
     /// An accent-colored label with a rule under it - a section's title.
     public static void Heading(string text)

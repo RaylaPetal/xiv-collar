@@ -20,6 +20,12 @@ public sealed class SlotLockManager : IDisposable
     private readonly PluginConfig config;
     private readonly GlamourerIpc glamourer;
     private readonly Dictionary<ApiEquipSlot, (string Owner, SlotLockValue Value)> locks = new();
+
+    /// Locks a higher-priority owner took over (see TryLock's `canTakeOverFrom`): the lower owner's slot
+    /// value, set aside while the higher owner holds the slot, and put back - re-applied and re-locked -
+    /// when the higher owner releases it. So a restraint worn over a locked outfit leaves the outfit's own
+    /// piece and lock in place underneath instead of discarding them.
+    private readonly Dictionary<ApiEquipSlot, (string Owner, SlotLockValue Value)> suspended = new();
     private bool isEnforcing;
 
     public SlotLockManager(PluginConfig config, GlamourerIpc glamourer)
@@ -29,19 +35,34 @@ public sealed class SlotLockManager : IDisposable
 
         foreach (var entry in config.SlotLocks)
             locks[entry.Slot] = (entry.Owner, new SlotLockValue(entry.ItemId, entry.Stain, entry.Stain2));
+        foreach (var entry in config.SuspendedSlotLocks)
+            suspended[entry.Slot] = (entry.Owner, new SlotLockValue(entry.ItemId, entry.Stain, entry.Stain2));
 
         glamourer.LocalPlayerStateChanged += OnLocalPlayerStateChanged;
     }
 
     public void Dispose() => glamourer.LocalPlayerStateChanged -= OnLocalPlayerStateChanged;
 
-    public bool HasLock(string owner) => locks.Values.Any(l => l.Owner == owner);
+    /// Includes a lock that's currently set aside under a higher-priority owner - the owner still holds
+    /// it, it just isn't the one showing.
+    public bool HasLock(string owner) => locks.Values.Any(l => l.Owner == owner) || suspended.Values.Any(l => l.Owner == owner);
 
-    /// True if any of `slots` is currently locked by an owner other than `owner` - the overlap check
-    /// callers should run *before* visually applying anything, so a refused lock never leaves a partial
-    /// visual change behind (collar/slot-locking's overlap-refusal requirement).
-    public bool WouldOverlap(IEnumerable<ApiEquipSlot> slots, string owner) =>
-        slots.Any(slot => locks.TryGetValue(slot, out var existing) && existing.Owner != owner);
+    /// True if any of `slots` is currently locked by an owner other than `owner` (ignoring owners `owner`
+    /// may take a slot over from) - the overlap check callers should run *before* visually applying
+    /// anything, so a refused lock never leaves a partial visual change behind (collar/slot-locking's
+    /// overlap-refusal requirement).
+    public bool WouldOverlap(IEnumerable<ApiEquipSlot> slots, string owner, IReadOnlyCollection<string>? canTakeOverFrom = null) =>
+        slots.Any(slot => locks.TryGetValue(slot, out var existing) && existing.Owner != owner
+            && (canTakeOverFrom is null || !canTakeOverFrom.Contains(existing.Owner)));
+
+    /// Records a lower-priority owner's value for `slot` as set aside under whoever holds it now, so it's
+    /// restored when that holder releases - for a caller that skipped a slot because a higher-priority
+    /// owner already has it (OutfitCommand applying a locked outfit under an active restraint).
+    public void SetAsideUnder(ApiEquipSlot slot, string owner, SlotLockValue value)
+    {
+        suspended[slot] = (owner, value);
+        Persist();
+    }
 
     /// Names exactly which of `slots` are conflicting and who holds each one - a refused apply is
     /// otherwise a dead end to diagnose (a design that happens to also touch the Sub's locked Neck slot,
@@ -66,11 +87,13 @@ public sealed class SlotLockManager : IDisposable
     /// called with one slot today (Collar's Neck), so a Glamourer failure partway through a multi-slot
     /// request isn't rolled back - worth revisiting if a future multi-slot caller (e.g. Restraints) needs
     /// that guarantee.
-    public bool TryLock(string owner, IReadOnlyDictionary<ApiEquipSlot, SlotLockValue> slots)
+    /// `canTakeOverFrom`: lower-priority owners whose lock on a requested slot this owner may take over
+    /// (Restraints over Outfit) - their value is set aside and restored when this owner releases the slot.
+    public bool TryLock(string owner, IReadOnlyDictionary<ApiEquipSlot, SlotLockValue> slots, IReadOnlyCollection<string>? canTakeOverFrom = null)
     {
         if (slots.Count == 0)
             return false;
-        if (WouldOverlap(slots.Keys, owner))
+        if (WouldOverlap(slots.Keys, owner, canTakeOverFrom))
         {
             var conflicting = slots.Keys.Where(s => locks.TryGetValue(s, out var existing) && existing.Owner != owner);
             Plugin.Log.Warning($"SlotLockManager: \"{owner}\" refused - slot(s) already locked by a different owner: {string.Join(", ", conflicting.Select(s => $"{s} ({locks[s].Owner})"))}.");
@@ -85,6 +108,8 @@ public sealed class SlotLockManager : IDisposable
                 Plugin.Log.Warning($"SlotLockManager: failed to apply {slot} for \"{owner}\": {ec}.");
                 return false;
             }
+            if (locks.TryGetValue(slot, out var previous) && previous.Owner != owner)
+                suspended[slot] = previous;
             locks[slot] = (owner, value);
         }
 
@@ -116,9 +141,19 @@ public sealed class SlotLockManager : IDisposable
     /// the whole actor at once.
     public bool Release(string owner)
     {
+        // A lock of this owner's that's currently set aside under someone else just goes away - the slot
+        // keeps showing the other owner's piece, so there's nothing to revert.
+        var droppedSetAside = suspended.Where(kv => kv.Value.Owner == owner).Select(kv => kv.Key).ToList();
+        foreach (var slot in droppedSetAside)
+            suspended.Remove(slot);
+
         var releasedSlots = locks.Where(kv => kv.Value.Owner == owner).Select(kv => kv.Key).ToHashSet();
         if (releasedSlots.Count == 0)
+        {
+            if (droppedSetAside.Count > 0)
+                Persist();
             return true;
+        }
 
         isEnforcing = true;
         try
@@ -150,7 +185,21 @@ public sealed class SlotLockManager : IDisposable
             }
 
             foreach (var slot in releasedSlots)
+            {
                 locks.Remove(slot);
+
+                // Put back whatever this owner took the slot over from (e.g. the locked outfit's piece
+                // under a restraint that's now removed), instead of leaving the automation value.
+                if (!suspended.Remove(slot, out var underneath))
+                    continue;
+                var ec = glamourer.SetItemOnce(slot, underneath.Value.ItemId, new List<byte> { underneath.Value.Stain, underneath.Value.Stain2 });
+                if (ec != GlamourerApiEc.Success)
+                {
+                    restored = false;
+                    Plugin.Log.Warning($"SlotLockManager: released {owner}, but Glamourer failed to restore {underneath.Owner}'s {slot}: {ec}.");
+                }
+                locks[slot] = underneath;
+            }
 
             Persist();
             return restored;
@@ -167,6 +216,7 @@ public sealed class SlotLockManager : IDisposable
     public void ReleaseAllForPanic()
     {
         locks.Clear();
+        suspended.Clear();
         Persist();
     }
 
@@ -196,6 +246,14 @@ public sealed class SlotLockManager : IDisposable
     private void Persist()
     {
         config.SlotLocks = locks.Select(kv => new SlotLockEntry
+        {
+            Slot = kv.Key,
+            Owner = kv.Value.Owner,
+            ItemId = kv.Value.Value.ItemId,
+            Stain = kv.Value.Value.Stain,
+            Stain2 = kv.Value.Value.Stain2,
+        }).ToList();
+        config.SuspendedSlotLocks = suspended.Select(kv => new SlotLockEntry
         {
             Slot = kv.Key,
             Owner = kv.Value.Owner,

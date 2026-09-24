@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Oathbound.Plugin.Config;
 
 namespace Oathbound.Plugin.Commands;
@@ -22,6 +24,20 @@ public sealed class ChatComposer
     /// plain alias, or one of ChatCommandListener's reserved-keyword override commands - this class has no
     /// idea which, since both are just text appended after the trigger phrase.
     public string Compose(string command) => Wrap(command);
+
+    /// Every chat message one Send of `command` becomes: just the composed command when it fits, otherwise
+    /// - for a `customtrigger cast` bundle only - one message per action (see
+    /// CustomTriggerCommand.SplitCastCommand). Anything else that doesn't fit comes back as its single
+    /// too-long message, for the caller's Fits check to reject.
+    public IReadOnlyList<string> ComposeAll(string command)
+    {
+        var whole = Compose(command);
+        if (CommandSelector.Fits(whole) || CustomTriggerCommand.SplitCastCommand(command) is not { Count: > 1 } parts)
+            return [whole];
+        return parts.Select(Compose).ToList();
+    }
+
+    public static bool AllFit(IReadOnlyList<string> messages) => messages.All(CommandSelector.Fits);
 
     /// collar/teleport: the Owner's `teleport` reserved-word command, carrying the world and
     /// aetheryte/aethernet shard nearest the Owner's position at send time - resolved by the caller (via

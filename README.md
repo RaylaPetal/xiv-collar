@@ -125,6 +125,27 @@ or a configured mod restraint's optional alias. Sent on its own it toggles that 
 `restraint lock` it force-applies it. There is no separate restraint-alias list any more. *Breaking:* words
 from the old list stop working unless they match a device's alias.
 
+**Sharing is a helper, and what's shared is the Owner's copy.** The Owner can build anything themselves;
+the Sub's sync (relay refresh or export file) just shares their setup. Every shared preset arrives as a
+self-contained Owner command - a title alias as `title style ...`, an outfit alias as `outfit lock "<design>"`
+(or `outfit wear` if the alias doesn't lock), an animation or moodle alias as `gesture ...` / `moodle apply
+...`, a rules-only restraint as `restraint wear - - "<name>" rules:...`, a custom trigger as one
+`customtrigger cast ...` bundle whose restraints carry their own rules. The alias name stays as the label,
+and an attached moodle becomes that command's moodle pick. So a copy keeps working after the Sub deletes or
+changes the original, until the Owner removes it. Sharing again - a relay refresh, or importing the Sub's
+file while paired as their Owner - replaces that Sub's shared copies with their current set; the Owner's own
+commands are never touched. Copies are Owner commands, so they lock/force-apply like one. A custom trigger
+too long for one chat message isn't shared; the Sub's Sync tab lists which. Needs both sides on this
+version - an older Sub ignores a bundle whose restraints carry rules.
+
+**Outfits: lock or not.** The Owner's saved-outfit editor has a Lock dropdown: *Locked* sends
+`outfit lock`, *Not locked* sends `outfit wear` (applied, but the Sub can change it freely; older Subs don't
+understand `wear`). Applying a new outfit replaces the previous one, including its locks.
+
+**Restraints go over outfits.** A restraint can take over a slot a locked outfit holds - the outfit's piece
+and lock are set aside, and come back when the restraint is removed. The collar's Neck slot still can't be
+taken over.
+
 > **Breaking change:** Moodles scanning switched from reading the Sub's saved *presets* to reading their
 > individual registered *statuses* (buffs/debuffs) directly. Existing Owner Moodles Quick Commands built
 > from preset names will no longer resolve - rescan Moodles on the Sub's side and re-import on the Owner's

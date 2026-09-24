@@ -237,15 +237,15 @@ public static class QuickAccessMenu
 
     private static void DrawFavoriteMenuItem(Plugin plugin, QuickCommand cmd, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd));
-        var fits = CommandSelector.Fits(composed);
+        var messages = plugin.ChatComposer.ComposeAll(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd));
+        var fits = ChatComposer.AllFit(messages);
         using (ImRaii.Disabled(!canSend || !fits))
         {
             if (ImGui.MenuItem(cmd.Label))
-                plugin.ChatSender.Send(composed);
+                plugin.ChatSender.SendAll(messages);
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? string.Join("\n", messages) : "No /tell target yet - pairing hasn't captured your Sub's name.");
     }
 
     /// Teleport can't join `FixedActions` above - it has no static `Command` text, resolved live via

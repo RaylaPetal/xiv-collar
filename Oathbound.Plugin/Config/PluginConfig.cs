@@ -619,10 +619,15 @@ public class ConfiguredModRestraintExportEntry
     public ulong? ItemId { get; set; }
     public List<RestraintRuleAssignment> Rules { get; set; } = new();
 
+    /// collar/attached-moodles: the restraint's attached moodle name, imported as the Owner's per-command
+    /// moodle pick for the shared copy. Null on an older export (and ignored by an older Owner).
+    public string? Moodle { get; set; }
+
     public static ConfiguredModRestraintExportEntry From(ConfiguredModRestraint entry) => new()
     {
         Id = entry.Id, CatalogId = entry.CatalogId, Name = entry.Name,
         ItemId = entry.ItemId, Rules = entry.Rules,
+        Moodle = entry.AttachedMoodle is { } m && MoodlesTextFormat.StripMarkup(m.StatusName).Trim() is { Length: > 0 } name && !name.Contains('"') ? name : null,
     };
 }
 
@@ -713,6 +718,10 @@ public class PluginConfig : IPluginConfiguration
 
     /// Every active per-slot lock (collar/slot-locking) - see SlotLockEntry and SlotLockManager.
     public List<SlotLockEntry> SlotLocks { get; set; } = new();
+
+    /// collar/slot-locking: locks a higher-priority owner took over (an outfit slot a restraint now
+    /// covers), kept so they're restored when that owner releases. See SlotLockManager.TryLock.
+    public List<SlotLockEntry> SuspendedSlotLocks { get; set; } = new();
 
     /// Set by CollarCommand.ForceApply/OutfitCommand.ForceApply (the Owner's "joker" override). While
     /// true, the Sub's own alias-triggered Apply/Clear/Unlock for that category is refused - only the

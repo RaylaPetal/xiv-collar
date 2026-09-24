@@ -74,17 +74,17 @@ public sealed class FavoritesWindow : Window, IDisposable
 
     private void DrawFavoriteRow(QuickCommand cmd, bool canSend)
     {
-        var composed = plugin.ChatComposer.Compose(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd));
-        var fits = CommandSelector.Fits(composed);
+        var messages = plugin.ChatComposer.ComposeAll(OwnerMoodleOverride.ForSend(plugin.Configuration, cmd));
+        var fits = ChatComposer.AllFit(messages);
         using (ImRaii.Disabled(!canSend || !fits))
         {
             if (ImGui.SmallButton($"Send##fav_{cmd.Label}_{cmd.Command}"))
-                plugin.ChatSender.Send(composed);
+                plugin.ChatSender.SendAll(messages);
         }
         ImGui.SameLine();
         ImGui.TextUnformatted(cmd.Label);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? composed : "No /tell target yet - pairing hasn't captured your Sub's name.");
+            ImGui.SetTooltip(!fits ? "Command is too long for a safe chat payload." : canSend ? string.Join("\n", messages) : "No /tell target yet - pairing hasn't captured your Sub's name.");
     }
 
     /// Teleport can't join the regular favorite rows above - it has no static command text, resolved live

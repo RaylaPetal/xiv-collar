@@ -96,7 +96,13 @@ public sealed class CustomTriggerCommand
                     // In particular, do not route stable IDs through the Sub self-service Toggle method:
                     // Toggle is rejected by an Owner force-lock and made multi-restraint bundles depend on
                     // unrelated prior runtime state.
-                    var restraintOk = action.RestraintCatalogId.Length > 0
+                    // A self-contained action (a shared copy) carries its own rules - applied as-is, with no
+                    // lookup of the Sub's restraints, so it still works after the original was deleted.
+                    var restraintOk = action.RestraintRules is { } inlineRules
+                        ? action.RestraintRulesOnly
+                            ? restraints.ForceApplyAdHoc(action.RestraintSlot, action.RestraintItemId == 0 ? null : action.RestraintItemId, action.RestraintDeviceName, inlineRules)
+                            : restraints.ForceApplyCatalog(action.RestraintCatalogId, action.RestraintItemId, inlineRules)
+                        : action.RestraintCatalogId.Length > 0
                         ? restraints.ForceApplyCatalog(action.RestraintCatalogId, action.RestraintItemId,
                             config.RestraintMapping.ConfiguredMods.FirstOrDefault(x => x.CatalogId == action.RestraintCatalogId)?.Rules ?? [])
                         : config.RestraintMapping.Devices.ContainsKey(action.RestraintDeviceId)
@@ -166,6 +172,17 @@ public sealed class CustomTriggerCommand
                     segments.Add($"moodle={action.MoodleStatusId}|{EncodeText(action.MoodleStatusName)}");
                     break;
                 case CustomTriggerActionKind.Restraint:
+                    if (action.RestraintRules is { } rules)
+                    {
+                        // Self-contained: a third part carries the rules, and a rules-only restraint uses a
+                        // `wear:` reference instead of a device id - nothing on the Sub's side is looked up.
+                        // An older Sub's strict 2-part check rejects this whole bundle (fails closed).
+                        var reference = action.RestraintRulesOnly
+                            ? $"wear:{action.RestraintSlot?.ToString() ?? "-"}:{(action.RestraintItemId == 0 ? "-" : action.RestraintItemId.ToString())}"
+                            : $"catalog:{action.RestraintCatalogId}:{action.RestraintItemId}";
+                        segments.Add($"restraint={reference}|{EncodeText(action.RestraintDeviceName)}|{EncodeText(RestraintCommand.EncodeRuleTokens(rules))}");
+                        break;
+                    }
                     segments.Add(action.RestraintCatalogId.Length > 0
                         ? $"restraint=catalog:{action.RestraintCatalogId}:{action.RestraintItemId}|{EncodeText(action.RestraintDeviceName)}"
                         : $"restraint={action.RestraintDeviceId}|{EncodeText(action.RestraintDeviceName)}");
@@ -207,26 +224,7 @@ public sealed class CustomTriggerCommand
         if (tail.Length == 0)
             return false;
 
-        string beforeChat;
-        string? chatText = null;
-        if (tail.StartsWith("chat=", StringComparison.OrdinalIgnoreCase))
-        {
-            beforeChat = "";
-            chatText = tail["chat=".Length..];
-        }
-        else
-        {
-            var chatMarker = tail.IndexOf(";chat=", StringComparison.OrdinalIgnoreCase);
-            if (chatMarker >= 0)
-            {
-                beforeChat = tail[..chatMarker];
-                chatText = tail[(chatMarker + ";chat=".Length)..];
-            }
-            else
-            {
-                beforeChat = tail;
-            }
-        }
+        SplitChatTail(tail, out var beforeChat, out var chatText);
 
         if (beforeChat.Length > 0)
         {
@@ -267,21 +265,60 @@ public sealed class CustomTriggerCommand
                         actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Outfit, OutfitDesignId = designId, OutfitDesignName = designName });
                         break;
 
+                    // Gesture/moodle/restraint ids may be empty: the Owner's bundle editor only knows names
+                    // (it has no access to the Sub's catalogs), and Apply already falls back to a name
+                    // match when the id is empty.
                     case "gesture":
-                        if (parts.Length != 2 || parts[0].Length == 0 || !TryDecodeText(parts[1], out var animName) || animName.Length == 0)
+                        if (parts.Length != 2 || !TryDecodeText(parts[1], out var animName) || animName.Length == 0)
                             return false;
                         actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Gesture, GestureId = parts[0], GestureAnimationName = animName });
                         break;
 
                     case "moodle":
-                        if (parts.Length != 2 || parts[0].Length == 0 || !TryDecodeText(parts[1], out var statusName) || statusName.Length == 0)
+                        if (parts.Length != 2 || !TryDecodeText(parts[1], out var statusName) || statusName.Length == 0)
                             return false;
                         actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Moodle, MoodleStatusId = parts[0], MoodleStatusName = statusName });
                         break;
 
                     case "restraint":
-                        if (parts.Length != 2 || parts[0].Length == 0 || !TryDecodeText(parts[1], out var deviceName) || deviceName.Length == 0)
+                        if ((parts.Length != 2 && parts.Length != 3) || !TryDecodeText(parts[1], out var deviceName) || deviceName.Length == 0)
                             return false;
+                        if (parts.Length == 3)
+                        {
+                            if (parts[0].Length == 0)
+                                return false;
+                            // Self-contained restraint (see BuildCastCommand): its rules travel inline.
+                            if (!TryDecodeText(parts[2], out var ruleTokens))
+                                return false;
+                            var inlineRules = RestraintCommand.DecodeRuleTokens(ruleTokens);
+                            if (inlineRules.Count == 0)
+                                return false;
+                            var reference = parts[0].Split(':');
+                            if (reference.Length != 3)
+                                return false;
+                            if (reference[0].Equals("catalog", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!ulong.TryParse(reference[2], out var inlineItemId) || inlineItemId == 0) return false;
+                                actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintCatalogId = reference[1], RestraintItemId = inlineItemId, RestraintDeviceName = deviceName, RestraintRules = inlineRules });
+                            }
+                            else if (reference[0].Equals("wear", StringComparison.OrdinalIgnoreCase))
+                            {
+                                Glamourer.Api.Enums.ApiEquipSlot? wearSlot = null;
+                                if (reference[1] != "-")
+                                {
+                                    if (!Enum.TryParse<Glamourer.Api.Enums.ApiEquipSlot>(reference[1], out var parsedSlot)) return false;
+                                    wearSlot = parsedSlot;
+                                }
+                                ulong wearItem = 0;
+                                if (reference[2] != "-" && !ulong.TryParse(reference[2], out wearItem)) return false;
+                                actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Restraint, RestraintDeviceName = deviceName, RestraintRules = inlineRules, RestraintRulesOnly = true, RestraintSlot = wearSlot, RestraintItemId = wearItem });
+                            }
+                            else
+                            {
+                                return false;
+                            }
+                            break;
+                        }
                         if (parts[0].StartsWith("catalog:", StringComparison.OrdinalIgnoreCase))
                         {
                             var catalogParts = parts[0].Split(':');
@@ -302,6 +339,55 @@ public sealed class CustomTriggerCommand
             actions.Add(new CustomTriggerAction { Kind = CustomTriggerActionKind.Chat, ChatText = chatText });
 
         return actions.Count > 0;
+    }
+
+    private const string CastPrefix = "customtrigger cast ";
+
+    /// Splits a full `customtrigger cast` command into one single-action `cast` command per action, each
+    /// carrying the same label and its original segment text unchanged - used when the whole bundle won't
+    /// fit in one chat message (see ChatComposer.ComposeAll). Every Sub version that understands the bundle
+    /// also understands a one-action bundle, and the Sub applies actions one at a time anyway, so sending
+    /// them as separate tells changes nothing on the receiving side. Null when `command` isn't a valid cast
+    /// command.
+    public static List<string>? SplitCastCommand(string command)
+    {
+        var trimmed = command.Trim();
+        if (!trimmed.StartsWith(CastPrefix, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var remainder = trimmed[CastPrefix.Length..].Trim();
+        if (!TryParseCastCommand(remainder, out var label, out _))
+            return null;
+
+        SplitChatTail(remainder[(remainder.IndexOf('"', 1) + 1)..].Trim(), out var beforeChat, out var chatText);
+        var head = $"{CastPrefix}\"{label}\" ";
+        var parts = beforeChat.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(segment => head + segment).ToList();
+        if (chatText is { Length: > 0 })
+            parts.Add($"{head}chat={chatText}");
+        return parts;
+    }
+
+    /// The chat action, if present, is always last and consumes the rest of the line (see BuildCastCommand).
+    private static void SplitChatTail(string tail, out string beforeChat, out string? chatText)
+    {
+        chatText = null;
+        if (tail.StartsWith("chat=", StringComparison.OrdinalIgnoreCase))
+        {
+            beforeChat = "";
+            chatText = tail["chat=".Length..];
+            return;
+        }
+
+        var chatMarker = tail.IndexOf(";chat=", StringComparison.OrdinalIgnoreCase);
+        if (chatMarker >= 0)
+        {
+            beforeChat = tail[..chatMarker];
+            chatText = tail[(chatMarker + ";chat=".Length)..];
+        }
+        else
+        {
+            beforeChat = tail;
+        }
     }
 
     /// One-line human-readable summary of a single bundled action - shared by the Sub-side UI's own draft

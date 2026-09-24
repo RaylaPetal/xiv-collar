@@ -24,6 +24,16 @@ public class AliasExportEntry
     /// the human-readable Description. Null on an older export predating this field.
     public string? Target { get; set; }
 
+    /// collar/catalog-sync "shared presets are copies": the self-contained Owner command this preset
+    /// stands for (SharedPresetCommands) - what the Owner's imported copy actually sends, so it keeps working
+    /// after the Sub deletes the preset. `Alias` stays as the recognizable label. Null on an export from an
+    /// older Sub, where the Owner falls back to sending the bare alias word as before; an older Owner
+    /// ignores it the same way.
+    public string? Command { get; set; }
+
+    /// The preset's attached moodle name, imported as the Owner's per-command moodle pick for the copy.
+    public string? Moodle { get; set; }
+
     public AliasExportEntry() { }
     public AliasExportEntry(string alias, string description, string? target = null)
     {
@@ -108,6 +118,22 @@ public sealed class CatalogSyncService
     /// never touched. Nothing is mutated until every category has been parsed successfully and reconciled
     /// in memory; config.Save() is called at most once, at the very end - a parse failure partway through
     /// leaves the prior snapshot completely intact (task 6.4/6.5).
+    /// collar/catalog-sync "sharing again replaces the previous share": a Sub's export file imported while
+    /// paired as their Owner is treated exactly like a relay refresh from that pairing - this Sub's
+    /// previously imported copies are replaced with the file's set (removed ones go away), and the Owner's
+    /// own commands are never touched. Null when that doesn't apply (no active Owner-side pairing with a
+    /// relay pair id, or not a complete current export) - the caller then falls back to ParseImport's
+    /// add-only import.
+    public CatalogSnapshotResult? TryApplyFileAsPairSnapshot(string exportText, PairingState? pairing)
+    {
+        if (pairing is not { Direction: PairingDirection.OwnerSide, PairIdHash: { Length: > 0 } pairIdHash })
+            return null;
+        var sections = SplitSections(exportText);
+        if (sections.Count == 0 || !ValidateRelaySnapshot(sections, out _))
+            return null;
+        return ApplyRelaySnapshot(exportText, pairIdHash);
+    }
+
     public CatalogSnapshotResult ApplyRelaySnapshot(string exportText, string sourcePairIdHash)
     {
         if (string.IsNullOrWhiteSpace(exportText))
@@ -306,13 +332,13 @@ public sealed class CatalogSyncService
     public string BuildExport()
     {
         var sb = new StringBuilder();
-        AppendSection(sb, TitleAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Title, config.Aliases.Titles.Select(a => new AliasExportEntry(a.Alias, DescribeTitleAlias(a)))).Select(EncodeAliasEntry));
+        AppendSection(sb, TitleAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Title, config.Aliases.Titles.Select(a => new AliasExportEntry(a.Alias, DescribeTitleAlias(a)) { Command = SharedPresetCommands.Title(a) })).Select(EncodeAliasEntry));
         AppendSection(sb, WardrobeHeader, outfit.ExportNames());
-        AppendSection(sb, WardrobeAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Outfit, config.Aliases.Outfits.Select(a => new AliasExportEntry(a.Alias, DescribeOutfitAlias(a), a.DesignName))).Select(EncodeAliasEntry));
+        AppendSection(sb, WardrobeAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Outfit, config.Aliases.Outfits.Select(a => new AliasExportEntry(a.Alias, DescribeOutfitAlias(a), a.DesignName) { Command = SharedPresetCommands.Outfit(a, config), Moodle = SharedPresetCommands.MoodleName(a.AttachedMoodle) })).Select(EncodeAliasEntry));
         AppendSection(sb, GestureHeader, gesture.ExportCatalog().Split('\n', StringSplitOptions.RemoveEmptyEntries));
-        AppendSection(sb, GestureAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Gesture, config.Aliases.Gestures.Select(a => new AliasExportEntry(a.Alias, DescribeGestureAlias(a), a.GestureId))).Select(EncodeAliasEntry));
+        AppendSection(sb, GestureAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Gesture, config.Aliases.Gestures.Select(a => new AliasExportEntry(a.Alias, DescribeGestureAlias(a), a.GestureId) { Command = SharedPresetCommands.Gesture(a, config) })).Select(EncodeAliasEntry));
         AppendSection(sb, MoodlesHeader, moodles.ExportNames());
-        AppendSection(sb, MoodlesAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Moodle, config.Aliases.Moodles.Select(a => new AliasExportEntry(a.Alias, DescribeMoodleAlias(a), MoodlesTextFormat.StripMarkup(a.StatusName)))).Select(EncodeAliasEntry));
+        AppendSection(sb, MoodlesAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Moodle, config.Aliases.Moodles.Select(a => new AliasExportEntry(a.Alias, DescribeMoodleAlias(a), MoodlesTextFormat.StripMarkup(a.StatusName)) { Command = SharedPresetCommands.Moodle(a, config) })).Select(EncodeAliasEntry));
         AppendSection(sb, RestraintsHeader, restraints.ExportEntries());
         AppendSection(sb, RestraintsAliasesHeader, ExportCategoryAliasEntries(CustomTriggerActionKind.Restraint, RestraintWordEntries()).Select(EncodeAliasEntry));
         AppendSection(sb, BundlesHeader, ExportBundleEntries().Select(EncodeAliasEntry));
@@ -354,7 +380,9 @@ public sealed class CatalogSyncService
     private IEnumerable<AliasExportEntry> SingleActionTriggerEntries(CustomTriggerActionKind kind) =>
         config.Aliases.CustomTriggers
             .Where(t => t.Actions.Count == 1 && t.Actions[0].Kind == kind)
-            .Select(t => new AliasExportEntry(t.Alias, DescribeCustomTrigger(t), TargetForSingleAction(t.Actions[0])));
+            .Select(t => new AliasExportEntry(t.Alias, DescribeCustomTrigger(t), TargetForSingleAction(t.Actions[0])) { Command = SharedPresetCommands.CustomTrigger(t, config) })
+            // A trigger that can't be copied (an action too long for one message, or its restraint is gone) isn't shared.
+            .Where(e => e.Command is not null);
 
     /// collar/catalog-sync "Import skips commands that duplicate an existing quick command": only Outfit/
     /// Gesture/Moodle carry a target identity the Owner's import can match on - Title (free text) and
@@ -377,7 +405,8 @@ public sealed class CatalogSyncService
     private IReadOnlyList<AliasExportEntry> ExportBundleEntries() =>
         DedupSort(config.Aliases.CustomTriggers
             .Where(t => t.Actions.Count >= 2 || (t.Actions.Count == 1 && t.Actions[0].Kind == CustomTriggerActionKind.Chat))
-            .Select(t => new AliasExportEntry(t.Alias, DescribeCustomTrigger(t))));
+            .Select(t => new AliasExportEntry(t.Alias, DescribeCustomTrigger(t)) { Command = SharedPresetCommands.CustomTrigger(t, config) })
+            .Where(e => e.Command is not null));
 
     private static IReadOnlyList<AliasExportEntry> DedupSort(IEnumerable<AliasExportEntry> entries) =>
         entries.Where(e => e.Alias.Length > 0)
@@ -389,16 +418,18 @@ public sealed class CatalogSyncService
     private static string DescribeTitleAlias(TitleAliasDefinition a) => $"Title: \"{a.Text}\" ({(a.IsPrefix ? "prefix" : "suffix")})";
     private static string DescribeOutfitAlias(OutfitAliasDefinition a) => $"Outfit: {a.DesignName}{(a.Locked ? " (locks its slots)" : "")}";
     private static string DescribeGestureAlias(GestureAliasDefinition a) => $"Gesture: {(a.AnimationName.Length > 0 ? a.AnimationName : a.EmoteName)}";
-    /// A restraint's own word - each captured device's name and each configured mod restraint's alias -
-    /// exported as the toggle word the Owner sends bare (RestraintCommand.ToggleByWord). There is no
-    /// separate restraint-alias list any more.
+
+    /// The Sub's rules-only restraints, shared into the restraint section. Configured mod restraints aren't listed here: they already travel as full definitions in the
+    /// RESTRAINTS section. Each rules-only restraint is shared as a self-contained copy
+    /// (`restraint wear - - "<name>" rules:...`) with its moodle as the Owner's pick.
     private IEnumerable<AliasExportEntry> RestraintWordEntries() =>
         config.RestraintMapping.Devices.Values
-            .Where(d => d.Name.Trim().Length > 0)
-            .Select(d => new AliasExportEntry(d.Name.Trim(), $"Restraint: {d.Name.Trim()} (toggles)"))
-            .Concat(config.RestraintMapping.ConfiguredMods
-                .Where(m => m.Alias.Trim().Length > 0)
-                .Select(m => new AliasExportEntry(m.Alias.Trim(), $"Restraint: {m.Name} (toggles)")));
+            .Where(d => d.Name.Trim().Length > 0 && d.Rules.Count > 0)
+            .Select(d => new AliasExportEntry(d.Name.Trim(), $"Restraint: {d.Name.Trim()} ({string.Join(", ", d.Rules.Select(r => r.Kind))})")
+            {
+                Command = SharedPresetCommands.RulesOnlyRestraint(d),
+                Moodle = SharedPresetCommands.MoodleName(d.AttachedMoodle),
+            });
     private static string DescribeMoodleAlias(MoodlesAliasDefinition a) => $"Moodle: {MoodlesTextFormat.StripMarkup(a.StatusName)}";
     private static string DescribeCustomTrigger(CustomTriggerDefinition a) => $"Custom Trigger: {string.Join(", ", a.Actions.Select(CustomTriggerCommand.Summarize))}";
 
@@ -707,6 +738,31 @@ public sealed class CatalogSyncService
             if (!TryParseAliasEntry(line, out var entry))
                 continue;
 
+            // collar/catalog-sync "shared presets are copies": a current Sub sends the self-contained command
+            // the preset stands for - that's what the copy sends, so it keeps working after the Sub deletes
+            // the preset. Deduped only on the exact command, not the target, so e.g. an outfit alias with its
+            // own moodle or lock choice isn't swallowed by the plain design-name entry for the same design.
+            if (entry.Command is { Length: > 0 } copyCommand)
+            {
+                if (usedCommands.Contains(copyCommand))
+                {
+                    duplicates++;
+                    continue;
+                }
+                target.Add(new QuickCommand
+                {
+                    Label = $"{entry.Alias} — {entry.Description}",
+                    Command = copyCommand,
+                    Source = ImportSource.Imported,
+                    // No Target: a copy is identified by its own label on re-sync, not by the design/
+                    // animation it applies (which a plain catalog entry may share).
+                    MoodleOverride = entry.Moodle,
+                });
+                usedCommands.Add(copyCommand);
+                added++;
+                continue;
+            }
+
             var isDuplicateTarget = entry.Target is not null && target.Any(existing => existing.Target is not null && string.Equals(existing.Target, entry.Target, StringComparison.OrdinalIgnoreCase));
             if (isDuplicateTarget || usedCommands.Contains(entry.Alias))
             {
@@ -797,6 +853,7 @@ public sealed class CatalogSyncService
                     RestraintCatalogId = configured.CatalogId,
                     RestraintItemId = configured.ItemId,
                     RestraintRules = configured.Rules,
+                    MoodleOverride = configured.Moodle,
                 });
                 usedCommands.Add(command);
                 added++;

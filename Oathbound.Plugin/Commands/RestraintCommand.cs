@@ -24,6 +24,11 @@ public sealed class RestraintCommand
     private const string ConfiguredExportPrefix = "OATHBOUND-RESTRAINT-CONFIG-V1|";
     public string? LastFailureReason { get; private set; }
     private const string Owner = "Restraints";
+
+    /// Restraints supersede outfits: a restraint may take over a slot a locked outfit holds. The outfit's
+    /// piece and lock are set aside and come back when the restraint is released (SlotLockManager.TryLock).
+    /// The collar is not in this list - its Neck lock still refuses a conflicting restraint.
+    private static readonly string[] TakesOverFrom = [OutfitCommand.SlotLockOwner];
     private const long PlayDelayMs = 500;
 
     private readonly PluginConfig config;
@@ -312,7 +317,7 @@ public sealed class RestraintCommand
         if (activeCatalogOverrides.ContainsKey(runtimeId))
             return true;
         var slot = itemId == 0 ? null : GlamourerIpc.GetItemSlot((uint)itemId);
-        if (itemId == 0 || slot is null || slotLocks.WouldOverlap([slot.Value], Owner))
+        if (itemId == 0 || slot is null || slotLocks.WouldOverlap([slot.Value], Owner, TakesOverFrom))
         {
             LastFailureReason = itemId == 0 || slot is null ? "the restraint item is not valid for an equipment slot" : $"equipment slot {slot} is locked by another feature";
             return false;
@@ -351,7 +356,7 @@ public sealed class RestraintCommand
             LastFailureReason = "Penumbra could not redraw after applying the restraint";
             return false;
         }
-        if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [slot.Value] = new(itemId, 0, 0) }))
+        if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [slot.Value] = new(itemId, 0, 0) }, TakesOverFrom))
         {
             temporarySettings.Release(runtimeId, collection.Value, entry.ModDirectory);
             penumbra.TryRedrawLocalPlayer();
@@ -430,7 +435,7 @@ public sealed class RestraintCommand
     private unsafe bool ApplyDevice(string deviceId, RestraintDeviceDefinition device, string? moodleOverride = null)
     {
         var hasGear = device.Slot is not null && device.ItemId is not null;
-        if (hasGear && slotLocks.WouldOverlap([device.Slot!.Value], Owner))
+        if (hasGear && slotLocks.WouldOverlap([device.Slot!.Value], Owner, TakesOverFrom))
         {
             var conflicts = slotLocks.ConflictingLocks([device.Slot!.Value], Owner);
             LastFailureReason = conflicts.Count > 0
@@ -470,7 +475,7 @@ public sealed class RestraintCommand
         if (hasGear)
         {
             var value = new SlotLockValue(device.ItemId!.Value, device.Stain, device.Stain2);
-            if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [device.Slot!.Value] = value }))
+            if (!slotLocks.TryLock(Owner, new Dictionary<ApiEquipSlot, SlotLockValue> { [device.Slot!.Value] = value }, TakesOverFrom))
             {
                 LastFailureReason = $"Glamourer could not apply or lock equipment slot {device.Slot}";
                 Plugin.Log.Warning($"Restraint apply failed for \"{device.Name}\": could not apply/lock its slot.");
@@ -726,6 +731,11 @@ public sealed class RestraintCommand
                 break;
         }
     }
+
+    /// Just the rule token list (what follows `rules:`), shared with CustomTriggerCommand's self-contained
+    /// `cast` restraint segment so both encode rules identically.
+    public static string EncodeRuleTokens(List<RestraintRuleAssignment> rules) => string.Join(',', rules.SelectMany(RuleTokens));
+    public static List<RestraintRuleAssignment> DecodeRuleTokens(string tokens) => ParseRuleTokens(tokens);
 
     public static string BuildCatalogLockCommand(string catalogId, string label, ulong itemId, List<RestraintRuleAssignment> rules)
     {

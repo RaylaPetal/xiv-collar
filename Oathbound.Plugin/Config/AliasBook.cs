@@ -130,6 +130,15 @@ public class CustomTriggerAction
     public string RestraintCatalogId { get; set; } = "";
     public ulong RestraintItemId { get; set; }
 
+    /// Self-contained form (a shared copy of a Sub's trigger, see SharedPresetCommands): the restraint's
+    /// rules travel with the action, so the Sub's plugin applies it without looking the restraint up - it
+    /// keeps working after the Sub deletes the original. Null on a Sub's own trigger, which looks its
+    /// restraint up locally as before. `RestraintRulesOnly` = no mod, just rules (plus the optional older
+    /// gear in RestraintSlot/RestraintItemId).
+    public List<RestraintRuleAssignment>? RestraintRules { get; set; }
+    public bool RestraintRulesOnly { get; set; }
+    public Glamourer.Api.Enums.ApiEquipSlot? RestraintSlot { get; set; }
+
     // Chat - collar/custom-triggers "Sending a chat message requires its own dedicated permission and
     // acknowledgement": sent verbatim, any channel, any text - gated at apply time, never here.
     public string ChatText { get; set; } = "";

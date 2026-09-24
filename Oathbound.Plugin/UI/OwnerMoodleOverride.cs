@@ -44,6 +44,7 @@ public static class OwnerMoodleOverride
         var trimmed = command.Trim();
         return trimmed.Equals(ControlWords.Leash, StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("outfit lock ", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("outfit wear ", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("restraint lock ", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("restraint catalog ", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("restraint wear ", StringComparison.OrdinalIgnoreCase);

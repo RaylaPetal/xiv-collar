@@ -429,6 +429,19 @@ public sealed class ChatCommandListener : IDisposable
                 : LocalTestResult.Fail("Outfit unlock did nothing - no lock or attached moodle was held.");
         }
 
+        // `outfit wear <name>`: the Owner's unlocked apply - same as `lock`, but nothing gets locked.
+        const string wearPrefix = "wear ";
+        if (rest.StartsWith(wearPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var name = StripQuotes(rest[wearPrefix.Length..].Trim());
+            if (name.Length == 0)
+                return LocalTestResult.Fail("\"outfit wear\" was given no design name.");
+            var (worn, wearReason) = outfit.ForceApply(name, moodleOverride, lockOutfit: false);
+            return worn
+                ? LocalTestResult.Ok($"Outfit \"{name}\" applied (not locked)." + (wearReason is null ? "" : $" {wearReason}"))
+                : LocalTestResult.Fail($"Outfit \"{name}\" not applied: {wearReason}");
+        }
+
         const string lockPrefix = "lock ";
         if (rest.StartsWith(lockPrefix, StringComparison.OrdinalIgnoreCase))
         {
@@ -443,7 +456,7 @@ public sealed class ChatCommandListener : IDisposable
             return LocalTestResult.Fail("\"outfit lock\" was given no design name.");
         }
 
-        return LocalTestResult.Fail($"Unrecognized \"outfit\" override \"{rest}\" - expected \"lock <design name>\" or \"unlock\".");
+        return LocalTestResult.Fail($"Unrecognized \"outfit\" override \"{rest}\" - expected \"lock <design name>\", \"wear <design name>\" or \"unlock\".");
     }
 
     private LocalTestResult HandleForceGesture(string rest)

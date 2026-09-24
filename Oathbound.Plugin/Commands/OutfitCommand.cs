@@ -21,6 +21,11 @@ public sealed class OutfitCommand
 {
     private const string Owner = "Outfit";
 
+    /// This command's SlotLockManager owner name - Restraints may take over slots it holds.
+    public const string SlotLockOwner = Owner;
+
+    private const string RestraintsSlotLockOwner = "Restraints";
+
     private readonly PluginConfig config;
     private readonly GlamourerIpc glamourer;
     private readonly SlotLockManager slotLocks;
@@ -68,8 +73,10 @@ public sealed class OutfitCommand
     /// out of band. Always locks. `moodleOverride` is the Owner's optional `moodle:"..."` pick
     /// (collar/attached-moodles), used instead of the Sub's default when allowed. A design name carries no
     /// moodle of its own - the Sub attaches moodles to outfit aliases - so the default here is the moodle of
-    /// the first alias the Sub made for this same design that has one, if any.
-    public (bool Success, string? Reason) ForceApply(string designName, string? moodleOverride = null)
+    /// the first alias the Sub made for this same design that has one, if any. `lockOutfit` false is the
+    /// Owner's `outfit wear <name>`: the same apply, but nothing is locked - neither the design's slots nor
+    /// the Sub's own outfit aliases - so the Sub can change it freely afterwards.
+    public (bool Success, string? Reason) ForceApply(string designName, string? moodleOverride = null, bool lockOutfit = true)
     {
         var design = config.WardrobeMapping.LocalDesigns.Values
             .FirstOrDefault(d => string.Equals(d.Name, designName, StringComparison.OrdinalIgnoreCase));
@@ -77,11 +84,11 @@ public sealed class OutfitCommand
             return (false, $"no wardrobe design named \"{designName}\" in your Sub's scanned catalog.");
 
         var aliasMoodle = config.Aliases.Outfits.FirstOrDefault(a => a.DesignId == design.DesignId && a.AttachedMoodle is not null)?.AttachedMoodle;
-        var (success, reason) = ApplyDesign(design.DesignId, designName, locked: true, aliasMoodle, moodleOverride);
+        var (success, reason) = ApplyDesign(design.DesignId, designName, lockOutfit, aliasMoodle, moodleOverride);
         if (!success)
             return (false, reason);
 
-        runtimeState.OutfitForceLocked = true;
+        runtimeState.OutfitForceLocked = lockOutfit;
         return (true, null);
     }
 
@@ -106,6 +113,12 @@ public sealed class OutfitCommand
     /// applies and locks normally. The design apply itself never locks through Glamourer's own state.
     private (bool Success, string? Reason) ApplyDesign(Guid designId, string designName, bool locked, AttachedMoodleRef? defaultMoodle, string? moodleOverride)
     {
+        // A new outfit replaces the current one: drop the previous outfit's slot locks first, so an unlocked
+        // outfit applied after a locked one isn't snapped back to the old pieces by lock enforcement, and a
+        // locked one doesn't leave the old design's extra slots locked alongside its own.
+        if (slotLocks.HasLock(Owner))
+            slotLocks.Release(Owner);
+
         var slots = locked ? glamourer.GetDesignEquipSlots(designId) : new HashSet<ApiEquipSlot>();
         var conflicts = locked ? slotLocks.ConflictingLocks(slots, Owner) : [];
 
@@ -121,8 +134,12 @@ public sealed class OutfitCommand
         // the previous outfit's (or clears it, if this one carries none).
         moodles.HoldAttached(AttachedMoodleLedger.OutfitSource, defaultMoodle, moodleOverride);
 
-        foreach (var (slot, _) in conflicts)
+        foreach (var (slot, conflictOwner) in conflicts)
         {
+            // Restraints supersede outfits: a slot an active restraint covers keeps the restraint's piece,
+            // and this outfit's own piece for it is set aside to come back when the restraint is removed.
+            if (conflictOwner == RestraintsSlotLockOwner && glamourer.GetEquipSlotValue(slot) is { } designPiece)
+                slotLocks.SetAsideUnder(slot, Owner, new SlotLockValue(designPiece.ItemId, designPiece.Stain, designPiece.Stain2));
             if (slotLocks.GetLockedValue(slot) is { } existingLock)
                 glamourer.SetItemOnce(slot, existingLock.ItemId, [existingLock.Stain, existingLock.Stain2]);
         }
