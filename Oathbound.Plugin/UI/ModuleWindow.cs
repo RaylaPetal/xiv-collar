@@ -1585,11 +1585,16 @@ public sealed class ModuleWindow : Window, IDisposable
                 using (ImRaii.Disabled(i == ctDraftActions.Count - 1))
                     if (ImGui.SmallButton("↓"))
                         MoveDraftAction(ctDraftActions, i, i + 1, ref editingCustomTriggerActionIndex);
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Edit"))
+                // A restraint action only references a restraint - its rules/moodle are edited in the
+                // Restraints tab, so there's nothing to edit here (remove and re-add to pick another one).
+                if (ctDraftActions[i].Kind != CustomTriggerActionKind.Restraint)
                 {
-                    LoadSubActionDraft(ctDraftActions[i]);
-                    editingCustomTriggerActionIndex = i;
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Edit"))
+                    {
+                        LoadSubActionDraft(ctDraftActions[i]);
+                        editingCustomTriggerActionIndex = i;
+                    }
                 }
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Remove"))
@@ -2365,11 +2370,15 @@ public sealed class ModuleWindow : Window, IDisposable
                 using (ImRaii.Disabled(i == ctqDraftActions.Count - 1))
                     if (ImGui.SmallButton("↓"))
                         MoveDraftAction(ctqDraftActions, i, i + 1, ref editingOwnerActionIndex);
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Edit"))
+                // Same as the Sub's editor: a restraint is edited in the Restraints tab, not from a bundle.
+                if (ctqDraftActions[i].Kind != CustomTriggerActionKind.Restraint)
                 {
-                    LoadOwnerActionDraft(ctqDraftActions[i]);
-                    editingOwnerActionIndex = i;
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Edit"))
+                    {
+                        LoadOwnerActionDraft(ctqDraftActions[i]);
+                        editingOwnerActionIndex = i;
+                    }
                 }
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Remove"))
