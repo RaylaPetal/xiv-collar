@@ -17,6 +17,23 @@ public class GestureTrigger
     public string DisplayName => Kind == GestureTriggerKind.SlashCommand
         ? $"/{SlashCommand.TrimStart('/')}"
         : EmoteModeId switch { 1 => $"Ground Sit Pose {CPoseState + 1}", 2 => $"Sit Pose {CPoseState + 1}", 3 => $"Doze Pose {CPoseState + 1}", _ => $"Pose {CPoseState + 1}" };
+
+    /// collar/animation-labels "Pose labels match the game's own numbering": what a person reads - a pose
+    /// numbered like its own animation file (`j_pose01` -> "Pose 1"), the base ground sit as "Ground Sit
+    /// (default)". Display only: DisplayName above keeps the old +1 numbering because it is also the text saved
+    /// commands and aliases resolve by ("Display labels never change which animation a saved command plays"),
+    /// and [JsonIgnore] keeps it out of exports and the catalog store.
+    [JsonIgnore]
+    public string Label => Kind == GestureTriggerKind.SlashCommand
+        ? DisplayName
+        : (EmoteModeId, CPoseState) switch
+        {
+            (1, 0) => "Ground Sit (default)",
+            (1, _) => $"Ground Sit Pose {CPoseState}",
+            (2, _) => $"Sit Pose {CPoseState}",
+            (3, _) => $"Doze Pose {CPoseState}",
+            _ => $"Pose {CPoseState}",
+        };
 }
 
 [Serializable]
@@ -34,6 +51,10 @@ public class GestureCatalogEntry
     public GestureTrigger? Trigger { get; set; }
     public bool ModEnabled { get; set; }
     public string Label => $"{ModName} — {AnimationName}" + (Trigger is null ? " — no playable trigger" : $" — {Trigger.DisplayName}");
+
+    /// Display counterpart of Label (which stays the matching text) - see GestureTrigger.Label.
+    [JsonIgnore]
+    public string DisplayLabel => $"{ModName} — {AnimationName}" + (Trigger is null ? " — no playable trigger" : $" — {Trigger.Label}");
 }
 
 /// collar/config-performance "Catalogs live outside the hot-saved config file" (split-catalog-storage-from-
@@ -73,6 +94,10 @@ public class GestureExportEntry
     public int OptionOrder { get; set; }
     public GestureTrigger? Trigger { get; set; }
     public string Label => $"{ModName} — {AnimationName}" + (Trigger is null ? " — no playable trigger" : $" — {Trigger.DisplayName}");
+
+    /// Display counterpart of Label (which stays the matching text) - see GestureTrigger.Label.
+    [JsonIgnore]
+    public string DisplayLabel => $"{ModName} — {AnimationName}" + (Trigger is null ? " — no playable trigger" : $" — {Trigger.Label}");
 
     public static GestureExportEntry From(GestureCatalogEntry entry) => new()
     {

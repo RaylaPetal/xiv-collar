@@ -39,7 +39,7 @@ everything instantly with their safeword.
 | 👗 | **Outfit** | Dress your Sub in one of their Glamourer designs, locked in place or free to change. |
 | 🎭 | **Animation** | Play emotes and poses from your Sub's Penumbra animation mods. |
 | 😊 | **Moodles** | Add or clear status icons from your Sub's Moodles. |
-| ⛓️ | **Restraints** | Put gear on your Sub that comes with rules: forced pose, walk only, blocked actions, gagged chat, or cuffed animations. |
+| ⛓️ | **Restraints** | Put gear on your Sub that comes with rules - forced pose, walk only, blocked actions, gagged chat, or arm/leg/full-body cuffs held in an animation. Or send rules on their own, with no gear: forced pose, walk only, blocked actions or gagged. |
 | 🔗 | **Follow / Leash** | Make your Sub follow you, with their own movement held until you let go. |
 | 🔒 | **Collar** | A collar piece that goes on and locks when you pair, as a visible sign of your bond. It can carry a Moodle too. |
 | 📳 | **Toy Control** | Control your Sub's connected toys through Intiface Central, plus optional triggers (low health, taking damage, being restrained, spells cast on them). |

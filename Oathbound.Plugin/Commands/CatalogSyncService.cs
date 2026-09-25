@@ -806,7 +806,8 @@ public sealed class CatalogSyncService
 
             target.Add(new QuickCommand
             {
-                Label = entry.Label,
+                // What the Owner reads (collar/animation-labels); identity is Target = entry.Id, never this text.
+                Label = entry.DisplayLabel,
                 Command = command,
                 GestureModName = entry.ModName,
                 GestureGroupName = entry.GroupName,

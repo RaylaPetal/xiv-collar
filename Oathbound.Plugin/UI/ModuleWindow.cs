@@ -677,7 +677,7 @@ public sealed class ModuleWindow : Window, IDisposable
         using var _ = ImRaii.Child("gestureCatalog", new Vector2(0, 80), true);
         foreach (var entry in gestureMapping.LocalCatalog.Values)
         {
-            ImGui.BulletText(entry.Label);
+            ImGui.BulletText(entry.DisplayLabel);
         }
     }
 
@@ -996,7 +996,8 @@ public sealed class ModuleWindow : Window, IDisposable
 
         DrawSubModRestraints(config);
 
-        // Rules-only restraints: a named set of restriction rules (forced pose, walk-only, gagged...) with no
+        // Rules-only restraints: a named set of restriction rules (forced pose, walk-only, gagged, action block - cuffs
+        // are device restrictions, so they live on the mod restraints above) with no
         // gear of its own - gear-carrying restraints come from the shared Penumbra mods above. Devices captured
         // with gear by older versions still work and keep their gear when edited here (the draft carries the
         // device's existing slot/item through untouched); there's just no way to pick new gear.
@@ -1042,7 +1043,7 @@ public sealed class ModuleWindow : Window, IDisposable
             newDeviceMoodle = pickedDeviceMoodle;
 
         Section.SubHeading("Restrictions");
-        DrawRestraintRuleCheckboxes(newDeviceRuleEdit, "newDevice", allowCustomizePreset: true);
+        DrawRestraintRuleCheckboxes(newDeviceRuleEdit, "newDevice", allowCustomizePreset: true, rulesOnly: true);
 
         var hasAnyRule = HasAnyRule(newDeviceRuleEdit);
         var boundAnimationsConfigured = BoundAnimationsConfigured(newDeviceRuleEdit);
@@ -1244,48 +1245,74 @@ public sealed class ModuleWindow : Window, IDisposable
     /// `allowCustomizePreset` is true only for the Sub's own editors (device capture, mod configuration) -
     /// an Owner-side editor (ad-hoc device, per-quick-command rules) never shows the Customize+ picker,
     /// since only the Sub's own client can enumerate the Sub's local Customize+ profiles.
-    private void DrawRestraintRuleCheckboxes(RestraintRuleEditState edit, string idSuffix, bool allowCustomizePreset = false)
+    /// `rulesOnly` is for a restraint with no gear or mod of its own (the Sub's rules-only restraint form, the
+    /// Owner's ad-hoc rules-only restraint): Arms Cuffed, Legs Cuffed and Fully Restrain are device
+    /// restrictions, so they're left out - unless one is already checked on an older saved restraint, which
+    /// still shows it so it can be unchecked (collar/restraint-restrictions "Unified restriction toggle list").
+    private void DrawRestraintRuleCheckboxes(RestraintRuleEditState edit, string idSuffix, bool allowCustomizePreset = false, bool rulesOnly = false)
     {
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row1", false);
-        ImGui.Checkbox($"Forced pose##{idSuffix}", ref edit.ForcedPose);
-        IconGlyph.HelpMarker("Places you into the chosen pose (or holds a chosen animation) and fully blocks movement input until released.");
-        if (edit.ForcedPose)
+        var cells = new List<Action>
         {
-            ImGui.Indent();
-            var sourceIndex = edit.ForcedPoseIsMod ? 1 : 0;
-            if (ImGui.Combo($"Source##{idSuffix}ForcedPose", ref sourceIndex, ForcedPoseSourceNames, ForcedPoseSourceNames.Length))
-                edit.ForcedPoseIsMod = sourceIndex == 1;
-            if (edit.ForcedPoseIsMod)
-                DrawAnimationChooser(edit.ForcedPoseAnimationId, id => edit.ForcedPoseAnimationId = id, $"{idSuffix}ForcedPose");
-            else
-                ImGui.Combo($"Pose##{idSuffix}", ref edit.PoseIndex, PoseNames, PoseNames.Length);
-            ImGui.Unindent();
+            () =>
+            {
+                ImGui.Checkbox($"Forced pose##{idSuffix}", ref edit.ForcedPose);
+                IconGlyph.HelpMarker("Places you into the chosen pose (or holds a chosen animation) and fully blocks movement input until released.");
+                if (edit.ForcedPose)
+                {
+                    ImGui.Indent();
+                    var sourceIndex = edit.ForcedPoseIsMod ? 1 : 0;
+                    if (ImGui.Combo($"Source##{idSuffix}ForcedPose", ref sourceIndex, ForcedPoseSourceNames, ForcedPoseSourceNames.Length))
+                        edit.ForcedPoseIsMod = sourceIndex == 1;
+                    if (edit.ForcedPoseIsMod)
+                        DrawAnimationChooser(edit.ForcedPoseAnimationId, id => edit.ForcedPoseAnimationId = id, $"{idSuffix}ForcedPose");
+                    else
+                        ImGui.Combo($"Pose##{idSuffix}", ref edit.PoseIndex, PoseNames, PoseNames.Length);
+                    ImGui.Unindent();
+                }
+            },
+        };
+        if (!rulesOnly || edit.ArmsCuffed)
+            cells.Add(() =>
+            {
+                DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"{idSuffix}Arms");
+                IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+            });
+        if (!rulesOnly || edit.LegsCuffed)
+            cells.Add(() =>
+            {
+                DrawBoundAnimationPicker("Legs Cuffed", ref edit.LegsCuffed, edit.LegsCuffedAnimationId, id => edit.LegsCuffedAnimationId = id, $"{idSuffix}Legs");
+                IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
+            });
+        cells.Add(() =>
+        {
+            ImGui.Checkbox($"Walk-only##{idSuffix}", ref edit.WalkOnly);
+            IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
+        });
+        cells.Add(() => DrawGaggedPicker(edit, idSuffix, allowCustomizePreset));
+        if (!rulesOnly || edit.FullBodyCuffed)
+            cells.Add(() =>
+            {
+                DrawBoundAnimationPicker("Fully Restrain", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"{idSuffix}FullBody");
+                IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
+            });
+        cells.Add(() =>
+        {
+            ImGui.Checkbox($"Action block##{idSuffix}", ref edit.ActionBlock);
+            IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
+        });
+
+        // Two per row, one ImGui.Columns block per row, so each toggle's own dependent controls stay under it
+        // regardless of how tall the other column is. The full list keeps its original order/layout; the
+        // rules-only list re-flows without empty cells.
+        for (var i = 0; i < cells.Count; i += 2)
+        {
+            ImGui.Columns(2, $"restraintRules_{idSuffix}_row{i / 2 + 1}", false);
+            cells[i]();
+            ImGui.NextColumn();
+            if (i + 1 < cells.Count)
+                cells[i + 1]();
+            ImGui.Columns(1);
         }
-        ImGui.NextColumn();
-        DrawBoundAnimationPicker("Arms Cuffed", ref edit.ArmsCuffed, edit.ArmsCuffedAnimationId, id => edit.ArmsCuffedAnimationId = id, $"{idSuffix}Arms");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
-        ImGui.Columns(1);
-
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row2", false);
-        DrawBoundAnimationPicker("Legs Cuffed", ref edit.LegsCuffed, edit.LegsCuffedAnimationId, id => edit.LegsCuffedAnimationId = id, $"{idSuffix}Legs");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it until released, without affecting movement or actions.");
-        ImGui.NextColumn();
-        ImGui.Checkbox($"Walk-only##{idSuffix}", ref edit.WalkOnly);
-        IconGlyph.HelpMarker("Forces walking and blocks running, without blocking directional movement input.");
-        ImGui.Columns(1);
-
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row3", false);
-        DrawGaggedPicker(edit, idSuffix, allowCustomizePreset);
-        ImGui.NextColumn();
-        DrawBoundAnimationPicker("Fully Restrain", ref edit.FullBodyCuffed, edit.FullBodyCuffedAnimationId, id => edit.FullBodyCuffedAnimationId = id, $"{idSuffix}FullBody");
-        IconGlyph.HelpMarker("Temporarily activates the chosen animation and holds you in it, and fully blocks movement input, until released - a fully custom-animation counterpart to forced pose.");
-        ImGui.Columns(1);
-
-        ImGui.Columns(2, $"restraintRules_{idSuffix}_row4", false);
-        ImGui.Checkbox($"Action block##{idSuffix}", ref edit.ActionBlock);
-        IconGlyph.HelpMarker("Blocks hotbar action/skill usage until released, without affecting movement.");
-        ImGui.NextColumn();
-        ImGui.Columns(1);
     }
 
     /// collar/restraints "Gagged toggle chat restriction"/"Optional Customize+ preset on Gagged": the
@@ -1345,12 +1372,12 @@ public sealed class ModuleWindow : Window, IDisposable
             if (ownerMode && peerCatalog.TryGetValue(id, out var peer))
             {
                 chosenLabel = CommandPresentation.AnimationDisplayName(peer.GroupName, peer.AnimationName);
-                chosenMode = $"{peer.ModName} — {(peer.Trigger is null ? "Enable option only" : peer.Trigger.DisplayName)}";
+                chosenMode = $"{peer.ModName} — {(peer.Trigger is null ? "Enable option only" : peer.Trigger.Label)}";
             }
             else if (!ownerMode && localCatalog.TryGetValue(id, out var local))
             {
                 chosenLabel = CommandPresentation.AnimationDisplayName(local.GroupName, local.AnimationName);
-                chosenMode = $"{local.ModName} — {(local.Trigger is null ? "Enable option only" : local.Trigger.DisplayName)}";
+                chosenMode = $"{local.ModName} — {(local.Trigger is null ? "Enable option only" : local.Trigger.Label)}";
             }
             else
             {
@@ -1711,7 +1738,7 @@ public sealed class ModuleWindow : Window, IDisposable
                 break;
 
             case CustomTriggerActionKind.Gesture:
-                if (ImGui.Button(ctSelectedGesture is null ? "Choose animation...##newCtGesture" : $"Change animation... ({ctSelectedGesture.Label})##newCtGesture"))
+                if (ImGui.Button(ctSelectedGesture is null ? "Choose animation...##newCtGesture" : $"Change animation... ({ctSelectedGesture.DisplayLabel})##newCtGesture"))
                     plugin.AnimationPickerWindow.Open(entry => ctSelectedGesture = entry);
                 using (ImRaii.Disabled(ctSelectedGesture is null))
                 {
@@ -2410,7 +2437,7 @@ public sealed class ModuleWindow : Window, IDisposable
     /// travels in the command text. Gear-carrying restraints come from the Sub's shared mods above.
     private void DrawAdHocRestraintSection(bool canSend)
     {
-        IconGlyph.WrappedDisabled("Send restriction rules on their own (forced pose, walk-only, gagged...) with no gear - gear comes from your Sub's shared restraint mods above.");
+        IconGlyph.WrappedDisabled("Send restriction rules on their own - forced pose, walk-only, gagged or action block - with no gear. Cuffs belong to a device, so they come with your Sub's shared restraint mods above.");
 
         ImGui.SetNextItemWidth(220);
         ImGui.InputText("Label##adHocRestraint", ref newAdHocLabel, 32);
@@ -2418,7 +2445,7 @@ public sealed class ModuleWindow : Window, IDisposable
         OwnerMoodleOverride.Draw("adHocRestraint", plugin.Configuration, ref adHocMoodleOverride);
 
         Section.SubHeading("Restrictions");
-        DrawRestraintRuleCheckboxes(newAdHocRuleEdit, "adHocRestraint");
+        DrawRestraintRuleCheckboxes(newAdHocRuleEdit, "adHocRestraint", rulesOnly: true);
 
         var hasAnyRule = HasAnyRule(newAdHocRuleEdit);
         var boundAnimationsConfigured = BoundAnimationsConfigured(newAdHocRuleEdit);

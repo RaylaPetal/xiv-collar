@@ -96,7 +96,7 @@ public sealed class AnimationPickerWindow : Window, IDisposable
             || e.ModName.Contains(filter, StringComparison.OrdinalIgnoreCase)
             || e.GroupName.Contains(filter, StringComparison.OrdinalIgnoreCase)
             || e.AnimationName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || (e.Trigger?.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+            || (e.Trigger?.Label.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
 
         IconGlyph.WrappedDisabled($"{visible.Count} shown / {all.Count} discovered");
         ImGui.Separator();
@@ -139,7 +139,7 @@ public sealed class AnimationPickerWindow : Window, IDisposable
                         }
                         else
                         {
-                            IconGlyph.WrappedColored(Theme.Accent, entry.Trigger.DisplayName);
+                            IconGlyph.WrappedColored(Theme.Accent, entry.Trigger.Label);
                             ImGui.SameLine();
                             if (ImGui.SmallButton($"Choose##pickerChoose_{entry.Id}"))
                             {
@@ -167,7 +167,7 @@ public sealed class AnimationPickerWindow : Window, IDisposable
         var filter = search.Trim();
         var visible = all.Where(e => (includeTriggerless || e.Trigger is not null) && (filter.Length == 0 || e.ModName.Contains(filter, StringComparison.OrdinalIgnoreCase)
             || e.GroupName.Contains(filter, StringComparison.OrdinalIgnoreCase) || e.AnimationName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || (e.Trigger?.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false))).ToList();
+            || (e.Trigger?.Label.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false))).ToList();
         IconGlyph.WrappedDisabled($"{visible.Count} shown / {all.Count} imported from Sub");
         ImGui.Separator();
         using var child = ImRaii.Child("importedAnimationPickerResults", Vector2.Zero, false);
@@ -182,11 +182,11 @@ public sealed class AnimationPickerWindow : Window, IDisposable
                     IsOpen = false;
                 }
                 ImGui.SameLine();
-                var mode = entry.Trigger is null ? "Enable option only" : entry.Trigger.DisplayName;
+                var mode = entry.Trigger is null ? "Enable option only" : entry.Trigger.Label;
                 var optionName = entry.AnimationName.Length <= 64 ? entry.AnimationName : $"{entry.AnimationName[..61]}...";
                 ImGui.TextWrapped($"{optionName} · {mode}");
                 if (ImGui.IsItemHovered() && entry.AnimationName.Length > 64)
-                    ImGui.SetTooltip(entry.Label);
+                    ImGui.SetTooltip(entry.DisplayLabel);
             }
         }
     }
